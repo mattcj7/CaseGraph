@@ -7,10 +7,9 @@ This file tracks planned, active, and completed tickets.
 - When a ticket is completed, append it to the **Completed Tickets** section (append-only).
 
 ## Active Ticket
-- T0001 - Repo Bootstrap, Docs System, and Development Guardrails
+- T0002 - WPF Solution Skeleton + Professional App Shell + Theme Baseline
 
 ## Upcoming Tickets (Planned)
-- T0002 - Solution skeleton (.NET/WPF), app shell navigation baseline, theme system scaffold
 - T0003 - Evidence Vault + hashing + EvidenceItem schema
 - T0004 - DB + migrations + AuditLog
 - T0005 - Ingest pipeline skeleton (queue, progress, cancellation)

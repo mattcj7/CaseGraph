@@ -36,3 +36,16 @@ Append-only log of key decisions and changes. Add an entry when we:
   - All future work must follow `Docs/*` standards and use `TICKET.md` as scope authority.
 - Alternatives considered:
   - Ad-hoc development without formal tickets (rejected).
+
+### ADR-20260212-02: WPF shell baseline with WPF-UI and MVVM toolkit
+- Date: 2026-02-12
+- Ticket: T0002
+- Commit: <fill in after commit>
+- Decision:
+  - Adopt WPF-UI for shell/theming and CommunityToolkit.Mvvm with Generic Host DI for scalable app composition.
+- Rationale:
+  - Establishes a professional UI baseline with centralized dependency registration before feature implementation.
+- Consequences:
+  - Future tickets should use the shared theme dictionaries and MVVM+DI patterns introduced in T0002.
+- Alternatives considered:
+  - Plain WPF styling with ad-hoc service wiring (rejected).
