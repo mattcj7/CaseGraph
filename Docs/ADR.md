@@ -1,0 +1,38 @@
+# Architecture / Decision Record (ADR)
+
+Append-only log of key decisions and changes. Add an entry when we:
+- adopt/replace a major library or architecture approach
+- change provenance/audit rules
+- change storage/indexing strategy
+- change AI gateway approach
+- change UX/navigation standards
+
+## Entry template
+### ADR-YYYYMMDD-XX: <Title>
+- Date: YYYY-MM-DD
+- Ticket: TXXXX
+- Commit: <hash>
+- Decision:
+  - <what we decided>
+- Rationale:
+  - <why>
+- Consequences:
+  - <trade-offs, follow-up work>
+- Alternatives considered:
+  - <optional>
+
+---
+
+## Entries
+### ADR-20260211-01: Project guardrails and documentation system
+- Date: 2026-02-11
+- Ticket: T0001
+- Commit: <fill in after commit>
+- Decision:
+  - Establish ticket-driven development with Codex, provenance-first and offline core rules.
+- Rationale:
+  - Prevent drift and ensure defensibility and maintainability from day one.
+- Consequences:
+  - All future work must follow `Docs/*` standards and use `TICKET.md` as scope authority.
+- Alternatives considered:
+  - Ad-hoc development without formal tickets (rejected).

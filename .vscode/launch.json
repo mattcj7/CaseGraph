@@ -1,0 +1,14 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Launch (placeholder - add when app exists)",
+      "type": "coreclr",
+      "request": "launch",
+      "program": "${workspaceFolder}/src/REPLACE_ME/bin/Debug/net8.0/REPLACE_ME.exe",
+      "cwd": "${workspaceFolder}",
+      "console": "internalConsole",
+      "stopAtEntry": false
+    }
+  ]
+}

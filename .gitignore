@@ -1,0 +1,38 @@
+# Build outputs
+bin/
+obj/
+artifacts/
+out/
+
+# User-specific files
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+
+# VS Code
+.vscode/*.log
+.vscode/ipch/
+.vscode/.ropeproject/
+
+# Rider / JetBrains
+.idea/
+*.sln.iml
+
+# OS
+.DS_Store
+Thumbs.db
+
+# NuGet
+**/packages/
+*.nupkg
+
+# Logs
+*.log
+
+# Test results
+TestResults/
+
+# Local secrets/config
+appsettings.Development.json
+*.local.json
