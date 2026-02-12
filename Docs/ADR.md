@@ -49,3 +49,16 @@ Append-only log of key decisions and changes. Add an entry when we:
   - Future tickets should use the shared theme dictionaries and MVVM+DI patterns introduced in T0002.
 - Alternatives considered:
   - Plain WPF styling with ad-hoc service wiring (rejected).
+
+### ADR-20260212-03: Case workspace root and immutable evidence vault layout
+- Date: 2026-02-12
+- Ticket: T0003
+- Commit: <fill in after commit>
+- Decision:
+  - Store workspace data under `%LOCALAPPDATA%\CaseGraphOffline\cases\<CaseId>\` with `case.json` and `vault\<EvidenceItemId>\{original\...,manifest.json}`.
+- Rationale:
+  - Provides an offline, deterministic, and defensible file layout where imported evidence is copied once and treated as immutable.
+- Consequences:
+  - Import and verification workflows are now path-driven and reconstructable from `case.json` and per-item manifests.
+- Alternatives considered:
+  - Mutable shared file references without vault copy (rejected).

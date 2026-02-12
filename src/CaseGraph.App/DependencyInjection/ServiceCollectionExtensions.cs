@@ -12,7 +12,10 @@ public static class ServiceCollectionExtensions
     {
         services.AddSingleton<INavigationService, NavigationService>();
         services.AddSingleton<IThemeService, ThemeService>();
+        services.AddSingleton<IUserInteractionService, UserInteractionService>();
         services.AddSingleton<IClock, SystemClock>();
+        services.AddSingleton<ICaseWorkspaceService, CaseWorkspaceService>();
+        services.AddSingleton<IEvidenceVaultService, EvidenceVaultService>();
 
         services.AddSingleton<MainWindowViewModel>();
         services.AddSingleton<MainWindow>();

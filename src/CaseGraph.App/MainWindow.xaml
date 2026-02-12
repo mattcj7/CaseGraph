@@ -11,6 +11,7 @@
                  MinWidth="1100"
                  MinHeight="700"
                  WindowStartupLocation="CenterScreen"
+                 Loaded="OnLoaded"
                  ui:Design.Background="{DynamicResource ApplicationBackgroundBrush}"
                  ui:Design.Foreground="{DynamicResource TextFillColorPrimaryBrush}">
     <Grid Background="{DynamicResource ShellBackgroundBrush}">
@@ -23,7 +24,7 @@
             <DockPanel LastChildFill="False">
                 <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
                     <TextBlock Text="CaseGraph Offline" Style="{StaticResource AppTitleTextStyle}" />
-                    <TextBlock Text="Professional shell baseline" Style="{StaticResource AppSubtitleTextStyle}" />
+                    <TextBlock Text="Case workspace + evidence vault baseline" Style="{StaticResource AppSubtitleTextStyle}" />
                 </StackPanel>
 
                 <StackPanel Orientation="Horizontal" DockPanel.Dock="Right" VerticalAlignment="Center">
@@ -33,11 +34,17 @@
                              Style="{StaticResource TopBarTextBoxStyle}"
                              ToolTip="Global search placeholder" />
 
-                    <ComboBox Width="190"
+                    <ComboBox Width="240"
                               Margin="{StaticResource SpaceRight12}"
-                              ItemsSource="{Binding CaseOptions}"
+                              ItemsSource="{Binding AvailableCases}"
                               SelectedItem="{Binding SelectedCase, Mode=TwoWay}"
+                              DisplayMemberPath="Name"
                               Style="{StaticResource TopBarComboBoxStyle}" />
+
+                    <Button Content="Open Case"
+                            Margin="{StaticResource SpaceRight12}"
+                            Command="{Binding OpenSelectedCaseCommand}"
+                            Style="{StaticResource TopBarButtonStyle}" />
 
                     <Button Content="Toggle Theme"
                             Margin="{StaticResource SpaceRight12}"
@@ -89,25 +96,93 @@
             </Border>
 
             <Border Grid.Column="2" Style="{StaticResource ContentPanelBorderStyle}">
-                <Frame Content="{Binding CurrentPage}" NavigationUIVisibility="Hidden" />
+                <ContentControl Content="{Binding CurrentView}" />
             </Border>
 
             <Border Grid.Column="4"
                     Style="{StaticResource EvidenceDrawerBorderStyle}"
                     Visibility="{Binding IsEvidenceDrawerOpen, Converter={StaticResource BoolToVisibilityConverter}}">
-                <StackPanel>
-                    <TextBlock Text="Evidence Drawer" Style="{StaticResource SectionTitleTextStyle}" />
-                    <TextBlock Text="Placeholder region for source details and citations."
-                               Margin="{StaticResource SpaceTop12}"
-                               Style="{StaticResource BodyTextStyle}"
-                               TextWrapping="Wrap" />
-                    <TextBlock Text="Future tickets will connect this panel to selected evidence, people, and timeline items."
-                               Margin="{StaticResource SpaceTop12}"
-                               Style="{StaticResource SecondaryBodyTextStyle}"
-                               TextWrapping="Wrap" />
-                </StackPanel>
+                <ScrollViewer VerticalScrollBarVisibility="Auto">
+                    <StackPanel>
+                        <TextBlock Text="Evidence Drawer" Style="{StaticResource SectionTitleTextStyle}" />
+
+                        <TextBlock Margin="{StaticResource SpaceTop12}"
+                                   Style="{StaticResource BodyTextStyle}"
+                                   Text="{Binding SelectedEvidenceItem.DisplayName, TargetNullValue=No evidence selected}" />
+
+                        <TextBlock Margin="{StaticResource SpaceTop12}"
+                                   Style="{StaticResource SecondaryBodyTextStyle}"
+                                   Text="EvidenceItemId" />
+                        <TextBlock Style="{StaticResource BodyTextStyle}"
+                                   Text="{Binding SelectedEvidenceItem.EvidenceItemId, TargetNullValue=(none)}"
+                                   TextWrapping="Wrap" />
+
+                        <TextBlock Margin="{StaticResource SpaceTop12}"
+                                   Style="{StaticResource SecondaryBodyTextStyle}"
+                                   Text="SourceType" />
+                        <TextBlock Style="{StaticResource BodyTextStyle}"
+                                   Text="{Binding SelectedEvidenceItem.SourceType, TargetNullValue=(none)}" />
+
+                        <TextBlock Margin="{StaticResource SpaceTop12}"
+                                   Style="{StaticResource SecondaryBodyTextStyle}"
+                                   Text="AddedAtUtc" />
+                        <TextBlock Style="{StaticResource BodyTextStyle}"
+                                   Text="{Binding SelectedEvidenceItem.AddedAtUtc, StringFormat={}{0:u}, TargetNullValue=(none)}" />
+
+                        <TextBlock Margin="{StaticResource SpaceTop12}"
+                                   Style="{StaticResource SecondaryBodyTextStyle}"
+                                   Text="SizeBytes" />
+                        <TextBlock Style="{StaticResource BodyTextStyle}"
+                                   Text="{Binding SelectedEvidenceItem.SizeBytes, TargetNullValue=(none)}" />
+
+                        <TextBlock Margin="{StaticResource SpaceTop12}"
+                                   Style="{StaticResource SecondaryBodyTextStyle}"
+                                   Text="Sha256Hex" />
+                        <TextBlock Style="{StaticResource BodyTextStyle}"
+                                   Text="{Binding SelectedEvidenceItem.Sha256Hex, TargetNullValue=(none)}"
+                                   TextWrapping="Wrap" />
+
+                        <TextBlock Margin="{StaticResource SpaceTop12}"
+                                   Style="{StaticResource SecondaryBodyTextStyle}"
+                                   Text="StoredRelativePath" />
+                        <TextBlock Style="{StaticResource BodyTextStyle}"
+                                   Text="{Binding SelectedEvidenceItem.StoredRelativePath, TargetNullValue=(none)}"
+                                   TextWrapping="Wrap" />
+
+                        <TextBlock Margin="{StaticResource SpaceTop12}"
+                                   Style="{StaticResource SecondaryBodyTextStyle}"
+                                   Text="ManifestRelativePath" />
+                        <TextBlock Style="{StaticResource BodyTextStyle}"
+                                   Text="{Binding SelectedEvidenceItem.ManifestRelativePath, TargetNullValue=(none)}"
+                                   TextWrapping="Wrap" />
+
+                        <TextBlock Margin="{StaticResource SpaceTop12}"
+                                   Style="{StaticResource SecondaryBodyTextStyle}"
+                                   Text="OriginalPath" />
+                        <TextBlock Style="{StaticResource BodyTextStyle}"
+                                   Text="{Binding SelectedEvidenceItem.OriginalPath, TargetNullValue=(none)}"
+                                   TextWrapping="Wrap" />
+
+                        <Button Margin="{StaticResource SpaceTop16}"
+                                Content="Copy Stored Path"
+                                IsEnabled="{Binding HasSelectedEvidenceItem}"
+                                Command="{Binding CopyStoredPathCommand}"
+                                Style="{StaticResource TopBarButtonStyle}" />
+
+                        <Button Margin="{StaticResource SpaceTop12}"
+                                Content="Copy SHA-256"
+                                IsEnabled="{Binding HasSelectedEvidenceItem}"
+                                Command="{Binding CopySha256Command}"
+                                Style="{StaticResource TopBarButtonStyle}" />
+
+                        <Button Margin="{StaticResource SpaceTop12}"
+                                Content="Verify Integrity"
+                                IsEnabled="{Binding HasSelectedEvidenceItem}"
+                                Command="{Binding VerifySelectedEvidenceCommand}"
+                                Style="{StaticResource TopBarButtonStyle}" />
+                    </StackPanel>
+                </ScrollViewer>
             </Border>
         </Grid>
     </Grid>
 </ui:FluentWindow>
-

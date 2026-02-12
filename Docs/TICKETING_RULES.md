@@ -4,8 +4,8 @@
 All work is ticket-driven. A ticket is the unit of scope, review, and delivery.
 
 ## Workflow
-1. Create/update `TICKET.md` (authoritative scope and acceptance criteria).
-2. Run Codex against `TICKET.md` following `Docs/CODEX_GUIDE.md`.
+1. Create/update the active ticket inside `Docs/TICKETS.md` (authoritative scope and acceptance criteria).
+2. Run Codex against the active ticket spec in `Docs/TICKETS.md` following `Docs/CODEX_GUIDE.md`.
 3. Review changes locally:
    - build
    - tests
@@ -33,3 +33,12 @@ Use `Docs/TICKET_TEMPLATE.md` verbatim.
 - Parser tolerance: unknown fields skipped with structured logs; one bad artifact does not crash whole ingest.
 - Tests added/updated for critical behavior and invariants.
 - Ticket includes clear manual verification steps.
+
+### Ticket index source of truth
+- Canonical ticket index: `Docs/TICKETS.md`
+- Tickets are defined and executed from: `Docs/TICKETS.md` only
+- Every ticket pass must update both sections in `Docs/TICKETS.md`:
+  - `Upcoming Tickets` (current and deduplicated)
+  - `Completed Tickets` (append-only)
+- No root `TICKET.md`
+- No root `TICKETS.md`

@@ -1,7 +1,7 @@
-<Page x:Class="CaseGraph.App.Views.Pages.PlaceholderPage"
-      xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
-      xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-      Background="{DynamicResource ContentBackgroundBrush}">
+<UserControl x:Class="CaseGraph.App.Views.Pages.PlaceholderView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             Background="{DynamicResource ContentBackgroundBrush}">
     <Grid Margin="{StaticResource Space24}">
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto" />
@@ -20,9 +20,9 @@
         <Border Grid.Row="2"
                 Margin="{StaticResource SpaceTop16}"
                 Style="{StaticResource PlaceholderHintBorderStyle}">
-            <TextBlock Text="Placeholder page for T0002. Functional workflows are implemented in subsequent tickets."
+            <TextBlock Text="Placeholder view for T0003. Functional workflows are implemented in subsequent tickets."
                        Style="{StaticResource SecondaryBodyTextStyle}"
                        TextWrapping="Wrap" />
         </Border>
     </Grid>
-</Page>
+</UserControl>

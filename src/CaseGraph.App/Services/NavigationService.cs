@@ -3,7 +3,7 @@ using CaseGraph.App.Views.Pages;
 using System;
 using System.Collections.Generic;
 using System.Linq;
-using System.Windows.Controls;
+using System.Windows;
 
 namespace CaseGraph.App.Services;
 
@@ -31,13 +31,18 @@ public sealed class NavigationService : INavigationService
             .ToList();
     }
 
-    public Page CreatePage(NavigationPage page)
+    public FrameworkElement CreateView(NavigationPage page)
     {
         if (!Pages.TryGetValue(page, out var content))
         {
             throw new ArgumentOutOfRangeException(nameof(page), page, "Unknown navigation page requested.");
         }
 
-        return new PlaceholderPage(content.Title, content.Description);
+        if (page == NavigationPage.Import)
+        {
+            return new ImportView();
+        }
+
+        return new PlaceholderView(content.Title, content.Description);
     }
 }

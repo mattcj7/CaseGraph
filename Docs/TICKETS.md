@@ -3,14 +3,21 @@
 This file tracks planned, active, and completed tickets.
 
 ## How to use
-- The current work item is defined in the repo root `TICKET.md`.
-- When a ticket is completed, append it to the **Completed Tickets** section (append-only).
+- The single source of truth for ticket execution is this file.
+- Codex executes only the ticket listed in **Active Ticket** with scope defined in **Active Ticket Spec**.
+- Every ticket pass must update:
+  - **Upcoming Tickets** (current and deduplicated)
+  - **Completed Tickets** (append-only)
 
 ## Active Ticket
-- T0002 - WPF Solution Skeleton + Professional App Shell + Theme Baseline
+- (none)
+
+## Active Ticket Spec
+```md
+(none)
+```
 
 ## Upcoming Tickets (Planned)
-- T0003 - Evidence Vault + hashing + EvidenceItem schema
 - T0004 - DB + migrations + AuditLog
 - T0005 - Ingest pipeline skeleton (queue, progress, cancellation)
 - T0006 - UFDR importer (messages first)
@@ -26,4 +33,5 @@ This file tracks planned, active, and completed tickets.
 ---
 
 ## Completed Tickets (append-only)
-- (none yet)
+- 2026-02-12 - T0002 - Established WPF solution skeleton, app shell, MVVM, and DI baseline.
+- 2026-02-12 - T0003 - Implemented case workspace, immutable evidence vault import, manifests, and integrity verification UI/tests.
