@@ -324,10 +324,15 @@ public sealed class EvidenceVaultServiceTests
                 Directory.CreateDirectory(pathProvider.WorkspaceRoot);
                 options.UseSqlite($"Data Source={pathProvider.WorkspaceDbPath}");
             });
-            services.AddSingleton<IWorkspaceDatabaseInitializer, WorkspaceDatabaseInitializer>();
+            services.AddSingleton<WorkspaceDbRebuilder>();
+            services.AddSingleton<WorkspaceDbInitializer>();
+            services.AddSingleton<IWorkspaceDbInitializer>(provider => provider.GetRequiredService<WorkspaceDbInitializer>());
+            services.AddSingleton<IWorkspaceDatabaseInitializer>(provider => provider.GetRequiredService<WorkspaceDbInitializer>());
             services.AddSingleton<IAuditLogService, AuditLogService>();
             services.AddSingleton<ICaseWorkspaceService, CaseWorkspaceService>();
             services.AddSingleton<IEvidenceVaultService, EvidenceVaultService>();
+            services.AddSingleton<IMessageSearchService, MessageSearchService>();
+            services.AddSingleton<IMessageIngestService, MessageIngestService>();
             services.AddSingleton<JobQueueService>();
             services.AddSingleton<IJobQueueService>(
                 provider => provider.GetRequiredService<JobQueueService>()

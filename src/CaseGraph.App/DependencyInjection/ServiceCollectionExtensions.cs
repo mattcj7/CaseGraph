@@ -26,10 +26,15 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<IThemeService, ThemeService>();
         services.AddSingleton<IUserInteractionService, UserInteractionService>();
         services.AddSingleton<IClock, SystemClock>();
-        services.AddSingleton<IWorkspaceDatabaseInitializer, WorkspaceDatabaseInitializer>();
+        services.AddSingleton<WorkspaceDbRebuilder>();
+        services.AddSingleton<WorkspaceDbInitializer>();
+        services.AddSingleton<IWorkspaceDbInitializer>(provider => provider.GetRequiredService<WorkspaceDbInitializer>());
+        services.AddSingleton<IWorkspaceDatabaseInitializer>(provider => provider.GetRequiredService<WorkspaceDbInitializer>());
         services.AddSingleton<IAuditLogService, AuditLogService>();
         services.AddSingleton<ICaseWorkspaceService, CaseWorkspaceService>();
         services.AddSingleton<IEvidenceVaultService, EvidenceVaultService>();
+        services.AddSingleton<IMessageSearchService, MessageSearchService>();
+        services.AddSingleton<IMessageIngestService, MessageIngestService>();
         services.AddSingleton<JobQueueService>();
         services.AddSingleton<IJobQueueService>(provider => provider.GetRequiredService<JobQueueService>());
         services.AddHostedService<JobRunnerHostedService>();

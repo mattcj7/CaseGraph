@@ -17,11 +17,13 @@ public partial class MainWindowViewModel : ObservableObject
 {
     private const string EvidenceImportJobType = "EvidenceImport";
     private const string EvidenceVerifyJobType = "EvidenceVerify";
+    private const string MessagesIngestJobType = "MessagesIngest";
 
     private readonly INavigationService _navigationService;
     private readonly IThemeService _themeService;
     private readonly ICaseWorkspaceService _caseWorkspaceService;
     private readonly IEvidenceVaultService _evidenceVaultService;
+    private readonly IMessageSearchService _messageSearchService;
     private readonly IAuditLogService _auditLogService;
     private readonly IJobQueueService _jobQueueService;
     private readonly IWorkspacePathProvider _workspacePathProvider;
@@ -42,6 +44,19 @@ public partial class MainWindowViewModel : ObservableObject
     public ObservableCollection<AuditEvent> RecentAuditEvents { get; } = new();
 
     public ObservableCollection<JobInfo> RecentJobs { get; } = new();
+
+    public ObservableCollection<MessageSearchHit> MessageSearchResults { get; } = new();
+
+    public IReadOnlyList<string> MessageSearchPlatformFilters { get; } =
+    [
+        "All",
+        "SMS",
+        "iMessage",
+        "WhatsApp",
+        "Signal",
+        "Instagram",
+        "OTHER"
+    ];
 
     [ObservableProperty]
     private NavigationItem? selectedNavigationItem;
@@ -82,6 +97,24 @@ public partial class MainWindowViewModel : ObservableObject
     [ObservableProperty]
     private string selectedEvidenceVerifyStatus = "No verification job yet.";
 
+    [ObservableProperty]
+    private string selectedEvidenceMessagesStatus = "No messages parse job yet.";
+
+    [ObservableProperty]
+    private string messageSearchQuery = string.Empty;
+
+    [ObservableProperty]
+    private string selectedMessageSearchPlatform = "All";
+
+    [ObservableProperty]
+    private MessageSearchHit? selectedMessageSearchResult;
+
+    [ObservableProperty]
+    private string messageSearchStatusText = "Enter a query to search messages.";
+
+    [ObservableProperty]
+    private bool isMessageSearchInProgress;
+
     public bool HasSelectedEvidenceItem => SelectedEvidenceItem is not null;
 
     public string CurrentCaseSummary => CurrentCaseInfo is null
@@ -106,9 +139,17 @@ public partial class MainWindowViewModel : ObservableObject
 
     public IAsyncRelayCommand VerifySelectedEvidenceCommand { get; }
 
+    public IAsyncRelayCommand ParseMessagesFromEvidenceCommand { get; }
+
+    public IAsyncRelayCommand SearchMessagesCommand { get; }
+
     public IRelayCommand CopyStoredPathCommand { get; }
 
     public IRelayCommand CopySha256Command { get; }
+
+    public IRelayCommand CopyMessageCitationCommand { get; }
+
+    public IRelayCommand CopyMessageStoredPathCommand { get; }
 
     public IAsyncRelayCommand CancelOperationCommand { get; }
 
@@ -117,6 +158,7 @@ public partial class MainWindowViewModel : ObservableObject
         IThemeService themeService,
         ICaseWorkspaceService caseWorkspaceService,
         IEvidenceVaultService evidenceVaultService,
+        IMessageSearchService messageSearchService,
         IAuditLogService auditLogService,
         IJobQueueService jobQueueService,
         IWorkspacePathProvider workspacePathProvider,
@@ -127,6 +169,7 @@ public partial class MainWindowViewModel : ObservableObject
         _themeService = themeService;
         _caseWorkspaceService = caseWorkspaceService;
         _evidenceVaultService = evidenceVaultService;
+        _messageSearchService = messageSearchService;
         _auditLogService = auditLogService;
         _jobQueueService = jobQueueService;
         _workspacePathProvider = workspacePathProvider;
@@ -149,8 +192,12 @@ public partial class MainWindowViewModel : ObservableObject
         RefreshCasesCommand = new AsyncRelayCommand(() => RefreshCasesAsync(CancellationToken.None));
         ImportFilesCommand = new AsyncRelayCommand(ImportFilesAsync);
         VerifySelectedEvidenceCommand = new AsyncRelayCommand(VerifySelectedEvidenceAsync);
+        ParseMessagesFromEvidenceCommand = new AsyncRelayCommand(ParseMessagesFromSelectedEvidenceAsync);
+        SearchMessagesCommand = new AsyncRelayCommand(SearchMessagesAsync);
         CopyStoredPathCommand = new RelayCommand(CopyStoredPath);
         CopySha256Command = new RelayCommand(CopySha256);
+        CopyMessageCitationCommand = new RelayCommand(CopyMessageCitation);
+        CopyMessageStoredPathCommand = new RelayCommand(CopyMessageStoredPath);
         CancelOperationCommand = new AsyncRelayCommand(CancelCurrentOperationAsync);
 
         _jobUpdateSubscription = _jobQueueService.JobUpdates.Subscribe(new JobObserver(OnJobUpdated));
@@ -184,6 +231,7 @@ public partial class MainWindowViewModel : ObservableObject
         OnPropertyChanged(nameof(HasSelectedEvidenceItem));
         OnPropertyChanged(nameof(SelectedStoredAbsolutePath));
         UpdateSelectedEvidenceVerifyStatus();
+        UpdateSelectedEvidenceMessagesStatus();
 
         if (value is not null)
         {
@@ -196,6 +244,7 @@ public partial class MainWindowViewModel : ObservableObject
         OnPropertyChanged(nameof(CurrentCaseSummary));
         OnPropertyChanged(nameof(SelectedStoredAbsolutePath));
         UpdateSelectedEvidenceVerifyStatus();
+        UpdateSelectedEvidenceMessagesStatus();
     }
 
     partial void OnIsDarkThemeChanged(bool value)
@@ -349,6 +398,43 @@ public partial class MainWindowViewModel : ObservableObject
         }
     }
 
+    private async Task ParseMessagesFromSelectedEvidenceAsync()
+    {
+        if (CurrentCaseInfo is null || SelectedEvidenceItem is null)
+        {
+            OperationText = "Select an evidence item before parsing messages.";
+            return;
+        }
+
+        try
+        {
+            var payload = JsonSerializer.Serialize(new MessagesIngestPayload
+            {
+                SchemaVersion = 1,
+                CaseId = CurrentCaseInfo.CaseId,
+                EvidenceItemId = SelectedEvidenceItem.EvidenceItemId
+            });
+
+            var jobId = await _jobQueueService.EnqueueAsync(
+                new JobEnqueueRequest(
+                    MessagesIngestJobType,
+                    CurrentCaseInfo.CaseId,
+                    SelectedEvidenceItem.EvidenceItemId,
+                    payload
+                ),
+                CancellationToken.None
+            );
+
+            OperationText = $"Queued messages ingest job {jobId:D}.";
+            OperationProgress = 0;
+            await RefreshRecentJobsAsync(CancellationToken.None);
+        }
+        catch (OperationCanceledException)
+        {
+            OperationText = "Messages ingest canceled.";
+        }
+    }
+
     private async Task RefreshRecentActivityAsync(CancellationToken ct)
     {
         if (CurrentCaseInfo is null)
@@ -387,6 +473,102 @@ public partial class MainWindowViewModel : ObservableObject
         OperationText = "SHA-256 copied to clipboard.";
     }
 
+    private async Task SearchMessagesAsync()
+    {
+        if (CurrentCaseInfo is null)
+        {
+            MessageSearchStatusText = "Open a case before searching messages.";
+            MessageSearchResults.Clear();
+            SelectedMessageSearchResult = null;
+            return;
+        }
+
+        var query = MessageSearchQuery?.Trim() ?? string.Empty;
+        if (query.Length == 0)
+        {
+            MessageSearchStatusText = "Enter a query to search messages.";
+            MessageSearchResults.Clear();
+            SelectedMessageSearchResult = null;
+            return;
+        }
+
+        IsMessageSearchInProgress = true;
+        MessageSearchStatusText = "Searching messages...";
+
+        try
+        {
+            var hits = await _messageSearchService.SearchAsync(
+                CurrentCaseInfo.CaseId,
+                query,
+                take: 250,
+                skip: 0,
+                CancellationToken.None
+            );
+
+            var filtered = hits.AsEnumerable();
+            if (!string.Equals(SelectedMessageSearchPlatform, "All", StringComparison.OrdinalIgnoreCase))
+            {
+                filtered = filtered.Where(hit =>
+                    string.Equals(hit.Platform, SelectedMessageSearchPlatform, StringComparison.OrdinalIgnoreCase)
+                );
+            }
+
+            var ordered = filtered
+                .OrderByDescending(hit => hit.TimestampUtc ?? DateTimeOffset.MinValue)
+                .ToList();
+
+            MessageSearchResults.Clear();
+            foreach (var hit in ordered)
+            {
+                MessageSearchResults.Add(hit);
+            }
+
+            SelectedMessageSearchResult = MessageSearchResults.FirstOrDefault();
+            MessageSearchStatusText = ordered.Count == 0
+                ? "No message hits."
+                : $"Found {ordered.Count} message hit(s).";
+        }
+        finally
+        {
+            IsMessageSearchInProgress = false;
+        }
+    }
+
+    private void CopyMessageCitation()
+    {
+        if (SelectedMessageSearchResult is null)
+        {
+            return;
+        }
+
+        var citation = $"{SelectedMessageSearchResult.EvidenceItemId:D} | {SelectedMessageSearchResult.SourceLocator} | {SelectedMessageSearchResult.MessageEventId:D}";
+        _userInteractionService.CopyToClipboard(citation);
+        MessageSearchStatusText = "Citation copied.";
+    }
+
+    private void CopyMessageStoredPath()
+    {
+        if (SelectedMessageSearchResult is null || CurrentCaseInfo is null)
+        {
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(SelectedMessageSearchResult.StoredRelativePath))
+        {
+            MessageSearchStatusText = "Stored path not available.";
+            return;
+        }
+
+        var absolutePath = Path.Combine(
+            _workspacePathProvider.CasesRoot,
+            CurrentCaseInfo.CaseId.ToString("D"),
+            SelectedMessageSearchResult.StoredRelativePath.Replace('/', Path.DirectorySeparatorChar)
+        );
+
+        _userInteractionService.CopyToClipboard(absolutePath);
+        MessageSearchStatusText = "Stored path copied.";
+    }
+
     private async Task CancelCurrentOperationAsync()
     {
         if (_activeJobId.HasValue)
@@ -411,6 +593,9 @@ public partial class MainWindowViewModel : ObservableObject
         await RefreshCasesAsync(ct);
         await RefreshRecentActivityAsync(ct);
         await RefreshRecentJobsAsync(ct);
+        MessageSearchResults.Clear();
+        SelectedMessageSearchResult = null;
+        MessageSearchStatusText = "Enter a query to search messages.";
         SelectedCase = AvailableCases.FirstOrDefault(c => c.CaseId == openedCase.CaseId) ?? openedCase;
     }
 
@@ -455,6 +640,7 @@ public partial class MainWindowViewModel : ObservableObject
         var jobs = await _jobQueueService.GetRecentAsync(CurrentCaseInfo.CaseId, 50, ct);
         SetRecentJobs(jobs.OrderByDescending(job => job.CreatedAtUtc));
         UpdateSelectedEvidenceVerifyStatus();
+        UpdateSelectedEvidenceMessagesStatus();
         SyncStatusBarFromJobs();
     }
 
@@ -513,6 +699,7 @@ public partial class MainWindowViewModel : ObservableObject
 
         SyncStatusBarFromJobs(job);
         UpdateSelectedEvidenceVerifyStatus();
+        UpdateSelectedEvidenceMessagesStatus();
 
         if (IsTerminalStatus(job.Status))
         {
@@ -599,6 +786,29 @@ public partial class MainWindowViewModel : ObservableObject
         }
 
         SelectedEvidenceVerifyStatus = $"{latestVerify.Status}: {latestVerify.StatusMessage}";
+    }
+
+    private void UpdateSelectedEvidenceMessagesStatus()
+    {
+        if (SelectedEvidenceItem is null)
+        {
+            SelectedEvidenceMessagesStatus = "No evidence selected.";
+            return;
+        }
+
+        var latestParse = RecentJobs
+            .Where(job => job.JobType == MessagesIngestJobType)
+            .Where(job => job.EvidenceItemId == SelectedEvidenceItem.EvidenceItemId)
+            .OrderByDescending(job => job.CreatedAtUtc)
+            .FirstOrDefault();
+
+        if (latestParse is null)
+        {
+            SelectedEvidenceMessagesStatus = "No messages parse job yet.";
+            return;
+        }
+
+        SelectedEvidenceMessagesStatus = $"{latestParse.Status}: {latestParse.StatusMessage}";
     }
 
     private static bool IsTerminalStatus(JobStatus status)
@@ -694,6 +904,15 @@ public partial class MainWindowViewModel : ObservableObject
     }
 
     private sealed class EvidenceVerifyPayload
+    {
+        public int SchemaVersion { get; set; }
+
+        public Guid CaseId { get; set; }
+
+        public Guid EvidenceItemId { get; set; }
+    }
+
+    private sealed class MessagesIngestPayload
     {
         public int SchemaVersion { get; set; }
 

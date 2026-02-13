@@ -13,6 +13,7 @@ public sealed class JobQueueService : IJobQueueService
 {
     public const string EvidenceImportJobType = "EvidenceImport";
     public const string EvidenceVerifyJobType = "EvidenceVerify";
+    public const string MessagesIngestJobType = "MessagesIngest";
     public const string TestLongRunningJobType = "TestLongRunningDelay";
 
     private static readonly JsonSerializerOptions PayloadSerializerOptions = new()
@@ -25,6 +26,7 @@ public sealed class JobQueueService : IJobQueueService
     private readonly IClock _clock;
     private readonly ICaseWorkspaceService _caseWorkspaceService;
     private readonly IEvidenceVaultService _evidenceVaultService;
+    private readonly IMessageIngestService _messageIngestService;
     private readonly IAuditLogService _auditLogService;
     private readonly Channel<Guid> _dispatchChannel;
     private readonly ConcurrentDictionary<Guid, CancellationTokenSource> _runningJobs = new();
@@ -39,6 +41,7 @@ public sealed class JobQueueService : IJobQueueService
         IClock clock,
         ICaseWorkspaceService caseWorkspaceService,
         IEvidenceVaultService evidenceVaultService,
+        IMessageIngestService messageIngestService,
         IAuditLogService auditLogService
     )
     {
@@ -47,6 +50,7 @@ public sealed class JobQueueService : IJobQueueService
         _clock = clock;
         _caseWorkspaceService = caseWorkspaceService;
         _evidenceVaultService = evidenceVaultService;
+        _messageIngestService = messageIngestService;
         _auditLogService = auditLogService;
         _dispatchChannel = Channel.CreateUnbounded<Guid>(
             new UnboundedChannelOptions
@@ -280,6 +284,19 @@ public sealed class JobQueueService : IJobQueueService
                         CancellationToken.None
                     );
                     break;
+                case MessagesIngestJobType:
+                {
+                    var ingestedCount = await ExecuteMessagesIngestAsync(jobToExecute, linkedCts.Token);
+                    await CompleteSucceededAsync(
+                        jobId,
+                        ingestedCount == 0
+                            ? "Messages ingest completed. No messages found."
+                            : $"Messages ingest completed. Extracted {ingestedCount} message(s).",
+                        CancellationToken.None
+                    );
+                    await WriteMessagesIngestSummaryAsync(jobToExecute, ingestedCount, linkedCts.Token);
+                    break;
+                }
                 case TestLongRunningJobType:
                     await ExecuteTestLongRunningAsync(jobToExecute, linkedCts.Token);
                     await CompleteSucceededAsync(
@@ -401,6 +418,75 @@ public sealed class JobQueueService : IJobQueueService
         {
             throw new InvalidOperationException(message);
         }
+    }
+
+    private async Task<int> ExecuteMessagesIngestAsync(JobRecord jobRecord, CancellationToken ct)
+    {
+        var payload = JsonSerializer.Deserialize<MessagesIngestPayload>(
+            jobRecord.JsonPayload,
+            PayloadSerializerOptions
+        );
+
+        if (
+            payload is null
+            || payload.SchemaVersion != 1
+            || payload.CaseId == Guid.Empty
+            || payload.EvidenceItemId == Guid.Empty
+        )
+        {
+            throw new InvalidOperationException("Invalid MessagesIngest payload.");
+        }
+
+        await _databaseInitializer.EnsureInitializedAsync(ct);
+        await using var db = await _dbContextFactory.CreateDbContextAsync(ct);
+        var evidence = await db.EvidenceItems
+            .AsNoTracking()
+            .FirstOrDefaultAsync(
+                item => item.EvidenceItemId == payload.EvidenceItemId && item.CaseId == payload.CaseId,
+                ct
+            );
+
+        if (evidence is null)
+        {
+            throw new FileNotFoundException(
+                $"Evidence item was not found for {payload.EvidenceItemId:D}."
+            );
+        }
+
+        await ReportProgressAsync(
+            jobRecord.JobId,
+            0.05,
+            $"Parsing messages from {evidence.OriginalFileName}...",
+            ct
+        );
+
+        var ingestProgress = new Progress<double>(progress =>
+        {
+            _ = SafeReportProgressAsync(
+                jobRecord.JobId,
+                Math.Clamp(progress, 0, 1),
+                $"Parsing messages from {evidence.OriginalFileName}...",
+                ct
+            );
+        });
+
+        var ingestedCount = await _messageIngestService.IngestMessagesFromEvidenceAsync(
+            payload.CaseId,
+            evidence,
+            ingestProgress,
+            ct
+        );
+
+        await ReportProgressAsync(
+            jobRecord.JobId,
+            1,
+            ingestedCount == 0
+                ? "No messages found in selected evidence."
+                : $"Extracted {ingestedCount} message(s).",
+            ct
+        );
+
+        return ingestedCount;
     }
 
     private async Task ExecuteTestLongRunningAsync(JobRecord jobRecord, CancellationToken ct)
@@ -625,9 +711,58 @@ public sealed class JobQueueService : IJobQueueService
         );
     }
 
+    private async Task WriteMessagesIngestSummaryAsync(
+        JobRecord jobRecord,
+        int ingestedCount,
+        CancellationToken ct
+    )
+    {
+        if (jobRecord.CaseId is null || jobRecord.EvidenceItemId is null)
+        {
+            return;
+        }
+
+        await _databaseInitializer.EnsureInitializedAsync(ct);
+        await using var db = await _dbContextFactory.CreateDbContextAsync(ct);
+        var byPlatform = await db.MessageEvents
+            .AsNoTracking()
+            .Where(e => e.CaseId == jobRecord.CaseId && e.EvidenceItemId == jobRecord.EvidenceItemId)
+            .GroupBy(e => e.Platform)
+            .Select(g => new
+            {
+                Platform = g.Key,
+                Count = g.Count()
+            })
+            .ToListAsync(ct);
+
+        await _auditLogService.AddAsync(
+            new AuditEvent
+            {
+                TimestampUtc = _clock.UtcNow.ToUniversalTime(),
+                Operator = Environment.UserName,
+                ActionType = "MessagesIngested",
+                CaseId = jobRecord.CaseId,
+                EvidenceItemId = jobRecord.EvidenceItemId,
+                Summary = ingestedCount == 0
+                    ? "Messages ingest completed with no parsed messages."
+                    : $"Messages ingest completed with {ingestedCount} parsed message(s).",
+                JsonPayload = JsonSerializer.Serialize(new
+                {
+                    jobRecord.JobId,
+                    TotalMessages = ingestedCount,
+                    ByPlatform = byPlatform.ToDictionary(item => item.Platform, item => item.Count)
+                })
+            },
+            ct
+        );
+    }
+
     private static bool IsSupportedJobType(string jobType)
     {
-        return jobType is EvidenceImportJobType or EvidenceVerifyJobType or TestLongRunningJobType;
+        return jobType is EvidenceImportJobType
+            or EvidenceVerifyJobType
+            or MessagesIngestJobType
+            or TestLongRunningJobType;
     }
 
     private static bool IsTerminalStatus(string status)
@@ -671,6 +806,15 @@ public sealed class JobQueueService : IJobQueueService
     }
 
     private sealed class EvidenceVerifyPayload
+    {
+        public int SchemaVersion { get; set; }
+
+        public Guid CaseId { get; set; }
+
+        public Guid EvidenceItemId { get; set; }
+    }
+
+    private sealed class MessagesIngestPayload
     {
         public int SchemaVersion { get; set; }
 

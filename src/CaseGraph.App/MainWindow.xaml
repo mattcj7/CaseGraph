@@ -181,11 +181,24 @@
                                 Command="{Binding VerifySelectedEvidenceCommand}"
                                 Style="{StaticResource TopBarButtonStyle}" />
 
+                        <Button Margin="{StaticResource SpaceTop12}"
+                                Content="Parse Messages"
+                                IsEnabled="{Binding HasSelectedEvidenceItem}"
+                                Command="{Binding ParseMessagesFromEvidenceCommand}"
+                                Style="{StaticResource TopBarButtonStyle}" />
+
                         <TextBlock Margin="{StaticResource SpaceTop12}"
                                    Style="{StaticResource SecondaryBodyTextStyle}"
                                    Text="Latest Verify Job" />
                         <TextBlock Style="{StaticResource BodyTextStyle}"
                                    Text="{Binding SelectedEvidenceVerifyStatus}"
+                                   TextWrapping="Wrap" />
+
+                        <TextBlock Margin="{StaticResource SpaceTop12}"
+                                   Style="{StaticResource SecondaryBodyTextStyle}"
+                                   Text="Latest Messages Parse Job" />
+                        <TextBlock Style="{StaticResource BodyTextStyle}"
+                                   Text="{Binding SelectedEvidenceMessagesStatus}"
                                    TextWrapping="Wrap" />
                     </StackPanel>
                 </ScrollViewer>

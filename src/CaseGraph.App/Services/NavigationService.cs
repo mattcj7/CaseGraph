@@ -14,7 +14,7 @@ public sealed class NavigationService : INavigationService
         {
             [NavigationPage.Dashboard] = ("Dashboard", "Case overview, readiness, and quick actions."),
             [NavigationPage.Import] = ("Import", "Queue-backed evidence import with progress, cancel, and activity feed."),
-            [NavigationPage.Search] = ("Search", "Unified evidence search placeholder with future filter support."),
+            [NavigationPage.Search] = ("Search", "FTS-backed message search with provenance and citation copy."),
             [NavigationPage.Timeline] = ("Timeline", "Chronological event analysis placeholder view."),
             [NavigationPage.PeopleTargets] = ("People / Targets", "People and target profile placeholder workspace."),
             [NavigationPage.Locations] = ("Locations", "Geospatial analysis placeholder with map and proximity tools."),
@@ -41,6 +41,11 @@ public sealed class NavigationService : INavigationService
         if (page == NavigationPage.Import)
         {
             return new ImportView();
+        }
+
+        if (page == NavigationPage.Search)
+        {
+            return new SearchView();
         }
 
         if (page == NavigationPage.ReviewQueue)
