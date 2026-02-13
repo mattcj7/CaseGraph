@@ -66,7 +66,7 @@ Append-only log of key decisions and changes. Add an entry when we:
 ### ADR-20260213-04: SQLite workspace index with EF Core and path provider abstraction
 - Date: 2026-02-13
 - Ticket: T0004
-- Commit: <fill in after commit>
+- Commit: <700ff9b>
 - Decision:
   - Use `workspace.db` (SQLite via EF Core) as the persistent index for cases, evidence metadata, and append-only audit events.
   - Introduce `IWorkspacePathProvider` to centralize workspace path resolution and enable temp-root injection in tests.
