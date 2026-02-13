@@ -1,0 +1,97 @@
+<UserControl x:Class="CaseGraph.App.Views.Pages.ReviewQueueView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             Background="{DynamicResource ContentBackgroundBrush}">
+    <Grid Margin="{StaticResource Space16}">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+        </Grid.RowDefinitions>
+
+        <TextBlock Grid.Row="0" Text="Job History" Style="{StaticResource PageTitleTextStyle}" />
+
+        <Grid Grid.Row="1" Margin="{StaticResource SpaceTop12}">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="2*" />
+                <ColumnDefinition Width="16" />
+                <ColumnDefinition Width="*" />
+            </Grid.ColumnDefinitions>
+
+            <DataGrid Grid.Column="0"
+                      ItemsSource="{Binding RecentJobs}"
+                      SelectedItem="{Binding SelectedJobHistoryItem, Mode=TwoWay}"
+                      AutoGenerateColumns="False"
+                      CanUserAddRows="False"
+                      CanUserDeleteRows="False"
+                      IsReadOnly="True"
+                      HeadersVisibility="Column">
+                <DataGrid.Columns>
+                    <DataGridTextColumn Header="CreatedAt (UTC)" Binding="{Binding CreatedAtUtc, StringFormat={}{0:u}}" Width="1.6*" />
+                    <DataGridTextColumn Header="JobType" Binding="{Binding JobType}" Width="1.2*" />
+                    <DataGridTextColumn Header="Status" Binding="{Binding Status}" Width="*" />
+                    <DataGridTextColumn Header="Progress" Binding="{Binding Progress, StringFormat={}{0:P0}}" Width="*" />
+                    <DataGridTextColumn Header="Status Message" Binding="{Binding StatusMessage}" Width="2*" />
+                </DataGrid.Columns>
+            </DataGrid>
+
+            <Border Grid.Column="2"
+                    Style="{StaticResource PlaceholderHintBorderStyle}">
+                <ScrollViewer VerticalScrollBarVisibility="Auto">
+                    <StackPanel>
+                        <TextBlock Text="Selected Job Details" Style="{StaticResource SectionTitleTextStyle}" />
+
+                        <TextBlock Margin="{StaticResource SpaceTop12}"
+                                   Style="{StaticResource SecondaryBodyTextStyle}"
+                                   Text="JobId" />
+                        <TextBlock Style="{StaticResource BodyTextStyle}"
+                                   Text="{Binding SelectedJobHistoryItem.JobId, TargetNullValue=(none)}"
+                                   TextWrapping="Wrap" />
+
+                        <TextBlock Margin="{StaticResource SpaceTop12}"
+                                   Style="{StaticResource SecondaryBodyTextStyle}"
+                                   Text="CorrelationId" />
+                        <TextBlock Style="{StaticResource BodyTextStyle}"
+                                   Text="{Binding SelectedJobHistoryItem.CorrelationId, TargetNullValue=(none)}"
+                                   TextWrapping="Wrap" />
+
+                        <TextBlock Margin="{StaticResource SpaceTop12}"
+                                   Style="{StaticResource SecondaryBodyTextStyle}"
+                                   Text="Operator" />
+                        <TextBlock Style="{StaticResource BodyTextStyle}"
+                                   Text="{Binding SelectedJobHistoryItem.Operator, TargetNullValue=(none)}" />
+
+                        <TextBlock Margin="{StaticResource SpaceTop12}"
+                                   Style="{StaticResource SecondaryBodyTextStyle}"
+                                   Text="StartedAt (UTC)" />
+                        <TextBlock Style="{StaticResource BodyTextStyle}"
+                                   Text="{Binding SelectedJobHistoryItem.StartedAtUtc, StringFormat={}{0:u}, TargetNullValue=(none)}" />
+
+                        <TextBlock Margin="{StaticResource SpaceTop12}"
+                                   Style="{StaticResource SecondaryBodyTextStyle}"
+                                   Text="CompletedAt (UTC)" />
+                        <TextBlock Style="{StaticResource BodyTextStyle}"
+                                   Text="{Binding SelectedJobHistoryItem.CompletedAtUtc, StringFormat={}{0:u}, TargetNullValue=(none)}" />
+
+                        <TextBlock Margin="{StaticResource SpaceTop12}"
+                                   Style="{StaticResource SecondaryBodyTextStyle}"
+                                   Text="Error" />
+                        <TextBlock Style="{StaticResource BodyTextStyle}"
+                                   Text="{Binding SelectedJobHistoryItem.ErrorMessage, TargetNullValue=(none)}"
+                                   TextWrapping="Wrap" />
+
+                        <TextBlock Margin="{StaticResource SpaceTop12}"
+                                   Style="{StaticResource SecondaryBodyTextStyle}"
+                                   Text="Payload (JSON)" />
+                        <TextBox Text="{Binding SelectedJobHistoryItem.JsonPayload, TargetNullValue=(none)}"
+                                 IsReadOnly="True"
+                                 MinHeight="220"
+                                 VerticalScrollBarVisibility="Auto"
+                                 TextWrapping="Wrap"
+                                 AcceptsReturn="True"
+                                 Style="{StaticResource TopBarTextBoxStyle}" />
+                    </StackPanel>
+                </ScrollViewer>
+            </Border>
+        </Grid>
+    </Grid>
+</UserControl>

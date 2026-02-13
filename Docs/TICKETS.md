@@ -10,7 +10,8 @@ This file tracks planned, active, and completed tickets.
   - **Completed Tickets** (append-only)
 
 ## Active Ticket
-- (none)
+- ID: (none)
+- Title: (none)
 
 ## Active Ticket Spec
 ```md
@@ -18,7 +19,6 @@ This file tracks planned, active, and completed tickets.
 ```
 
 ## Upcoming Tickets (Planned)
-- T0005 - Ingest pipeline skeleton (queue, progress, cancellation)
 - T0006 - UFDR importer (messages first)
 - T0007 - Search (SQLite FTS5) + Search UI
 - T0008 - Timeline UI + provenance drilldown
@@ -35,3 +35,4 @@ This file tracks planned, active, and completed tickets.
 - 2026-02-12 - T0002 - Established WPF solution skeleton, app shell, MVVM, and DI baseline.
 - 2026-02-12 - T0003 - Implemented case workspace, immutable evidence vault import, manifests, and integrity verification UI/tests.
 - 2026-02-13 - T0004 - Added SQLite workspace persistence for cases/evidence, append-only audit logging, and recent activity UI.
+- 2026-02-13 - T0005 - Added a persistent SQLite-backed job queue with background runner, UI job progress/cancel/history, and queue execution tests.

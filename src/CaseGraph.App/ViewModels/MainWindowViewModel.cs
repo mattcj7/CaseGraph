@@ -8,20 +8,29 @@ using System.Collections.ObjectModel;
 using System.Collections.Specialized;
 using System.IO;
 using System.Linq;
+using System.Text.Json;
+using System.Windows;
 
 namespace CaseGraph.App.ViewModels;
 
 public partial class MainWindowViewModel : ObservableObject
 {
+    private const string EvidenceImportJobType = "EvidenceImport";
+    private const string EvidenceVerifyJobType = "EvidenceVerify";
+
     private readonly INavigationService _navigationService;
     private readonly IThemeService _themeService;
     private readonly ICaseWorkspaceService _caseWorkspaceService;
     private readonly IEvidenceVaultService _evidenceVaultService;
     private readonly IAuditLogService _auditLogService;
+    private readonly IJobQueueService _jobQueueService;
     private readonly IWorkspacePathProvider _workspacePathProvider;
     private readonly IUserInteractionService _userInteractionService;
+    private readonly IDisposable _jobUpdateSubscription;
+    private readonly SemaphoreSlim _jobCompletionRefreshGate = new(1, 1);
 
     private CancellationTokenSource? _operationCts;
+    private Guid? _activeJobId;
     private bool _isInitialized;
 
     public ObservableCollection<NavigationItem> NavigationItems { get; } = new();
@@ -31,6 +40,8 @@ public partial class MainWindowViewModel : ObservableObject
     public ObservableCollection<EvidenceItem> EvidenceItems { get; } = new();
 
     public ObservableCollection<AuditEvent> RecentAuditEvents { get; } = new();
+
+    public ObservableCollection<JobInfo> RecentJobs { get; } = new();
 
     [ObservableProperty]
     private NavigationItem? selectedNavigationItem;
@@ -57,6 +68,9 @@ public partial class MainWindowViewModel : ObservableObject
     private EvidenceItem? selectedEvidenceItem;
 
     [ObservableProperty]
+    private JobInfo? selectedJobHistoryItem;
+
+    [ObservableProperty]
     private string operationText = "Ready.";
 
     [ObservableProperty]
@@ -64,6 +78,9 @@ public partial class MainWindowViewModel : ObservableObject
 
     [ObservableProperty]
     private bool isOperationInProgress;
+
+    [ObservableProperty]
+    private string selectedEvidenceVerifyStatus = "No verification job yet.";
 
     public bool HasSelectedEvidenceItem => SelectedEvidenceItem is not null;
 
@@ -93,7 +110,7 @@ public partial class MainWindowViewModel : ObservableObject
 
     public IRelayCommand CopySha256Command { get; }
 
-    public IRelayCommand CancelOperationCommand { get; }
+    public IAsyncRelayCommand CancelOperationCommand { get; }
 
     public MainWindowViewModel(
         INavigationService navigationService,
@@ -101,6 +118,7 @@ public partial class MainWindowViewModel : ObservableObject
         ICaseWorkspaceService caseWorkspaceService,
         IEvidenceVaultService evidenceVaultService,
         IAuditLogService auditLogService,
+        IJobQueueService jobQueueService,
         IWorkspacePathProvider workspacePathProvider,
         IUserInteractionService userInteractionService
     )
@@ -110,6 +128,7 @@ public partial class MainWindowViewModel : ObservableObject
         _caseWorkspaceService = caseWorkspaceService;
         _evidenceVaultService = evidenceVaultService;
         _auditLogService = auditLogService;
+        _jobQueueService = jobQueueService;
         _workspacePathProvider = workspacePathProvider;
         _userInteractionService = userInteractionService;
 
@@ -132,7 +151,9 @@ public partial class MainWindowViewModel : ObservableObject
         VerifySelectedEvidenceCommand = new AsyncRelayCommand(VerifySelectedEvidenceAsync);
         CopyStoredPathCommand = new RelayCommand(CopyStoredPath);
         CopySha256Command = new RelayCommand(CopySha256);
-        CancelOperationCommand = new RelayCommand(CancelCurrentOperation);
+        CancelOperationCommand = new AsyncRelayCommand(CancelCurrentOperationAsync);
+
+        _jobUpdateSubscription = _jobQueueService.JobUpdates.Subscribe(new JobObserver(OnJobUpdated));
 
         SelectedNavigationItem = NavigationItems.FirstOrDefault();
     }
@@ -162,6 +183,7 @@ public partial class MainWindowViewModel : ObservableObject
     {
         OnPropertyChanged(nameof(HasSelectedEvidenceItem));
         OnPropertyChanged(nameof(SelectedStoredAbsolutePath));
+        UpdateSelectedEvidenceVerifyStatus();
 
         if (value is not null)
         {
@@ -173,6 +195,7 @@ public partial class MainWindowViewModel : ObservableObject
     {
         OnPropertyChanged(nameof(CurrentCaseSummary));
         OnPropertyChanged(nameof(SelectedStoredAbsolutePath));
+        UpdateSelectedEvidenceVerifyStatus();
     }
 
     partial void OnIsDarkThemeChanged(bool value)
@@ -260,37 +283,28 @@ public partial class MainWindowViewModel : ObservableObject
             return;
         }
 
-        using var operation = BeginOperation($"Importing 0/{files.Count}...");
-
         try
         {
-            for (var index = 0; index < files.Count; index++)
+            var payload = JsonSerializer.Serialize(new EvidenceImportPayload
             {
-                operation.Token.ThrowIfCancellationRequested();
+                SchemaVersion = 1,
+                CaseId = CurrentCaseInfo.CaseId,
+                Files = files.ToList()
+            });
 
-                var filePath = files[index];
-                OperationText = $"Importing {index + 1}/{files.Count}: {Path.GetFileName(filePath)}";
+            var jobId = await _jobQueueService.EnqueueAsync(
+                new JobEnqueueRequest(
+                    EvidenceImportJobType,
+                    CurrentCaseInfo.CaseId,
+                    EvidenceItemId: null,
+                    payload
+                ),
+                CancellationToken.None
+            );
 
-                var itemProgress = new Progress<double>(p =>
-                {
-                    OperationProgress = (index + p) / files.Count;
-                });
-
-                var importedItem = await _evidenceVaultService.ImportEvidenceFileAsync(
-                    CurrentCaseInfo,
-                    filePath,
-                    itemProgress,
-                    operation.Token
-                );
-
-                EvidenceItems.Add(importedItem);
-                SelectedEvidenceItem = importedItem;
-            }
-
-            await RefreshCurrentCaseAsync(operation.Token);
-            await RefreshRecentActivityAsync(operation.Token);
-            OperationProgress = 1.0;
-            OperationText = $"Imported {files.Count} file(s) successfully.";
+            OperationText = $"Queued import job {jobId:D}.";
+            OperationProgress = 0;
+            await RefreshRecentJobsAsync(CancellationToken.None);
         }
         catch (OperationCanceledException)
         {
@@ -306,21 +320,28 @@ public partial class MainWindowViewModel : ObservableObject
             return;
         }
 
-        using var operation = BeginOperation($"Verifying {SelectedEvidenceItem.OriginalFileName}...");
-
         try
         {
-            var progress = new Progress<double>(p => OperationProgress = p);
-            var (ok, message) = await _evidenceVaultService.VerifyEvidenceAsync(
-                CurrentCaseInfo,
-                SelectedEvidenceItem,
-                progress,
-                operation.Token
+            var payload = JsonSerializer.Serialize(new EvidenceVerifyPayload
+            {
+                SchemaVersion = 1,
+                CaseId = CurrentCaseInfo.CaseId,
+                EvidenceItemId = SelectedEvidenceItem.EvidenceItemId
+            });
+
+            var jobId = await _jobQueueService.EnqueueAsync(
+                new JobEnqueueRequest(
+                    EvidenceVerifyJobType,
+                    CurrentCaseInfo.CaseId,
+                    SelectedEvidenceItem.EvidenceItemId,
+                    payload
+                ),
+                CancellationToken.None
             );
 
-            await RefreshRecentActivityAsync(operation.Token);
-            OperationProgress = 1.0;
-            OperationText = ok ? $"Integrity OK. {message}" : $"Integrity FAILED. {message}";
+            OperationText = $"Queued verify job {jobId:D}.";
+            OperationProgress = 0;
+            await RefreshRecentJobsAsync(CancellationToken.None);
         }
         catch (OperationCanceledException)
         {
@@ -366,8 +387,14 @@ public partial class MainWindowViewModel : ObservableObject
         OperationText = "SHA-256 copied to clipboard.";
     }
 
-    private void CancelCurrentOperation()
+    private async Task CancelCurrentOperationAsync()
     {
+        if (_activeJobId.HasValue)
+        {
+            await _jobQueueService.CancelAsync(_activeJobId.Value, CancellationToken.None);
+            return;
+        }
+
         _operationCts?.Cancel();
     }
 
@@ -383,6 +410,7 @@ public partial class MainWindowViewModel : ObservableObject
 
         await RefreshCasesAsync(ct);
         await RefreshRecentActivityAsync(ct);
+        await RefreshRecentJobsAsync(ct);
         SelectedCase = AvailableCases.FirstOrDefault(c => c.CaseId == openedCase.CaseId) ?? openedCase;
     }
 
@@ -414,9 +442,173 @@ public partial class MainWindowViewModel : ObservableObject
                 ?? EvidenceItems.FirstOrDefault();
     }
 
+    private async Task RefreshRecentJobsAsync(CancellationToken ct)
+    {
+        if (CurrentCaseInfo is null)
+        {
+            RecentJobs.Clear();
+            SelectedJobHistoryItem = null;
+            _activeJobId = null;
+            return;
+        }
+
+        var jobs = await _jobQueueService.GetRecentAsync(CurrentCaseInfo.CaseId, 50, ct);
+        SetRecentJobs(jobs.OrderByDescending(job => job.CreatedAtUtc));
+        UpdateSelectedEvidenceVerifyStatus();
+        SyncStatusBarFromJobs();
+    }
+
+    private void SetRecentJobs(IEnumerable<JobInfo> jobs)
+    {
+        var selectedId = SelectedJobHistoryItem?.JobId;
+
+        RecentJobs.Clear();
+        foreach (var job in jobs)
+        {
+            RecentJobs.Add(job);
+        }
+
+        SelectedJobHistoryItem = selectedId is null
+            ? RecentJobs.FirstOrDefault()
+            : RecentJobs.FirstOrDefault(job => job.JobId == selectedId.Value)
+                ?? RecentJobs.FirstOrDefault();
+    }
+
+    private void OnJobUpdated(JobInfo job)
+    {
+        if (Application.Current?.Dispatcher is null)
+        {
+            return;
+        }
+
+        _ = Application.Current.Dispatcher.InvokeAsync(() => ApplyJobUpdate(job));
+    }
+
+    private void ApplyJobUpdate(JobInfo job)
+    {
+        if (CurrentCaseInfo is null || job.CaseId != CurrentCaseInfo.CaseId)
+        {
+            return;
+        }
+
+        var existing = RecentJobs.FirstOrDefault(item => item.JobId == job.JobId);
+        if (existing is null)
+        {
+            RecentJobs.Add(job);
+        }
+        else
+        {
+            var index = RecentJobs.IndexOf(existing);
+            if (index >= 0)
+            {
+                RecentJobs[index] = job;
+            }
+        }
+
+        var sorted = RecentJobs
+            .OrderByDescending(item => item.CreatedAtUtc)
+            .Take(50)
+            .ToList();
+        SetRecentJobs(sorted);
+
+        SyncStatusBarFromJobs(job);
+        UpdateSelectedEvidenceVerifyStatus();
+
+        if (IsTerminalStatus(job.Status))
+        {
+            _ = RefreshAfterJobCompletionAsync(job);
+        }
+    }
+
+    private async Task RefreshAfterJobCompletionAsync(JobInfo job)
+    {
+        if (CurrentCaseInfo is null || job.CaseId != CurrentCaseInfo.CaseId)
+        {
+            return;
+        }
+
+        await _jobCompletionRefreshGate.WaitAsync();
+        try
+        {
+            if (CurrentCaseInfo is null || job.CaseId != CurrentCaseInfo.CaseId)
+            {
+                return;
+            }
+
+            if (job.JobType == EvidenceImportJobType && job.Status == JobStatus.Succeeded)
+            {
+                await RefreshCurrentCaseAsync(CancellationToken.None);
+            }
+
+            await RefreshRecentActivityAsync(CancellationToken.None);
+            await RefreshRecentJobsAsync(CancellationToken.None);
+        }
+        catch (OperationCanceledException)
+        {
+        }
+        finally
+        {
+            _jobCompletionRefreshGate.Release();
+        }
+    }
+
+    private void SyncStatusBarFromJobs(JobInfo? latestJob = null)
+    {
+        var activeJob = RecentJobs
+            .Where(job => !IsTerminalStatus(job.Status))
+            .OrderByDescending(job => job.CreatedAtUtc)
+            .FirstOrDefault();
+
+        if (activeJob is not null)
+        {
+            _activeJobId = activeJob.JobId;
+            IsOperationInProgress = true;
+            OperationProgress = activeJob.Progress;
+            OperationText = $"{activeJob.JobType}: {activeJob.StatusMessage}";
+            return;
+        }
+
+        _activeJobId = null;
+        IsOperationInProgress = false;
+
+        if (latestJob is not null)
+        {
+            OperationProgress = latestJob.Progress;
+            OperationText = $"{latestJob.JobType}: {latestJob.StatusMessage}";
+        }
+    }
+
+    private void UpdateSelectedEvidenceVerifyStatus()
+    {
+        if (SelectedEvidenceItem is null)
+        {
+            SelectedEvidenceVerifyStatus = "No evidence selected.";
+            return;
+        }
+
+        var latestVerify = RecentJobs
+            .Where(job => job.JobType == EvidenceVerifyJobType)
+            .Where(job => job.EvidenceItemId == SelectedEvidenceItem.EvidenceItemId)
+            .OrderByDescending(job => job.CreatedAtUtc)
+            .FirstOrDefault();
+
+        if (latestVerify is null)
+        {
+            SelectedEvidenceVerifyStatus = "No verification job yet.";
+            return;
+        }
+
+        SelectedEvidenceVerifyStatus = $"{latestVerify.Status}: {latestVerify.StatusMessage}";
+    }
+
+    private static bool IsTerminalStatus(JobStatus status)
+    {
+        return status is JobStatus.Succeeded or JobStatus.Failed or JobStatus.Canceled or JobStatus.Abandoned;
+    }
+
     private OperationScope BeginOperation(string operationText)
     {
-        CancelCurrentOperation();
+        _operationCts?.Cancel();
         _operationCts?.Dispose();
         _operationCts = new CancellationTokenSource();
 
@@ -467,5 +659,46 @@ public partial class MainWindowViewModel : ObservableObject
         {
             _owner.EndOperation(_cts);
         }
+    }
+
+    private sealed class JobObserver : IObserver<JobInfo>
+    {
+        private readonly Action<JobInfo> _onNext;
+
+        public JobObserver(Action<JobInfo> onNext)
+        {
+            _onNext = onNext;
+        }
+
+        public void OnCompleted()
+        {
+        }
+
+        public void OnError(Exception error)
+        {
+        }
+
+        public void OnNext(JobInfo value)
+        {
+            _onNext(value);
+        }
+    }
+
+    private sealed class EvidenceImportPayload
+    {
+        public int SchemaVersion { get; set; }
+
+        public Guid CaseId { get; set; }
+
+        public List<string> Files { get; set; } = new();
+    }
+
+    private sealed class EvidenceVerifyPayload
+    {
+        public int SchemaVersion { get; set; }
+
+        public Guid CaseId { get; set; }
+
+        public Guid EvidenceItemId { get; set; }
     }
 }

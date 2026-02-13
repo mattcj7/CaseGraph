@@ -30,6 +30,9 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<IAuditLogService, AuditLogService>();
         services.AddSingleton<ICaseWorkspaceService, CaseWorkspaceService>();
         services.AddSingleton<IEvidenceVaultService, EvidenceVaultService>();
+        services.AddSingleton<JobQueueService>();
+        services.AddSingleton<IJobQueueService>(provider => provider.GetRequiredService<JobQueueService>());
+        services.AddHostedService<JobRunnerHostedService>();
 
         services.AddSingleton<MainWindowViewModel>();
         services.AddSingleton<MainWindow>();

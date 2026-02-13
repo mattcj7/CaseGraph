@@ -78,3 +78,20 @@ Append-only log of key decisions and changes. Add an entry when we:
   - Evidence/case loading and recent activity UI are backed by SQLite records.
 - Alternatives considered:
   - Continue file-only indexing in `case.json` without a relational index (rejected).
+
+### ADR-20260213-05: Persistent job queue with BackgroundService runner and channel dispatch
+- Date: 2026-02-13
+- Ticket: T0005
+- Commit: <fill in after commit>
+- Decision:
+  - Persist background jobs in SQLite `JobRecord` rows and execute them through `JobRunnerHostedService`.
+  - Use an in-memory `Channel<Guid>` dispatcher over persisted queued jobs, with `IObservable<JobInfo>` updates to the UI.
+- Rationale:
+  - Long-running ingest and verification operations must survive app restarts, support cancellation, and avoid UI thread blocking.
+  - Persisted job state plus startup abandonment handling makes execution history auditable and recoverable.
+- Consequences:
+  - Import and verify actions are now asynchronous queue requests rather than direct UI-thread operations.
+  - Job lifecycle events (`JobQueued`, `JobStarted`, `JobSucceeded/Failed/Canceled`) are now audit-logged.
+  - Review Queue now surfaces recent job history and payload/error details for analysts.
+- Alternatives considered:
+  - In-memory-only task execution without persisted job state (rejected due to restart and audit gaps).

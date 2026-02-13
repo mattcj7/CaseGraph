@@ -13,14 +13,14 @@ public sealed class NavigationService : INavigationService
         new Dictionary<NavigationPage, (string Title, string Description)>
         {
             [NavigationPage.Dashboard] = ("Dashboard", "Case overview, readiness, and quick actions."),
-            [NavigationPage.Import] = ("Import", "Ingestion entry point placeholder for future ticket workflows."),
+            [NavigationPage.Import] = ("Import", "Queue-backed evidence import with progress, cancel, and activity feed."),
             [NavigationPage.Search] = ("Search", "Unified evidence search placeholder with future filter support."),
             [NavigationPage.Timeline] = ("Timeline", "Chronological event analysis placeholder view."),
             [NavigationPage.PeopleTargets] = ("People / Targets", "People and target profile placeholder workspace."),
             [NavigationPage.Locations] = ("Locations", "Geospatial analysis placeholder with map and proximity tools."),
             [NavigationPage.Associations] = ("Associations", "Association graph placeholder for relationship analysis."),
             [NavigationPage.Reports] = ("Reports", "Report and export orchestration placeholder."),
-            [NavigationPage.ReviewQueue] = ("Review Queue", "Triage queue placeholder for analyst review tasks."),
+            [NavigationPage.ReviewQueue] = ("Review Queue", "Background job history for ingest and verification tasks."),
             [NavigationPage.Settings] = ("Settings", "Application settings placeholder and environment controls.")
         };
 
@@ -41,6 +41,11 @@ public sealed class NavigationService : INavigationService
         if (page == NavigationPage.Import)
         {
             return new ImportView();
+        }
+
+        if (page == NavigationPage.ReviewQueue)
+        {
+            return new ReviewQueueView();
         }
 
         return new PlaceholderView(content.Title, content.Description);

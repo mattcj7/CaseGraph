@@ -16,6 +16,8 @@ public sealed class WorkspaceDbContext : DbContext
 
     public DbSet<AuditEventRecord> AuditEvents => Set<AuditEventRecord>();
 
+    public DbSet<JobRecord> Jobs => Set<JobRecord>();
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         modelBuilder.Entity<CaseRecord>(entity =>
@@ -51,6 +53,18 @@ public sealed class WorkspaceDbContext : DbContext
             entity.Property(e => e.Operator).IsRequired();
             entity.Property(e => e.ActionType).IsRequired();
             entity.Property(e => e.Summary).IsRequired();
+        });
+
+        modelBuilder.Entity<JobRecord>(entity =>
+        {
+            entity.ToTable("JobRecord");
+            entity.HasKey(e => e.JobId);
+            entity.Property(e => e.Status).IsRequired();
+            entity.Property(e => e.JobType).IsRequired();
+            entity.Property(e => e.StatusMessage).IsRequired();
+            entity.Property(e => e.JsonPayload).IsRequired();
+            entity.Property(e => e.CorrelationId).IsRequired();
+            entity.Property(e => e.Operator).IsRequired();
         });
     }
 }

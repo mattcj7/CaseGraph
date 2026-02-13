@@ -180,6 +180,13 @@
                                 IsEnabled="{Binding HasSelectedEvidenceItem}"
                                 Command="{Binding VerifySelectedEvidenceCommand}"
                                 Style="{StaticResource TopBarButtonStyle}" />
+
+                        <TextBlock Margin="{StaticResource SpaceTop12}"
+                                   Style="{StaticResource SecondaryBodyTextStyle}"
+                                   Text="Latest Verify Job" />
+                        <TextBlock Style="{StaticResource BodyTextStyle}"
+                                   Text="{Binding SelectedEvidenceVerifyStatus}"
+                                   TextWrapping="Wrap" />
                     </StackPanel>
                 </ScrollViewer>
             </Border>

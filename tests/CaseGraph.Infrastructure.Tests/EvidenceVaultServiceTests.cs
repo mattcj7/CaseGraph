@@ -1,9 +1,11 @@
 using CaseGraph.Core.Abstractions;
 using CaseGraph.Core.Models;
 using CaseGraph.Infrastructure.Persistence;
+using CaseGraph.Infrastructure.Persistence.Entities;
 using CaseGraph.Infrastructure.Services;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
+using System.Diagnostics;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -53,7 +55,9 @@ public sealed class EvidenceVaultServiceTests
         Assert.Equal(evidenceItem.Sha256Hex, manifest.RootElement.GetProperty("Sha256Hex").GetString());
 
         await using var db = await fixture.CreateDbContextAsync();
-        var evidenceRecord = await db.EvidenceItems.FirstOrDefaultAsync(e => e.EvidenceItemId == evidenceItem.EvidenceItemId);
+        var evidenceRecord = await db.EvidenceItems.FirstOrDefaultAsync(
+            e => e.EvidenceItemId == evidenceItem.EvidenceItemId
+        );
         Assert.NotNull(evidenceRecord);
 
         var importAudit = await db.AuditEvents
@@ -104,6 +108,175 @@ public sealed class EvidenceVaultServiceTests
         Assert.NotNull(failAudit);
     }
 
+    [Fact]
+    public async Task EnqueueAsync_PersistsQueuedJobRecord()
+    {
+        await using var fixture = await WorkspaceFixture.CreateAsync(startRunner: false);
+        var jobQueue = fixture.Services.GetRequiredService<IJobQueueService>();
+
+        var payload = JsonSerializer.Serialize(
+            new
+            {
+                SchemaVersion = 1,
+                DelayMilliseconds = 5000
+            }
+        );
+
+        var jobId = await jobQueue.EnqueueAsync(
+            new JobEnqueueRequest(
+                JobQueueService.TestLongRunningJobType,
+                CaseId: null,
+                EvidenceItemId: null,
+                payload
+            ),
+            CancellationToken.None
+        );
+
+        await using var db = await fixture.CreateDbContextAsync();
+        var record = await db.Jobs.FirstOrDefaultAsync(job => job.JobId == jobId);
+        Assert.NotNull(record);
+        Assert.Equal("Queued", record.Status);
+        Assert.Equal(JobQueueService.TestLongRunningJobType, record.JobType);
+        Assert.Equal(Environment.UserName, record.Operator);
+        Assert.False(string.IsNullOrWhiteSpace(record.CorrelationId));
+    }
+
+    [Fact]
+    public async Task Runner_ExecutesEvidenceVerifyJob_SucceedsThenFailsAfterTamper()
+    {
+        await using var fixture = await WorkspaceFixture.CreateAsync(startRunner: true);
+        var workspace = fixture.Services.GetRequiredService<ICaseWorkspaceService>();
+        var vault = fixture.Services.GetRequiredService<IEvidenceVaultService>();
+        var jobQueue = fixture.Services.GetRequiredService<IJobQueueService>();
+
+        var caseInfo = await workspace.CreateCaseAsync("Runner Verify Case", CancellationToken.None);
+        var sourceFile = fixture.CreateSourceFile("runner-verify.bin", "Verification baseline");
+        var evidenceItem = await vault.ImportEvidenceFileAsync(caseInfo, sourceFile, null, CancellationToken.None);
+
+        var successJobId = await jobQueue.EnqueueAsync(
+            new JobEnqueueRequest(
+                JobQueueService.EvidenceVerifyJobType,
+                caseInfo.CaseId,
+                evidenceItem.EvidenceItemId,
+                JsonSerializer.Serialize(
+                    new
+                    {
+                        SchemaVersion = 1,
+                        caseInfo.CaseId,
+                        evidenceItem.EvidenceItemId
+                    }
+                )
+            ),
+            CancellationToken.None
+        );
+
+        var succeeded = await WaitForJobStatusAsync(
+            fixture,
+            successJobId,
+            status => status == "Succeeded",
+            TimeSpan.FromSeconds(10)
+        );
+        Assert.Equal("Succeeded", succeeded.Status);
+
+        var storedPath = fixture.ResolveCasePath(caseInfo.CaseId, evidenceItem.StoredRelativePath);
+        await File.AppendAllTextAsync(storedPath, "tampered");
+
+        var failJobId = await jobQueue.EnqueueAsync(
+            new JobEnqueueRequest(
+                JobQueueService.EvidenceVerifyJobType,
+                caseInfo.CaseId,
+                evidenceItem.EvidenceItemId,
+                JsonSerializer.Serialize(
+                    new
+                    {
+                        SchemaVersion = 1,
+                        caseInfo.CaseId,
+                        evidenceItem.EvidenceItemId
+                    }
+                )
+            ),
+            CancellationToken.None
+        );
+
+        var failed = await WaitForJobStatusAsync(
+            fixture,
+            failJobId,
+            status => status == "Failed",
+            TimeSpan.FromSeconds(10)
+        );
+        Assert.Equal("Failed", failed.Status);
+        Assert.Contains("mismatch", failed.StatusMessage, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task CancelAsync_LongRunningJob_TransitionsToCanceled()
+    {
+        await using var fixture = await WorkspaceFixture.CreateAsync(startRunner: true);
+        var jobQueue = fixture.Services.GetRequiredService<IJobQueueService>();
+
+        var longRunningJobId = await jobQueue.EnqueueAsync(
+            new JobEnqueueRequest(
+                JobQueueService.TestLongRunningJobType,
+                CaseId: null,
+                EvidenceItemId: null,
+                JsonSerializer.Serialize(
+                    new
+                    {
+                        SchemaVersion = 1,
+                        DelayMilliseconds = 15000
+                    }
+                )
+            ),
+            CancellationToken.None
+        );
+
+        await WaitForJobStatusAsync(
+            fixture,
+            longRunningJobId,
+            status => status == "Running",
+            TimeSpan.FromSeconds(10)
+        );
+
+        await jobQueue.CancelAsync(longRunningJobId, CancellationToken.None);
+
+        var canceled = await WaitForJobStatusAsync(
+            fixture,
+            longRunningJobId,
+            status => status == "Canceled",
+            TimeSpan.FromSeconds(10)
+        );
+
+        Assert.Equal("Canceled", canceled.Status);
+    }
+
+    private static async Task<JobRecord> WaitForJobStatusAsync(
+        WorkspaceFixture fixture,
+        Guid jobId,
+        Func<string, bool> statusPredicate,
+        TimeSpan timeout
+    )
+    {
+        var timer = Stopwatch.StartNew();
+        while (timer.Elapsed < timeout)
+        {
+            await using var db = await fixture.CreateDbContextAsync();
+            var record = await db.Jobs
+                .AsNoTracking()
+                .FirstOrDefaultAsync(job => job.JobId == jobId);
+
+            if (record is not null && statusPredicate(record.Status))
+            {
+                return record;
+            }
+
+            await Task.Delay(50);
+        }
+
+        throw new TimeoutException(
+            $"Job {jobId:D} did not reach expected state within {timeout.TotalSeconds:0.##} seconds."
+        );
+    }
+
     private static async Task<string> ComputeSha256Async(string filePath)
     {
         await using var stream = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.Read);
@@ -116,16 +289,22 @@ public sealed class EvidenceVaultServiceTests
     {
         private readonly ServiceProvider _provider;
         private readonly TestWorkspacePathProvider _pathProvider;
+        private readonly JobRunnerHostedService? _jobRunner;
 
-        private WorkspaceFixture(ServiceProvider provider, TestWorkspacePathProvider pathProvider)
+        private WorkspaceFixture(
+            ServiceProvider provider,
+            TestWorkspacePathProvider pathProvider,
+            JobRunnerHostedService? jobRunner
+        )
         {
             _provider = provider;
             _pathProvider = pathProvider;
+            _jobRunner = jobRunner;
         }
 
         public IServiceProvider Services => _provider;
 
-        public static async Task<WorkspaceFixture> CreateAsync()
+        public static async Task<WorkspaceFixture> CreateAsync(bool startRunner = false)
         {
             var workspaceRoot = Path.Combine(
                 Path.GetTempPath(),
@@ -149,13 +328,24 @@ public sealed class EvidenceVaultServiceTests
             services.AddSingleton<IAuditLogService, AuditLogService>();
             services.AddSingleton<ICaseWorkspaceService, CaseWorkspaceService>();
             services.AddSingleton<IEvidenceVaultService, EvidenceVaultService>();
+            services.AddSingleton<JobQueueService>();
+            services.AddSingleton<IJobQueueService>(
+                provider => provider.GetRequiredService<JobQueueService>()
+            );
 
             var provider = services.BuildServiceProvider();
 
             var initializer = provider.GetRequiredService<IWorkspaceDatabaseInitializer>();
             await initializer.EnsureInitializedAsync(CancellationToken.None);
 
-            return new WorkspaceFixture(provider, pathProvider);
+            JobRunnerHostedService? runner = null;
+            if (startRunner)
+            {
+                runner = ActivatorUtilities.CreateInstance<JobRunnerHostedService>(provider);
+                await runner.StartAsync(CancellationToken.None);
+            }
+
+            return new WorkspaceFixture(provider, pathProvider, runner);
         }
 
         public string CreateSourceFile(string fileName, string content)
@@ -187,6 +377,13 @@ public sealed class EvidenceVaultServiceTests
 
         private async ValueTask DisposeInternalAsync()
         {
+            if (_jobRunner is not null)
+            {
+                using var stopCts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+                await _jobRunner.StopAsync(stopCts.Token);
+                _jobRunner.Dispose();
+            }
+
             await _provider.DisposeAsync();
 
             if (!Directory.Exists(_pathProvider.WorkspaceRoot))
