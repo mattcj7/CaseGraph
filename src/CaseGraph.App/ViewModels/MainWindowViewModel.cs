@@ -17,6 +17,8 @@ public partial class MainWindowViewModel : ObservableObject
     private readonly IThemeService _themeService;
     private readonly ICaseWorkspaceService _caseWorkspaceService;
     private readonly IEvidenceVaultService _evidenceVaultService;
+    private readonly IAuditLogService _auditLogService;
+    private readonly IWorkspacePathProvider _workspacePathProvider;
     private readonly IUserInteractionService _userInteractionService;
 
     private CancellationTokenSource? _operationCts;
@@ -27,6 +29,8 @@ public partial class MainWindowViewModel : ObservableObject
     public ObservableCollection<CaseInfo> AvailableCases { get; } = new();
 
     public ObservableCollection<EvidenceItem> EvidenceItems { get; } = new();
+
+    public ObservableCollection<AuditEvent> RecentAuditEvents { get; } = new();
 
     [ObservableProperty]
     private NavigationItem? selectedNavigationItem;
@@ -96,6 +100,8 @@ public partial class MainWindowViewModel : ObservableObject
         IThemeService themeService,
         ICaseWorkspaceService caseWorkspaceService,
         IEvidenceVaultService evidenceVaultService,
+        IAuditLogService auditLogService,
+        IWorkspacePathProvider workspacePathProvider,
         IUserInteractionService userInteractionService
     )
     {
@@ -103,6 +109,8 @@ public partial class MainWindowViewModel : ObservableObject
         _themeService = themeService;
         _caseWorkspaceService = caseWorkspaceService;
         _evidenceVaultService = evidenceVaultService;
+        _auditLogService = auditLogService;
+        _workspacePathProvider = workspacePathProvider;
         _userInteractionService = userInteractionService;
 
         foreach (var item in _navigationService.GetNavigationItems())
@@ -280,6 +288,7 @@ public partial class MainWindowViewModel : ObservableObject
             }
 
             await RefreshCurrentCaseAsync(operation.Token);
+            await RefreshRecentActivityAsync(operation.Token);
             OperationProgress = 1.0;
             OperationText = $"Imported {files.Count} file(s) successfully.";
         }
@@ -309,12 +318,29 @@ public partial class MainWindowViewModel : ObservableObject
                 operation.Token
             );
 
+            await RefreshRecentActivityAsync(operation.Token);
             OperationProgress = 1.0;
             OperationText = ok ? $"Integrity OK. {message}" : $"Integrity FAILED. {message}";
         }
         catch (OperationCanceledException)
         {
             OperationText = "Verify canceled.";
+        }
+    }
+
+    private async Task RefreshRecentActivityAsync(CancellationToken ct)
+    {
+        if (CurrentCaseInfo is null)
+        {
+            RecentAuditEvents.Clear();
+            return;
+        }
+
+        var events = await _auditLogService.GetRecentAsync(CurrentCaseInfo.CaseId, 20, ct);
+        RecentAuditEvents.Clear();
+        foreach (var auditEvent in events.OrderByDescending(e => e.TimestampUtc))
+        {
+            RecentAuditEvents.Add(auditEvent);
         }
     }
 
@@ -356,6 +382,7 @@ public partial class MainWindowViewModel : ObservableObject
         IsEvidenceDrawerOpen = SelectedEvidenceItem is not null;
 
         await RefreshCasesAsync(ct);
+        await RefreshRecentActivityAsync(ct);
         SelectedCase = AvailableCases.FirstOrDefault(c => c.CaseId == openedCase.CaseId) ?? openedCase;
     }
 
@@ -417,15 +444,9 @@ public partial class MainWindowViewModel : ObservableObject
         OnPropertyChanged(nameof(CurrentCaseSummary));
     }
 
-    private static string BuildStoredAbsolutePath(EvidenceItem item)
+    private string BuildStoredAbsolutePath(EvidenceItem item)
     {
-        var caseRootPath = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-            "CaseGraphOffline",
-            "cases",
-            item.CaseId.ToString("D")
-        );
-
+        var caseRootPath = Path.Combine(_workspacePathProvider.CasesRoot, item.CaseId.ToString("D"));
         return Path.Combine(caseRootPath, item.StoredRelativePath.Replace('/', Path.DirectorySeparatorChar));
     }
 

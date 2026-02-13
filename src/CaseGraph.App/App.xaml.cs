@@ -1,3 +1,4 @@
+using CaseGraph.Core.Abstractions;
 using CaseGraph.App.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -20,6 +21,11 @@ public partial class App : Application
             .Build();
 
         _host.Start();
+        _host.Services
+            .GetRequiredService<IWorkspaceDatabaseInitializer>()
+            .EnsureInitializedAsync(CancellationToken.None)
+            .GetAwaiter()
+            .GetResult();
 
         ApplicationThemeManager.Apply(ApplicationTheme.Light);
 

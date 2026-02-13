@@ -1,5 +1,9 @@
 using CaseGraph.Core.Abstractions;
+using CaseGraph.Core.Models;
+using CaseGraph.Infrastructure.Persistence;
 using CaseGraph.Infrastructure.Services;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -9,14 +13,31 @@ namespace CaseGraph.Infrastructure.Tests;
 public sealed class EvidenceVaultServiceTests
 {
     [Fact]
-    public async Task ImportEvidenceFileAsync_CreatesStoredFileManifestAndMatchingHash()
+    public async Task CreateCaseAsync_WritesCaseRecordToSqlite()
     {
-        using var fixture = new WorkspaceFixture();
-        var (workspace, vault, caseInfo) = await fixture.CreateAsync();
+        await using var fixture = await WorkspaceFixture.CreateAsync();
+        var workspace = fixture.Services.GetRequiredService<ICaseWorkspaceService>();
+
+        var caseInfo = await workspace.CreateCaseAsync("Case One", CancellationToken.None);
+
+        await using var db = await fixture.CreateDbContextAsync();
+        var caseRecord = await db.Cases.FirstOrDefaultAsync(c => c.CaseId == caseInfo.CaseId);
+
+        Assert.NotNull(caseRecord);
+        Assert.Equal("Case One", caseRecord.Name);
+    }
+
+    [Fact]
+    public async Task ImportEvidenceFileAsync_CreatesStoredFileManifestHashAndAudit()
+    {
+        await using var fixture = await WorkspaceFixture.CreateAsync();
+        var workspace = fixture.Services.GetRequiredService<ICaseWorkspaceService>();
+        var vault = fixture.Services.GetRequiredService<IEvidenceVaultService>();
+
+        var caseInfo = await workspace.CreateCaseAsync("Import Case", CancellationToken.None);
         var sourceFile = fixture.CreateSourceFile("sample.txt", "Alpha bravo charlie.");
 
         var evidenceItem = await vault.ImportEvidenceFileAsync(caseInfo, sourceFile, null, CancellationToken.None);
-
         var storedPath = fixture.ResolveCasePath(caseInfo.CaseId, evidenceItem.StoredRelativePath);
         var manifestPath = fixture.ResolveCasePath(caseInfo.CaseId, evidenceItem.ManifestRelativePath);
 
@@ -30,45 +51,57 @@ public sealed class EvidenceVaultServiceTests
         using var manifest = JsonDocument.Parse(manifestJson);
         Assert.Equal(1, manifest.RootElement.GetProperty("SchemaVersion").GetInt32());
         Assert.Equal(evidenceItem.Sha256Hex, manifest.RootElement.GetProperty("Sha256Hex").GetString());
+
+        await using var db = await fixture.CreateDbContextAsync();
+        var evidenceRecord = await db.EvidenceItems.FirstOrDefaultAsync(e => e.EvidenceItemId == evidenceItem.EvidenceItemId);
+        Assert.NotNull(evidenceRecord);
+
+        var importAudit = await db.AuditEvents
+            .Where(a => a.ActionType == "EvidenceImported" && a.EvidenceItemId == evidenceItem.EvidenceItemId)
+            .FirstOrDefaultAsync();
+        Assert.NotNull(importAudit);
     }
 
     [Fact]
-    public async Task VerifyEvidenceAsync_ReturnsOkTrue_WhenFileUntouched()
+    public async Task VerifyEvidenceAsync_WritesOkAndFailAuditEvents()
     {
-        using var fixture = new WorkspaceFixture();
-        var (_, vault, caseInfo) = await fixture.CreateAsync();
-        var sourceFile = fixture.CreateSourceFile("evidence.bin", "Integrity baseline");
+        await using var fixture = await WorkspaceFixture.CreateAsync();
+        var workspace = fixture.Services.GetRequiredService<ICaseWorkspaceService>();
+        var vault = fixture.Services.GetRequiredService<IEvidenceVaultService>();
+
+        var caseInfo = await workspace.CreateCaseAsync("Verify Case", CancellationToken.None);
+        var sourceFile = fixture.CreateSourceFile("verify.bin", "Integrity baseline");
         var evidenceItem = await vault.ImportEvidenceFileAsync(caseInfo, sourceFile, null, CancellationToken.None);
 
-        var (ok, message) = await vault.VerifyEvidenceAsync(
+        var (okBeforeTamper, _) = await vault.VerifyEvidenceAsync(
             caseInfo,
             evidenceItem,
             null,
             CancellationToken.None
         );
-
-        Assert.True(ok, message);
-    }
-
-    [Fact]
-    public async Task VerifyEvidenceAsync_ReturnsOkFalse_AfterTampering()
-    {
-        using var fixture = new WorkspaceFixture();
-        var (_, vault, caseInfo) = await fixture.CreateAsync();
-        var sourceFile = fixture.CreateSourceFile("tamper.dat", "Original bytes");
-        var evidenceItem = await vault.ImportEvidenceFileAsync(caseInfo, sourceFile, null, CancellationToken.None);
+        Assert.True(okBeforeTamper);
 
         var storedPath = fixture.ResolveCasePath(caseInfo.CaseId, evidenceItem.StoredRelativePath);
         await File.AppendAllTextAsync(storedPath, "tampered");
 
-        var (ok, _) = await vault.VerifyEvidenceAsync(
+        var (okAfterTamper, _) = await vault.VerifyEvidenceAsync(
             caseInfo,
             evidenceItem,
             null,
             CancellationToken.None
         );
+        Assert.False(okAfterTamper);
 
-        Assert.False(ok);
+        await using var db = await fixture.CreateDbContextAsync();
+        var okAudit = await db.AuditEvents
+            .Where(a => a.ActionType == "EvidenceVerifiedOk" && a.EvidenceItemId == evidenceItem.EvidenceItemId)
+            .FirstOrDefaultAsync();
+        var failAudit = await db.AuditEvents
+            .Where(a => a.ActionType == "EvidenceVerifiedFail" && a.EvidenceItemId == evidenceItem.EvidenceItemId)
+            .FirstOrDefaultAsync();
+
+        Assert.NotNull(okAudit);
+        Assert.NotNull(failAudit);
     }
 
     private static async Task<string> ComputeSha256Async(string filePath)
@@ -76,54 +109,134 @@ public sealed class EvidenceVaultServiceTests
         await using var stream = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.Read);
         using var sha256 = SHA256.Create();
         var hashBytes = await sha256.ComputeHashAsync(stream);
-
         return Convert.ToHexString(hashBytes).ToLowerInvariant();
     }
 
-    private sealed class WorkspaceFixture : IDisposable
+    private sealed class WorkspaceFixture : IAsyncDisposable
     {
-        public string WorkspaceRoot { get; } = Path.Combine(
-            Path.GetTempPath(),
-            "CaseGraph.Infrastructure.Tests",
-            Guid.NewGuid().ToString("N")
-        );
+        private readonly ServiceProvider _provider;
+        private readonly TestWorkspacePathProvider _pathProvider;
 
-        public async Task<(CaseWorkspaceService workspace, EvidenceVaultService vault, CaseGraph.Core.Models.CaseInfo caseInfo)> CreateAsync()
+        private WorkspaceFixture(ServiceProvider provider, TestWorkspacePathProvider pathProvider)
         {
-            Directory.CreateDirectory(WorkspaceRoot);
+            _provider = provider;
+            _pathProvider = pathProvider;
+        }
 
-            var clock = new FixedClock(new DateTimeOffset(2026, 2, 12, 12, 0, 0, TimeSpan.Zero));
-            var workspaceService = new CaseWorkspaceService(clock, WorkspaceRoot);
-            var caseInfo = await workspaceService.CreateCaseAsync("Demo Case", CancellationToken.None);
-            var vaultService = new EvidenceVaultService(clock, workspaceService, WorkspaceRoot);
+        public IServiceProvider Services => _provider;
 
-            return (workspaceService, vaultService, caseInfo);
+        public static async Task<WorkspaceFixture> CreateAsync()
+        {
+            var workspaceRoot = Path.Combine(
+                Path.GetTempPath(),
+                "CaseGraph.Infrastructure.Tests",
+                Guid.NewGuid().ToString("N")
+            );
+            Directory.CreateDirectory(workspaceRoot);
+
+            var pathProvider = new TestWorkspacePathProvider(workspaceRoot);
+            var services = new ServiceCollection();
+            services.AddSingleton<IClock>(
+                new FixedClock(new DateTimeOffset(2026, 2, 13, 12, 0, 0, TimeSpan.Zero))
+            );
+            services.AddSingleton<IWorkspacePathProvider>(pathProvider);
+            services.AddDbContextFactory<WorkspaceDbContext>(options =>
+            {
+                Directory.CreateDirectory(pathProvider.WorkspaceRoot);
+                options.UseSqlite($"Data Source={pathProvider.WorkspaceDbPath}");
+            });
+            services.AddSingleton<IWorkspaceDatabaseInitializer, WorkspaceDatabaseInitializer>();
+            services.AddSingleton<IAuditLogService, AuditLogService>();
+            services.AddSingleton<ICaseWorkspaceService, CaseWorkspaceService>();
+            services.AddSingleton<IEvidenceVaultService, EvidenceVaultService>();
+
+            var provider = services.BuildServiceProvider();
+
+            var initializer = provider.GetRequiredService<IWorkspaceDatabaseInitializer>();
+            await initializer.EnsureInitializedAsync(CancellationToken.None);
+
+            return new WorkspaceFixture(provider, pathProvider);
         }
 
         public string CreateSourceFile(string fileName, string content)
         {
-            var sourceDirectory = Path.Combine(WorkspaceRoot, "source");
+            var sourceDirectory = Path.Combine(_pathProvider.WorkspaceRoot, "source");
             Directory.CreateDirectory(sourceDirectory);
 
             var path = Path.Combine(sourceDirectory, fileName);
             File.WriteAllText(path, content, Encoding.UTF8);
-
             return path;
         }
 
         public string ResolveCasePath(Guid caseId, string relativePath)
         {
-            var root = Path.Combine(WorkspaceRoot, "cases", caseId.ToString("D"));
+            var root = Path.Combine(_pathProvider.CasesRoot, caseId.ToString("D"));
             return Path.Combine(root, relativePath.Replace('/', Path.DirectorySeparatorChar));
         }
 
-        public void Dispose()
+        public Task<WorkspaceDbContext> CreateDbContextAsync()
         {
-            if (Directory.Exists(WorkspaceRoot))
+            var factory = _provider.GetRequiredService<IDbContextFactory<WorkspaceDbContext>>();
+            return factory.CreateDbContextAsync(CancellationToken.None);
+        }
+
+        public ValueTask DisposeAsync()
+        {
+            return DisposeInternalAsync();
+        }
+
+        private async ValueTask DisposeInternalAsync()
+        {
+            await _provider.DisposeAsync();
+
+            if (!Directory.Exists(_pathProvider.WorkspaceRoot))
             {
-                Directory.Delete(WorkspaceRoot, recursive: true);
+                return;
+            }
+
+            for (var attempt = 1; attempt <= 5; attempt++)
+            {
+                try
+                {
+                    Directory.Delete(_pathProvider.WorkspaceRoot, recursive: true);
+                    return;
+                }
+                catch (IOException)
+                {
+                    if (attempt == 5)
+                    {
+                        return;
+                    }
+
+                    await Task.Delay(50);
+                }
+                catch (UnauthorizedAccessException)
+                {
+                    if (attempt == 5)
+                    {
+                        return;
+                    }
+
+                    await Task.Delay(50);
+                }
             }
         }
+    }
+
+    private sealed class TestWorkspacePathProvider : IWorkspacePathProvider
+    {
+        public TestWorkspacePathProvider(string workspaceRoot)
+        {
+            WorkspaceRoot = workspaceRoot;
+            WorkspaceDbPath = Path.Combine(workspaceRoot, "workspace.db");
+            CasesRoot = Path.Combine(workspaceRoot, "cases");
+        }
+
+        public string WorkspaceRoot { get; }
+
+        public string WorkspaceDbPath { get; }
+
+        public string CasesRoot { get; }
     }
 
     private sealed class FixedClock : IClock

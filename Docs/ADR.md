@@ -62,3 +62,19 @@ Append-only log of key decisions and changes. Add an entry when we:
   - Import and verification workflows are now path-driven and reconstructable from `case.json` and per-item manifests.
 - Alternatives considered:
   - Mutable shared file references without vault copy (rejected).
+
+### ADR-20260213-04: SQLite workspace index with EF Core and path provider abstraction
+- Date: 2026-02-13
+- Ticket: T0004
+- Commit: <fill in after commit>
+- Decision:
+  - Use `workspace.db` (SQLite via EF Core) as the persistent index for cases, evidence metadata, and append-only audit events.
+  - Introduce `IWorkspacePathProvider` to centralize workspace path resolution and enable temp-root injection in tests.
+- Rationale:
+  - Enables offline persistence/queryability across restarts while keeping evidence vault manifests as integrity source-of-truth.
+  - Improves test reliability by avoiding hard dependency on machine `LocalAppData`.
+- Consequences:
+  - Workspace services now depend on DB initialization and path provider abstractions.
+  - Evidence/case loading and recent activity UI are backed by SQLite records.
+- Alternatives considered:
+  - Continue file-only indexing in `case.json` without a relational index (rejected).

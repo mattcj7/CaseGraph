@@ -13,6 +13,7 @@
             <RowDefinition Height="Auto" />
             <RowDefinition Height="Auto" />
             <RowDefinition Height="*" />
+            <RowDefinition Height="170" />
             <RowDefinition Height="Auto" />
         </Grid.RowDefinitions>
 
@@ -96,6 +97,37 @@
         </DataGrid>
 
         <Border Grid.Row="4"
+                Margin="{StaticResource SpaceTop12}"
+                Style="{StaticResource PlaceholderHintBorderStyle}">
+            <Grid>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="*" />
+                </Grid.RowDefinitions>
+
+                <TextBlock Text="Recent Activity (last 20)"
+                           Style="{StaticResource SectionTitleTextStyle}" />
+
+                <ListBox Grid.Row="1"
+                         Margin="{StaticResource SpaceTop12}"
+                         ItemsSource="{Binding RecentAuditEvents}"
+                         BorderThickness="0"
+                         Background="Transparent">
+                    <ListBox.ItemTemplate>
+                        <DataTemplate>
+                            <StackPanel Margin="0,0,0,8">
+                                <TextBlock Style="{StaticResource NavigationItemTitleTextStyle}"
+                                           Text="{Binding Summary}" />
+                                <TextBlock Style="{StaticResource SecondaryBodyTextStyle}"
+                                           Text="{Binding TimestampUtc, StringFormat={}{0:u}}" />
+                            </StackPanel>
+                        </DataTemplate>
+                    </ListBox.ItemTemplate>
+                </ListBox>
+            </Grid>
+        </Border>
+
+        <Border Grid.Row="5"
                 Margin="{StaticResource SpaceTop12}"
                 Style="{StaticResource TopBarBorderStyle}">
             <Grid>

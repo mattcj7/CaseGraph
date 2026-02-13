@@ -14,26 +14,23 @@ public sealed class EvidenceVaultService : IEvidenceVaultService
     };
 
     private readonly IClock _clock;
+    private readonly IWorkspacePathProvider _pathProvider;
     private readonly ICaseWorkspaceService _caseWorkspaceService;
-    private readonly string _casesRoot;
+    private readonly IAuditLogService _auditLogService;
 
     public EvidenceVaultService(
         IClock clock,
+        IWorkspacePathProvider pathProvider,
         ICaseWorkspaceService caseWorkspaceService,
-        string? workspaceRootOverride = null
+        IAuditLogService auditLogService
     )
     {
         _clock = clock;
+        _pathProvider = pathProvider;
         _caseWorkspaceService = caseWorkspaceService;
+        _auditLogService = auditLogService;
 
-        var workspaceRoot = workspaceRootOverride
-            ?? Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-                "CaseGraphOffline"
-            );
-
-        _casesRoot = Path.Combine(workspaceRoot, "cases");
-        Directory.CreateDirectory(_casesRoot);
+        Directory.CreateDirectory(_pathProvider.CasesRoot);
     }
 
     public async Task<EvidenceItem> ImportEvidenceFileAsync(
@@ -123,6 +120,27 @@ public sealed class EvidenceVaultService : IEvidenceVaultService
         storedEvidence.Add(evidenceItem);
         await _caseWorkspaceService.SaveCaseAsync(storedCaseInfo, storedEvidence, ct);
 
+        await _auditLogService.AddAsync(
+            new AuditEvent
+            {
+                TimestampUtc = addedAtUtc,
+                Operator = Environment.UserName,
+                ActionType = "EvidenceImported",
+                CaseId = caseInfo.CaseId,
+                EvidenceItemId = evidenceItem.EvidenceItemId,
+                Summary = $"Imported evidence file \"{evidenceItem.OriginalFileName}\".",
+                JsonPayload = JsonSerializer.Serialize(new
+                {
+                    evidenceItem.OriginalFileName,
+                    evidenceItem.SizeBytes,
+                    Sha256Short = evidenceItem.Sha256Hex.Length >= 12
+                        ? evidenceItem.Sha256Hex[..12]
+                        : evidenceItem.Sha256Hex
+                })
+            },
+            ct
+        );
+
         return evidenceItem;
     }
 
@@ -140,7 +158,9 @@ public sealed class EvidenceVaultService : IEvidenceVaultService
 
         if (!File.Exists(storedFilePath))
         {
-            return (false, "Stored evidence file is missing.");
+            const string missingMessage = "Stored evidence file is missing.";
+            await WriteVerifyAuditAsync(caseInfo, item, false, missingMessage, ct);
+            return (false, missingMessage);
         }
 
         await using var stream = CreateReadStream(storedFilePath);
@@ -148,15 +168,47 @@ public sealed class EvidenceVaultService : IEvidenceVaultService
 
         if (string.Equals(computedHash, item.Sha256Hex, StringComparison.OrdinalIgnoreCase))
         {
-            return (true, "Integrity verification succeeded.");
+            const string successMessage = "Integrity verification succeeded.";
+            await WriteVerifyAuditAsync(caseInfo, item, true, successMessage, ct);
+            return (true, successMessage);
         }
 
-        return (false, "SHA-256 mismatch. Stored file contents changed.");
+        const string failMessage = "SHA-256 mismatch. Stored file contents changed.";
+        await WriteVerifyAuditAsync(caseInfo, item, false, failMessage, ct);
+        return (false, failMessage);
+    }
+
+    private async Task WriteVerifyAuditAsync(
+        CaseInfo caseInfo,
+        EvidenceItem item,
+        bool ok,
+        string message,
+        CancellationToken ct
+    )
+    {
+        await _auditLogService.AddAsync(
+            new AuditEvent
+            {
+                TimestampUtc = _clock.UtcNow.ToUniversalTime(),
+                Operator = Environment.UserName,
+                ActionType = ok ? "EvidenceVerifiedOk" : "EvidenceVerifiedFail",
+                CaseId = caseInfo.CaseId,
+                EvidenceItemId = item.EvidenceItemId,
+                Summary = $"{(ok ? "Integrity OK" : "Integrity FAIL")} for \"{item.OriginalFileName}\".",
+                JsonPayload = JsonSerializer.Serialize(new
+                {
+                    item.OriginalFileName,
+                    item.StoredRelativePath,
+                    message
+                })
+            },
+            ct
+        );
     }
 
     private string GetCaseRootPath(Guid caseId)
     {
-        return Path.Combine(_casesRoot, caseId.ToString("D"));
+        return Path.Combine(_pathProvider.CasesRoot, caseId.ToString("D"));
     }
 
     private static string ResolveSourceType(string fileName)
@@ -235,7 +287,6 @@ public sealed class EvidenceVaultService : IEvidenceVaultService
             }
 
             progress?.Report(1.0);
-
             return Convert.ToHexString(hasher.GetHashAndReset()).ToLowerInvariant();
         }
         finally
@@ -275,7 +326,6 @@ public sealed class EvidenceVaultService : IEvidenceVaultService
             }
 
             progress?.Report(1.0);
-
             return Convert.ToHexString(hasher.GetHashAndReset()).ToLowerInvariant();
         }
         finally
