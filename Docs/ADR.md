@@ -82,7 +82,7 @@ Append-only log of key decisions and changes. Add an entry when we:
 ### ADR-20260213-05: Persistent job queue with BackgroundService runner and channel dispatch
 - Date: 2026-02-13
 - Ticket: T0005
-- Commit: <fill in after commit>
+- Commit: <d2efab7>
 - Decision:
   - Persist background jobs in SQLite `JobRecord` rows and execute them through `JobRunnerHostedService`.
   - Use an in-memory `Channel<Guid>` dispatcher over persisted queued jobs, with `IObservable<JobInfo>` updates to the UI.
