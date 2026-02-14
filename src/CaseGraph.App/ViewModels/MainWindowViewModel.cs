@@ -108,6 +108,12 @@ public partial class MainWindowViewModel : ObservableObject
     private string selectedMessageSearchPlatform = "All";
 
     [ObservableProperty]
+    private string messageSearchSenderFilter = string.Empty;
+
+    [ObservableProperty]
+    private string messageSearchRecipientFilter = string.Empty;
+
+    [ObservableProperty]
     private MessageSearchHit? selectedMessageSearchResult;
 
     [ObservableProperty]
@@ -125,6 +131,19 @@ public partial class MainWindowViewModel : ObservableObject
     public string SelectedStoredAbsolutePath => SelectedEvidenceItem is null
         ? string.Empty
         : BuildStoredAbsolutePath(SelectedEvidenceItem);
+
+    public string OperationProgressPercentText
+    {
+        get
+        {
+            var percent = Math.Clamp(
+                (int)Math.Round(OperationProgress * 100, MidpointRounding.AwayFromZero),
+                0,
+                100
+            );
+            return $"{percent:0}%";
+        }
+    }
 
     public IRelayCommand ToggleThemeCommand { get; }
 
@@ -505,6 +524,8 @@ public partial class MainWindowViewModel : ObservableObject
                 string.Equals(SelectedMessageSearchPlatform, "All", StringComparison.OrdinalIgnoreCase)
                     ? null
                     : SelectedMessageSearchPlatform,
+                NullIfWhiteSpace(MessageSearchSenderFilter),
+                NullIfWhiteSpace(MessageSearchRecipientFilter),
                 take: 250,
                 skip: 0,
                 searchCts.Token
@@ -737,6 +758,10 @@ public partial class MainWindowViewModel : ObservableObject
             {
                 await RefreshCurrentCaseAsync(CancellationToken.None);
             }
+            else if (job.JobType == MessagesIngestJobType)
+            {
+                await RefreshCurrentCaseAsync(CancellationToken.None);
+            }
 
             await RefreshRecentActivityAsync(CancellationToken.None);
             await RefreshRecentJobsAsync(CancellationToken.None);
@@ -762,7 +787,7 @@ public partial class MainWindowViewModel : ObservableObject
             _activeJobId = activeJob.JobId;
             IsOperationInProgress = true;
             OperationProgress = activeJob.Progress;
-            OperationText = $"{activeJob.JobType}: {activeJob.StatusMessage}";
+            OperationText = $"{activeJob.JobType}: {FormatJobStatusMessage(activeJob)}";
             return;
         }
 
@@ -772,7 +797,7 @@ public partial class MainWindowViewModel : ObservableObject
         if (latestJob is not null)
         {
             OperationProgress = latestJob.Progress;
-            OperationText = $"{latestJob.JobType}: {latestJob.StatusMessage}";
+            OperationText = $"{latestJob.JobType}: {FormatJobStatusMessage(latestJob)}";
         }
     }
 
@@ -819,7 +844,7 @@ public partial class MainWindowViewModel : ObservableObject
             return;
         }
 
-        SelectedEvidenceMessagesStatus = $"{latestParse.Status}: {latestParse.StatusMessage}";
+        SelectedEvidenceMessagesStatus = $"{latestParse.Status}: {FormatJobStatusMessage(latestParse)}";
     }
 
     private static bool IsTerminalStatus(JobStatus status)
@@ -838,6 +863,11 @@ public partial class MainWindowViewModel : ObservableObject
         OperationText = operationText;
 
         return new OperationScope(this, _operationCts);
+    }
+
+    partial void OnOperationProgressChanged(double value)
+    {
+        OnPropertyChanged(nameof(OperationProgressPercentText));
     }
 
     private CancellationTokenSource BeginMessageSearch()
@@ -881,6 +911,26 @@ public partial class MainWindowViewModel : ObservableObject
     {
         var caseRootPath = Path.Combine(_workspacePathProvider.CasesRoot, item.CaseId.ToString("D"));
         return Path.Combine(caseRootPath, item.StoredRelativePath.Replace('/', Path.DirectorySeparatorChar));
+    }
+
+    private static string? NullIfWhiteSpace(string? value)
+    {
+        return string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+    }
+
+    private static string FormatJobStatusMessage(JobInfo job)
+    {
+        if (IsTerminalStatus(job.Status))
+        {
+            return job.StatusMessage;
+        }
+
+        var percent = Math.Clamp(
+            (int)Math.Round(job.Progress * 100, MidpointRounding.AwayFromZero),
+            0,
+            100
+        );
+        return $"{percent:0}% - {job.StatusMessage}";
     }
 
     private sealed class OperationScope : IDisposable

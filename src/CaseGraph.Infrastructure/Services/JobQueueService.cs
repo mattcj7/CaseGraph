@@ -1,4 +1,5 @@
 using CaseGraph.Core.Abstractions;
+using CaseGraph.Core.Diagnostics;
 using CaseGraph.Core.Models;
 using CaseGraph.Infrastructure.Persistence;
 using CaseGraph.Infrastructure.Persistence.Entities;
@@ -100,6 +101,9 @@ public sealed class JobQueueService : IJobQueueService
 
         var queuedInfo = MapJobInfo(jobRecord);
         _jobUpdates.Publish(queuedInfo);
+        AppFileLogger.Log(
+            $"[JobQueue] Enqueued jobId={jobRecord.JobId:D} type={jobRecord.JobType} case={jobRecord.CaseId?.ToString("D") ?? "(none)"} evidence={jobRecord.EvidenceItemId?.ToString("D") ?? "(none)"} correlation={jobRecord.CorrelationId}"
+        );
         await WriteLifecycleAuditAsync(
             queuedInfo,
             "JobQueued",
@@ -134,6 +138,9 @@ public sealed class JobQueueService : IJobQueueService
 
             var canceledInfo = MapJobInfo(jobRecord);
             _jobUpdates.Publish(canceledInfo);
+            AppFileLogger.Log(
+                $"[JobQueue] Cancel requested jobId={jobRecord.JobId:D} state=Queued action=MarkedCanceled"
+            );
             await WriteLifecycleAuditAsync(
                 canceledInfo,
                 "JobCanceled",
@@ -145,6 +152,9 @@ public sealed class JobQueueService : IJobQueueService
 
         if (jobRecord.Status != JobStatus.Running.ToString())
         {
+            AppFileLogger.Log(
+                $"[JobQueue] Cancel requested jobId={jobRecord.JobId:D} state={jobRecord.Status} action=Ignored"
+            );
             return;
         }
 
@@ -155,6 +165,15 @@ public sealed class JobQueueService : IJobQueueService
         if (_runningJobs.TryGetValue(jobId, out var runningJobCts))
         {
             runningJobCts.Cancel();
+            AppFileLogger.Log(
+                $"[JobQueue] Cancel requested jobId={jobRecord.JobId:D} state=Running action=CtsCanceled"
+            );
+        }
+        else
+        {
+            AppFileLogger.Log(
+                $"[JobQueue] Cancel requested jobId={jobRecord.JobId:D} state=Running action=CtsMissing"
+            );
         }
     }
 
@@ -244,6 +263,9 @@ public sealed class JobQueueService : IJobQueueService
 
             var runningInfo = MapJobInfo(jobRecord);
             _jobUpdates.Publish(runningInfo);
+            AppFileLogger.Log(
+                $"[JobQueue] Started jobId={runningInfo.JobId:D} type={runningInfo.JobType} correlation={runningInfo.CorrelationId}"
+            );
             await WriteLifecycleAuditAsync(
                 runningInfo,
                 "JobStarted",
@@ -266,6 +288,7 @@ public sealed class JobQueueService : IJobQueueService
                 return;
             }
 
+            var executionStartedAt = DateTimeOffset.UtcNow;
             switch (jobToExecute.JobType)
             {
                 case EvidenceImportJobType:
@@ -306,14 +329,20 @@ public sealed class JobQueueService : IJobQueueService
                 default:
                     throw new NotSupportedException($"Unsupported job type \"{jobToExecute.JobType}\".");
             }
+
+            AppFileLogger.Log(
+                $"[JobQueue] Completed jobId={jobToExecute.JobId:D} type={jobToExecute.JobType} elapsedMs={(DateTimeOffset.UtcNow - executionStartedAt).TotalMilliseconds:0}"
+            );
         }
         catch (OperationCanceledException) when (linkedCts.IsCancellationRequested)
         {
             await CompleteCanceledAsync(jobId, "Canceled by operator.", CancellationToken.None);
+            AppFileLogger.Log($"[JobQueue] Canceled jobId={jobId:D}");
         }
         catch (Exception ex)
         {
             await CompleteFailedAsync(jobId, ex.Message, CancellationToken.None);
+            AppFileLogger.LogException($"[JobQueue] Failed jobId={jobId:D}", ex);
         }
         finally
         {
@@ -458,20 +487,42 @@ public sealed class JobQueueService : IJobQueueService
             ct
         );
 
-        var ingestProgress = new Progress<double>(progress =>
+        AppFileLogger.Log(
+            $"[MessagesIngest] Job start jobId={jobRecord.JobId:D} correlation={jobRecord.CorrelationId} case={payload.CaseId:D} evidence={payload.EvidenceItemId:D} ext={evidence.FileExtension} file={evidence.OriginalFileName}"
+        );
+
+        var ingestStopwatch = System.Diagnostics.Stopwatch.StartNew();
+        var lastLoggedPercent = -1;
+        var lastLoggedAt = DateTimeOffset.MinValue;
+
+        var detailedProgress = new Progress<MessageIngestProgress>(update =>
         {
+            var clampedProgress = Math.Clamp(update.FractionComplete, 0, 1);
+            var statusMessage = BuildIngestStatusMessage(update);
             _ = SafeReportProgressAsync(
                 jobRecord.JobId,
-                Math.Clamp(progress, 0, 1),
-                $"Parsing messages from {evidence.OriginalFileName}...",
+                clampedProgress,
+                statusMessage,
                 ct
             );
+
+            var percent = (int)Math.Round(clampedProgress * 100, MidpointRounding.AwayFromZero);
+            var now = DateTimeOffset.UtcNow;
+            if (percent >= lastLoggedPercent + 5 || (now - lastLoggedAt).TotalSeconds >= 2)
+            {
+                lastLoggedPercent = percent;
+                lastLoggedAt = now;
+                AppFileLogger.Log(
+                    $"[MessagesIngest] Progress jobId={jobRecord.JobId:D} correlation={jobRecord.CorrelationId} {statusMessage} ({percent}%)"
+                );
+            }
         });
 
         var ingestResult = await _messageIngestService.IngestMessagesDetailedFromEvidenceAsync(
             payload.CaseId,
             evidence,
-            ingestProgress,
+            detailedProgress,
+            logContext: $"job={jobRecord.JobId:D} correlation={jobRecord.CorrelationId}",
             ct
         );
 
@@ -480,6 +531,10 @@ public sealed class JobQueueService : IJobQueueService
             1,
             ingestResult.StatusMessage,
             ct
+        );
+
+        AppFileLogger.Log(
+            $"[MessagesIngest] Job complete jobId={jobRecord.JobId:D} correlation={jobRecord.CorrelationId} parsed={ingestResult.IngestedCount} elapsedMs={ingestStopwatch.ElapsedMilliseconds} status=\"{ingestResult.StatusMessage}\""
         );
 
         return ingestResult;
@@ -790,6 +845,20 @@ public sealed class JobQueueService : IJobQueueService
             CorrelationId = record.CorrelationId,
             Operator = record.Operator
         };
+    }
+
+    private static string BuildIngestStatusMessage(MessageIngestProgress progress)
+    {
+        var phase = string.IsNullOrWhiteSpace(progress.Phase)
+            ? "Parsing \"Messages\"..."
+            : progress.Phase.Trim();
+
+        if (progress.Processed.HasValue && progress.Total.HasValue && progress.Total.Value > 0)
+        {
+            return $"{phase} ({progress.Processed.Value} / {progress.Total.Value})";
+        }
+
+        return phase;
     }
 
     private sealed class EvidenceImportPayload

@@ -16,10 +16,14 @@
                 Style="{StaticResource PlaceholderHintBorderStyle}">
             <Grid>
                 <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="1.6*" />
+                    <ColumnDefinition Width="12" />
                     <ColumnDefinition Width="*" />
-                    <ColumnDefinition Width="16" />
+                    <ColumnDefinition Width="12" />
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="12" />
                     <ColumnDefinition Width="220" />
-                    <ColumnDefinition Width="16" />
+                    <ColumnDefinition Width="12" />
                     <ColumnDefinition Width="Auto" />
                 </Grid.ColumnDefinitions>
 
@@ -28,12 +32,22 @@
                          Style="{StaticResource TopBarTextBoxStyle}"
                          ToolTip="Search message body/sender/recipients" />
 
-                <ComboBox Grid.Column="2"
+                <TextBox Grid.Column="2"
+                         Text="{Binding MessageSearchSenderFilter, UpdateSourceTrigger=PropertyChanged}"
+                         Style="{StaticResource TopBarTextBoxStyle}"
+                         ToolTip="Sender filter (optional)" />
+
+                <TextBox Grid.Column="4"
+                         Text="{Binding MessageSearchRecipientFilter, UpdateSourceTrigger=PropertyChanged}"
+                         Style="{StaticResource TopBarTextBoxStyle}"
+                         ToolTip="Recipient filter (optional)" />
+
+                <ComboBox Grid.Column="6"
                           ItemsSource="{Binding MessageSearchPlatformFilters}"
                           SelectedItem="{Binding SelectedMessageSearchPlatform, Mode=TwoWay}"
                           Style="{StaticResource TopBarComboBoxStyle}" />
 
-                <Button Grid.Column="4"
+                <Button Grid.Column="8"
                         Content="Search"
                         Command="{Binding SearchMessagesCommand}"
                         Style="{StaticResource TopBarButtonStyle}" />

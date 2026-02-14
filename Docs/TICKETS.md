@@ -19,13 +19,7 @@ This file tracks planned, active, and completed tickets.
 ```
 
 ## Upcoming Tickets (Planned)
-- T0008 - Timeline UI + provenance drilldown
-- T0009 - Basic export (timeline/keyword hits)
-- T0010+ - ZIP-HTML social returns
-- T0011+ - PLIST + Geo feeds
-- T0015+ - Manual Intel Registry (known entities, vehicles, editable associations)
-- T00A* - AI Gateway (online LLM, RAG, citations, redaction)
-- T00V* - Video ingest + fast review roadmap
+- ?
 
 ---
 
@@ -38,3 +32,4 @@ This file tracks planned, active, and completed tickets.
 - 2026-02-13 - T0006 - Added migration-first workspace DB initialization with legacy backup/rebuild repair and startup error visibility to prevent no-window startup failures.
 - 2026-02-13 - T0006 - Added startup bootstrap file logging, required-table repair with workspace.broken backups, and startup/runner DB init gating verification.
 - 2026-02-14 - T0007 - Completed message ingest/search v1 hardening with platform-filtered cancellable search, deterministic XLSX threading, UFDR/XLSX guidance statuses, and deterministic tests.
+- 2026-02-14 - T0008 - Added live parse progress/status UX, queued/running cancel reliability, sender/recipient search filters, and unified app/job debug logging with deterministic tests.

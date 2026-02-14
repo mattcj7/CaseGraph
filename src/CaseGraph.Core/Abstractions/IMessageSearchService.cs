@@ -8,6 +8,8 @@ public interface IMessageSearchService
         Guid caseId,
         string query,
         string? platformFilter,
+        string? senderFilter,
+        string? recipientFilter,
         int take,
         int skip,
         CancellationToken ct

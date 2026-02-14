@@ -134,6 +134,8 @@
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="*" />
                     <ColumnDefinition Width="220" />
+                    <ColumnDefinition Width="56" />
+                    <ColumnDefinition Width="12" />
                     <ColumnDefinition Width="Auto" />
                 </Grid.ColumnDefinitions>
 
@@ -149,7 +151,13 @@
                              Maximum="1"
                              Value="{Binding OperationProgress}" />
 
-                <Button Grid.Column="2"
+                <TextBlock Grid.Column="2"
+                           VerticalAlignment="Center"
+                           HorizontalAlignment="Right"
+                           Style="{StaticResource SecondaryBodyTextStyle}"
+                           Text="{Binding OperationProgressPercentText}" />
+
+                <Button Grid.Column="4"
                         Content="Cancel"
                         IsEnabled="{Binding IsOperationInProgress}"
                         Command="{Binding CancelOperationCommand}"

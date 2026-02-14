@@ -172,3 +172,22 @@ Append-only log of key decisions and changes. Add an entry when we:
   - Deterministic ingest tests now cover platform filtering and guidance statuses for unsupported UFDR / non-message XLSX exports.
 - Alternatives considered:
   - Keep platform filtering only in UI post-processing and generic no-data status messages (rejected due to weaker contract clarity and operator feedback).
+
+### ADR-20260214-10: Messages ingest UX/cancel hardening with structured filters and unified file logging
+- Date: 2026-02-14
+- Ticket: T0008
+- Commit: <fill in after commit>
+- Decision:
+  - Extend the existing file logger into a shared app-wide logger (`app-YYYYMMDD.log`) and instrument job runner, queue lifecycle, cancel requests, and messages ingest checkpoints.
+  - Keep cancellation control in the persistent queue service with per-running-job CTS tracking, while ensuring queued jobs are immediately marked canceled and running jobs are canceled promptly.
+  - Extend message search filtering strategy to combine FTS query matching with structured optional sender/recipient substring filters.
+- Rationale:
+  - Operators need actionable diagnostics for stalls, cancellations, and lifecycle transitions without adding another logging framework.
+  - Queue-centered cancellation preserves deterministic DB state transitions and immediate UI status updates.
+  - Analysts need sender/recipient narrowing without sacrificing FTS relevance for primary query terms.
+- Consequences:
+  - Parse progress/status now surfaces `%` plus processed counters (`X / Y`) through live job updates.
+  - Cancel handling and job lifecycle behavior are now covered with deterministic queued/running cancellation tests.
+  - Search contracts and UI now include sender/recipient filters, with SQL-level narrowing and matching tests.
+- Alternatives considered:
+  - Introducing a separate structured logging framework for queue/ingest flows (rejected to avoid competing logging systems and added complexity).

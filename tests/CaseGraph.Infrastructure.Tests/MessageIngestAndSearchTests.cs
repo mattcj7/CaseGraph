@@ -82,6 +82,8 @@ public sealed class MessageIngestAndSearchTests
             caseInfo.CaseId,
             "burner",
             platformFilter: null,
+            senderFilter: null,
+            recipientFilter: null,
             take: 20,
             skip: 0,
             CancellationToken.None
@@ -187,6 +189,8 @@ public sealed class MessageIngestAndSearchTests
             caseInfo.CaseId,
             "checkpoint",
             platformFilter: "SMS",
+            senderFilter: null,
+            recipientFilter: null,
             take: 20,
             skip: 0,
             CancellationToken.None
@@ -194,6 +198,114 @@ public sealed class MessageIngestAndSearchTests
 
         Assert.NotEmpty(hits);
         Assert.All(hits, hit => Assert.Equal("SMS", hit.Platform));
+    }
+
+    [Fact]
+    public async Task SearchAsync_Fts_RespectsSenderAndRecipientFilters()
+    {
+        await using var fixture = await WorkspaceFixture.CreateAsync();
+        var workspace = fixture.Services.GetRequiredService<ICaseWorkspaceService>();
+        var search = fixture.Services.GetRequiredService<IMessageSearchService>();
+
+        var caseInfo = await workspace.CreateCaseAsync("Sender Recipient Filter Case", CancellationToken.None);
+        var evidenceItemId = Guid.NewGuid();
+        var threadId = Guid.NewGuid();
+
+        await using (var db = await fixture.CreateDbContextAsync())
+        {
+            db.EvidenceItems.Add(new EvidenceItemRecord
+            {
+                EvidenceItemId = evidenceItemId,
+                CaseId = caseInfo.CaseId,
+                DisplayName = "Synthetic",
+                OriginalPath = "synthetic",
+                OriginalFileName = "synthetic.txt",
+                AddedAtUtc = DateTimeOffset.UtcNow,
+                SizeBytes = 1,
+                Sha256Hex = "ab",
+                FileExtension = ".txt",
+                SourceType = "OTHER",
+                ManifestRelativePath = "manifest.json",
+                StoredRelativePath = "stored.dat"
+            });
+
+            db.MessageThreads.Add(new MessageThreadRecord
+            {
+                ThreadId = threadId,
+                CaseId = caseInfo.CaseId,
+                EvidenceItemId = evidenceItemId,
+                Platform = "SMS",
+                ThreadKey = "thread-filter",
+                CreatedAtUtc = DateTimeOffset.UtcNow,
+                SourceLocator = "test:thread:filter",
+                IngestModuleVersion = "test"
+            });
+
+            db.MessageEvents.AddRange(
+                new MessageEventRecord
+                {
+                    MessageEventId = Guid.NewGuid(),
+                    ThreadId = threadId,
+                    CaseId = caseInfo.CaseId,
+                    EvidenceItemId = evidenceItemId,
+                    Platform = "SMS",
+                    TimestampUtc = DateTimeOffset.UtcNow,
+                    Direction = "Incoming",
+                    Sender = "+15551230001",
+                    Recipients = "+15551230077",
+                    Body = "checkpoint update",
+                    IsDeleted = false,
+                    SourceLocator = "xlsx:test#Messages:R10",
+                    IngestModuleVersion = "test"
+                },
+                new MessageEventRecord
+                {
+                    MessageEventId = Guid.NewGuid(),
+                    ThreadId = threadId,
+                    CaseId = caseInfo.CaseId,
+                    EvidenceItemId = evidenceItemId,
+                    Platform = "SMS",
+                    TimestampUtc = DateTimeOffset.UtcNow,
+                    Direction = "Incoming",
+                    Sender = "+15559990000",
+                    Recipients = "+15554443333",
+                    Body = "checkpoint update",
+                    IsDeleted = false,
+                    SourceLocator = "xlsx:test#Messages:R11",
+                    IngestModuleVersion = "test"
+                }
+            );
+
+            await db.SaveChangesAsync();
+        }
+
+        var senderFiltered = await search.SearchAsync(
+            caseInfo.CaseId,
+            "checkpoint",
+            platformFilter: null,
+            senderFilter: "1230001",
+            recipientFilter: null,
+            take: 20,
+            skip: 0,
+            CancellationToken.None
+        );
+
+        Assert.Single(senderFiltered);
+        Assert.Contains("1230001", senderFiltered[0].Sender);
+
+        var recipientFiltered = await search.SearchAsync(
+            caseInfo.CaseId,
+            "checkpoint",
+            platformFilter: null,
+            senderFilter: null,
+            recipientFilter: "4443333",
+            take: 20,
+            skip: 0,
+            CancellationToken.None
+        );
+
+        Assert.Single(recipientFiltered);
+        Assert.Contains("4443333", recipientFiltered[0].Recipients);
     }
 
     [Fact]
@@ -331,6 +443,142 @@ public sealed class MessageIngestAndSearchTests
     }
 
     [Fact]
+    public async Task MessagesIngestJob_CancelQueued_TransitionsToCanceled()
+    {
+        await using var fixture = await WorkspaceFixture.CreateAsync(startRunner: false);
+        var workspace = fixture.Services.GetRequiredService<ICaseWorkspaceService>();
+        var vault = fixture.Services.GetRequiredService<IEvidenceVaultService>();
+        var queue = fixture.Services.GetRequiredService<IJobQueueService>();
+
+        var caseInfo = await workspace.CreateCaseAsync("Cancel Queued Case", CancellationToken.None);
+        var sourceXlsx = fixture.CreateMessagesXlsx("messages-cancel-queued.xlsx", messageCount: 400);
+        var evidence = await vault.ImportEvidenceFileAsync(caseInfo, sourceXlsx, null, CancellationToken.None);
+
+        var jobId = await queue.EnqueueAsync(
+            new JobEnqueueRequest(
+                JobQueueService.MessagesIngestJobType,
+                caseInfo.CaseId,
+                evidence.EvidenceItemId,
+                JsonSerializer.Serialize(new
+                {
+                    SchemaVersion = 1,
+                    caseInfo.CaseId,
+                    evidence.EvidenceItemId
+                })
+            ),
+            CancellationToken.None
+        );
+
+        await queue.CancelAsync(jobId, CancellationToken.None);
+
+        await using var db = await fixture.CreateDbContextAsync();
+        var record = await db.Jobs
+            .AsNoTracking()
+            .FirstAsync(j => j.JobId == jobId);
+
+        Assert.Equal("Canceled", record.Status);
+        Assert.NotNull(record.CompletedAtUtc);
+        Assert.Contains("Canceled", record.StatusMessage, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task MessagesIngestJob_CancelRunning_TransitionsToCanceled()
+    {
+        await using var fixture = await WorkspaceFixture.CreateAsync(startRunner: true);
+        var workspace = fixture.Services.GetRequiredService<ICaseWorkspaceService>();
+        var vault = fixture.Services.GetRequiredService<IEvidenceVaultService>();
+        var queue = fixture.Services.GetRequiredService<IJobQueueService>();
+
+        var caseInfo = await workspace.CreateCaseAsync("Cancel Running Case", CancellationToken.None);
+        var sourceXlsx = fixture.CreateMessagesXlsx("messages-cancel-running.xlsx", messageCount: 3000);
+        var evidence = await vault.ImportEvidenceFileAsync(caseInfo, sourceXlsx, null, CancellationToken.None);
+
+        var jobId = await queue.EnqueueAsync(
+            new JobEnqueueRequest(
+                JobQueueService.MessagesIngestJobType,
+                caseInfo.CaseId,
+                evidence.EvidenceItemId,
+                JsonSerializer.Serialize(new
+                {
+                    SchemaVersion = 1,
+                    caseInfo.CaseId,
+                    evidence.EvidenceItemId
+                })
+            ),
+            CancellationToken.None
+        );
+
+        await WaitForJobStatusAsync(
+            fixture,
+            jobId,
+            status => status == "Running",
+            TimeSpan.FromSeconds(12)
+        );
+
+        await queue.CancelAsync(jobId, CancellationToken.None);
+
+        var canceled = await WaitForJobStatusAsync(
+            fixture,
+            jobId,
+            status => status == "Canceled",
+            TimeSpan.FromSeconds(12)
+        );
+
+        Assert.Equal("Canceled", canceled.Status);
+        Assert.NotNull(canceled.CompletedAtUtc);
+    }
+
+    [Fact]
+    public async Task MessagesIngestJob_ReportsProgressBeforeCompletion()
+    {
+        await using var fixture = await WorkspaceFixture.CreateAsync(startRunner: true);
+        var workspace = fixture.Services.GetRequiredService<ICaseWorkspaceService>();
+        var vault = fixture.Services.GetRequiredService<IEvidenceVaultService>();
+        var queue = fixture.Services.GetRequiredService<IJobQueueService>();
+
+        var caseInfo = await workspace.CreateCaseAsync("Progress Case", CancellationToken.None);
+        var sourceXlsx = fixture.CreateMessagesXlsx("messages-progress.xlsx", messageCount: 900);
+        var evidence = await vault.ImportEvidenceFileAsync(caseInfo, sourceXlsx, null, CancellationToken.None);
+
+        var jobId = await queue.EnqueueAsync(
+            new JobEnqueueRequest(
+                JobQueueService.MessagesIngestJobType,
+                caseInfo.CaseId,
+                evidence.EvidenceItemId,
+                JsonSerializer.Serialize(new
+                {
+                    SchemaVersion = 1,
+                    caseInfo.CaseId,
+                    evidence.EvidenceItemId
+                })
+            ),
+            CancellationToken.None
+        );
+
+        var progressObserved = await WaitForJobRecordAsync(
+            fixture,
+            jobId,
+            record =>
+                record.Progress > 0
+                && record.Progress < 1
+                && record.StatusMessage.Contains("(")
+                && record.StatusMessage.Contains("/"),
+            TimeSpan.FromSeconds(12)
+        );
+        Assert.True(progressObserved.Progress > 0);
+        Assert.Contains("(", progressObserved.StatusMessage);
+        Assert.Contains("/", progressObserved.StatusMessage);
+
+        var succeeded = await WaitForJobStatusAsync(
+            fixture,
+            jobId,
+            status => status == "Succeeded",
+            TimeSpan.FromSeconds(12)
+        );
+        Assert.Equal("Succeeded", succeeded.Status);
+    }
+
+    [Fact]
     public async Task IngestMessagesFromEvidenceAsync_IsIdempotent()
     {
         await using var fixture = await WorkspaceFixture.CreateAsync();
@@ -396,6 +644,32 @@ public sealed class MessageIngestAndSearchTests
         }
 
         throw new TimeoutException($"Job {jobId:D} did not reach target status in time.");
+    }
+
+    private static async Task<JobRecord> WaitForJobRecordAsync(
+        WorkspaceFixture fixture,
+        Guid jobId,
+        Func<JobRecord, bool> recordPredicate,
+        TimeSpan timeout
+    )
+    {
+        var timer = Stopwatch.StartNew();
+        while (timer.Elapsed < timeout)
+        {
+            await using var db = await fixture.CreateDbContextAsync();
+            var record = await db.Jobs
+                .AsNoTracking()
+                .FirstOrDefaultAsync(job => job.JobId == jobId);
+
+            if (record is not null && recordPredicate(record))
+            {
+                return record;
+            }
+
+            await Task.Delay(50);
+        }
+
+        throw new TimeoutException($"Job {jobId:D} did not report expected progress in time.");
     }
 
     private static async Task<AuditEventRecord?> WaitForAuditEventAsync(
@@ -494,7 +768,7 @@ public sealed class MessageIngestAndSearchTests
             return new WorkspaceFixture(provider, pathProvider, runner);
         }
 
-        public string CreateMessagesXlsx(string fileName)
+        public string CreateMessagesXlsx(string fileName, int messageCount = 2)
         {
             var sourceDirectory = Path.Combine(_pathProvider.WorkspaceRoot, "source");
             Directory.CreateDirectory(sourceDirectory);
@@ -518,26 +792,27 @@ public sealed class MessageIngestAndSearchTests
                 Cell("G1", "ThreadId"),
                 Cell("H1", "Platform")
             ));
-            sheetData.Append(new Row(
-                Cell("A2", "2026-02-13T12:00:00Z"),
-                Cell("B2", "Incoming"),
-                Cell("C2", "+15550001"),
-                Cell("D2", "+15550002"),
-                Cell("E2", "Meet me at the checkpoint."),
-                Cell("F2", "false"),
-                Cell("G2", "thread-alpha"),
-                Cell("H2", "SMS")
-            ));
-            sheetData.Append(new Row(
-                Cell("A3", "2026-02-13T12:05:00Z"),
-                Cell("B3", "Outgoing"),
-                Cell("C3", "+15550002"),
-                Cell("D3", "+15550001"),
-                Cell("E3", "Bring the evidence folder."),
-                Cell("F3", "false"),
-                Cell("G3", "thread-alpha"),
-                Cell("H3", "SMS")
-            ));
+            for (var row = 0; row < messageCount; row++)
+            {
+                var rowNumber = row + 2;
+                var incoming = row % 2 == 0;
+                var sender = incoming ? "+15550001" : "+15550002";
+                var recipient = incoming ? "+15550002" : "+15550001";
+                var body = incoming
+                    ? $"Meet me at checkpoint {row + 1}."
+                    : $"Bring evidence folder {row + 1}.";
+
+                sheetData.Append(new Row(
+                    Cell($"A{rowNumber}", $"2026-02-13T12:{(row % 60):00}:00Z"),
+                    Cell($"B{rowNumber}", incoming ? "Incoming" : "Outgoing"),
+                    Cell($"C{rowNumber}", sender),
+                    Cell($"D{rowNumber}", recipient),
+                    Cell($"E{rowNumber}", body),
+                    Cell($"F{rowNumber}", "false"),
+                    Cell($"G{rowNumber}", "thread-alpha"),
+                    Cell($"H{rowNumber}", "SMS")
+                ));
+            }
 
             var sheets = workbookPart.Workbook.AppendChild(new Sheets());
             sheets.Append(new Sheet

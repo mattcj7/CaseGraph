@@ -1,4 +1,5 @@
 using CaseGraph.Core.Abstractions;
+using CaseGraph.Core.Diagnostics;
 using CaseGraph.Infrastructure.Persistence;
 using CaseGraph.Infrastructure.Persistence.Entities;
 using DocumentFormat.OpenXml.Packaging;
@@ -75,18 +76,34 @@ public sealed class MessageIngestService : IMessageIngestService
         CancellationToken ct
     )
     {
-        var result = await IngestMessagesDetailedFromEvidenceAsync(caseId, evidence, progress, ct);
+        IProgress<MessageIngestProgress>? adaptedProgress = null;
+        if (progress is not null)
+        {
+            adaptedProgress = new Progress<MessageIngestProgress>(
+                update => progress.Report(Math.Clamp(update.FractionComplete, 0, 1))
+            );
+        }
+
+        var result = await IngestMessagesDetailedFromEvidenceAsync(
+            caseId,
+            evidence,
+            adaptedProgress,
+            logContext: null,
+            ct
+        );
         return result.IngestedCount;
     }
 
     public async Task<MessageIngestResult> IngestMessagesDetailedFromEvidenceAsync(
         Guid caseId,
         EvidenceItemRecord evidence,
-        IProgress<double>? progress,
+        IProgress<MessageIngestProgress>? progress,
+        string? logContext,
         CancellationToken ct
     )
     {
         await _databaseInitializer.EnsureInitializedAsync(ct);
+        var stopwatch = System.Diagnostics.Stopwatch.StartNew();
 
         var storedAbsolutePath = Path.Combine(
             _workspacePathProvider.CasesRoot,
@@ -98,25 +115,44 @@ public sealed class MessageIngestService : IMessageIngestService
             throw new FileNotFoundException("Stored evidence file is missing.", storedAbsolutePath);
         }
 
+        AppFileLogger.Log(
+            BuildLogMessage(
+                logContext,
+                $"[MessagesIngest] Begin case={caseId:D} evidence={evidence.EvidenceItemId:D} file={evidence.OriginalFileName} ext={evidence.FileExtension}"
+            )
+        );
+
         var parseBatch = evidence.FileExtension.ToLowerInvariant() switch
         {
-            ".xlsx" => await ParseXlsxAsync(storedAbsolutePath, evidence.OriginalFileName, progress, ct),
-            ".ufdr" => await ParseUfdrAsync(storedAbsolutePath, progress, ct),
+            ".xlsx" => await ParseXlsxAsync(storedAbsolutePath, evidence.OriginalFileName, progress, logContext, ct),
+            ".ufdr" => await ParseUfdrAsync(storedAbsolutePath, progress, logContext, ct),
             _ => ParseBatch.Empty("No message parser is available for this evidence type.")
         };
 
         await PersistAsync(caseId, evidence.EvidenceItemId, parseBatch.Messages, ct);
-        progress?.Report(1);
+        progress?.Report(new MessageIngestProgress(
+            FractionComplete: 1,
+            Phase: "Persisting parsed messages...",
+            Processed: parseBatch.Messages.Count,
+            Total: parseBatch.Messages.Count
+        ));
         var statusMessage = parseBatch.Messages.Count == 0
             ? parseBatch.EmptyStatusMessage ?? "No messages found in selected evidence."
             : $"Extracted {parseBatch.Messages.Count} message(s).";
+        AppFileLogger.Log(
+            BuildLogMessage(
+                logContext,
+                $"[MessagesIngest] Complete case={caseId:D} evidence={evidence.EvidenceItemId:D} parsed={parseBatch.Messages.Count} elapsedMs={stopwatch.ElapsedMilliseconds} status=\"{statusMessage}\""
+            )
+        );
         return new MessageIngestResult(parseBatch.Messages.Count, statusMessage);
     }
 
     private async Task<ParseBatch> ParseXlsxAsync(
         string filePath,
         string originalFileName,
-        IProgress<double>? progress,
+        IProgress<MessageIngestProgress>? progress,
+        string? logContext,
         CancellationToken ct
     )
     {
@@ -145,9 +181,23 @@ public sealed class MessageIngestService : IMessageIngestService
             return ParseBatch.Empty(NoMessageSheetsStatus);
         }
 
+        AppFileLogger.Log(
+            BuildLogMessage(
+                logContext,
+                $"[MessagesIngest] XLSX sheets={string.Join(",", selected.Select(s => s.Name?.Value ?? "Sheet"))}"
+            )
+        );
+
         var shared = workbookPart.SharedStringTablePart?.SharedStringTable;
         var totalRows = selected.Sum(s => Math.Max(0, GetRows(workbookPart, s).Count - 1));
         var processed = 0;
+        ReportProgress(
+            progress,
+            0.03,
+            "Parsing \"Messages\"...",
+            0,
+            totalRows
+        );
 
         foreach (var sheet in selected)
         {
@@ -192,7 +242,17 @@ public sealed class MessageIngestService : IMessageIngestService
                 var recipients = map.GetValueOrDefault("recipients");
                 if (string.IsNullOrWhiteSpace(body) && string.IsNullOrWhiteSpace(sender) && string.IsNullOrWhiteSpace(recipients))
                 {
-                    progress?.Report(totalRows == 0 ? 0.7 : 0.03 + (processed / (double)totalRows) * 0.67);
+                    if (processed % 5 == 0 || processed == totalRows)
+                    {
+                        ReportProgress(
+                            progress,
+                            totalRows == 0 ? 0.7 : 0.03 + (processed / (double)totalRows) * 0.67,
+                            "Parsing \"Messages\"...",
+                            processed,
+                            totalRows
+                        );
+                    }
+
                     continue;
                 }
 
@@ -212,10 +272,25 @@ public sealed class MessageIngestService : IMessageIngestService
                     IsDeleted: ParseBoolean(map.GetValueOrDefault("deleted")),
                     SourceLocator: $"xlsx:{originalFileName}#{sheetName}:R{rowNumber}"
                 ));
-                progress?.Report(totalRows == 0 ? 0.7 : 0.03 + (processed / (double)totalRows) * 0.67);
+                if (processed % 5 == 0 || processed == totalRows)
+                {
+                    ReportProgress(
+                        progress,
+                        totalRows == 0 ? 0.7 : 0.03 + (processed / (double)totalRows) * 0.67,
+                        "Parsing \"Messages\"...",
+                        processed,
+                        totalRows
+                    );
+                }
             }
         }
 
+        AppFileLogger.Log(
+            BuildLogMessage(
+                logContext,
+                $"[MessagesIngest] XLSX rowsProcessed={processed} candidateRows={totalRows} parsedMessages={result.Count}"
+            )
+        );
         return new ParseBatch(result, EmptyStatusMessage: null);
     }
 
@@ -227,7 +302,8 @@ public sealed class MessageIngestService : IMessageIngestService
 
     private async Task<ParseBatch> ParseUfdrAsync(
         string filePath,
-        IProgress<double>? progress,
+        IProgress<MessageIngestProgress>? progress,
+        string? logContext,
         CancellationToken ct
     )
     {
@@ -245,13 +321,34 @@ public sealed class MessageIngestService : IMessageIngestService
             return ParseBatch.Empty(UfdrUnsupportedStatus);
         }
 
+        AppFileLogger.Log(
+            BuildLogMessage(
+                logContext,
+                $"[MessagesIngest] UFDR candidateEntries={candidateEntries.Count} parseEntries={entries.Count}"
+            )
+        );
+
+        ReportProgress(
+            progress,
+            0.03,
+            "Parsing UFDR message artifacts...",
+            0,
+            entries.Count
+        );
+
         for (var i = 0; i < entries.Count; i++)
         {
             ct.ThrowIfCancellationRequested();
             var entry = entries[i];
             if (entry.Length == 0)
             {
-                progress?.Report(0.03 + ((i + 1) / (double)entries.Count) * 0.67);
+                ReportProgress(
+                    progress,
+                    0.03 + ((i + 1) / (double)entries.Count) * 0.67,
+                    "Parsing UFDR message artifacts...",
+                    i + 1,
+                    entries.Count
+                );
                 continue;
             }
 
@@ -301,7 +398,13 @@ public sealed class MessageIngestService : IMessageIngestService
                 }
             }
 
-            progress?.Report(0.03 + ((i + 1) / (double)entries.Count) * 0.67);
+            ReportProgress(
+                progress,
+                0.03 + ((i + 1) / (double)entries.Count) * 0.67,
+                "Parsing UFDR message artifacts...",
+                i + 1,
+                entries.Count
+            );
         }
 
         if (result.Count == 0)
@@ -736,6 +839,31 @@ public sealed class MessageIngestService : IMessageIngestService
         }
 
         return value.Trim().ToLowerInvariant() is "1" or "true" or "yes" or "y" or "deleted";
+    }
+
+    private static void ReportProgress(
+        IProgress<MessageIngestProgress>? progress,
+        double fraction,
+        string phase,
+        int? processed,
+        int? total
+    )
+    {
+        progress?.Report(
+            new MessageIngestProgress(
+                FractionComplete: Math.Clamp(fraction, 0, 1),
+                Phase: phase,
+                Processed: processed,
+                Total: total
+            )
+        );
+    }
+
+    private static string BuildLogMessage(string? context, string message)
+    {
+        return string.IsNullOrWhiteSpace(context)
+            ? message
+            : $"{context} {message}";
     }
 
     private static string? NullIfWhiteSpace(string? value)

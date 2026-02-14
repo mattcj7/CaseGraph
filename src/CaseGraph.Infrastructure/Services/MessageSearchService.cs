@@ -23,6 +23,8 @@ public sealed class MessageSearchService : IMessageSearchService
         Guid caseId,
         string query,
         string? platformFilter,
+        string? senderFilter,
+        string? recipientFilter,
         int take,
         int skip,
         CancellationToken ct
@@ -38,6 +40,8 @@ public sealed class MessageSearchService : IMessageSearchService
         var boundedTake = Math.Clamp(take, 1, 200);
         var boundedSkip = Math.Max(0, skip);
         var normalizedPlatformFilter = NormalizePlatformFilter(platformFilter);
+        var normalizedSenderFilter = NormalizeSubstringFilter(senderFilter);
+        var normalizedRecipientFilter = NormalizeSubstringFilter(recipientFilter);
 
         try
         {
@@ -45,6 +49,8 @@ public sealed class MessageSearchService : IMessageSearchService
                 caseId,
                 query.Trim(),
                 normalizedPlatformFilter,
+                normalizedSenderFilter,
+                normalizedRecipientFilter,
                 boundedTake,
                 boundedSkip,
                 ct
@@ -56,6 +62,8 @@ public sealed class MessageSearchService : IMessageSearchService
                 caseId,
                 query.Trim(),
                 normalizedPlatformFilter,
+                normalizedSenderFilter,
+                normalizedRecipientFilter,
                 boundedTake,
                 boundedSkip,
                 ct
@@ -67,6 +75,8 @@ public sealed class MessageSearchService : IMessageSearchService
         Guid caseId,
         string query,
         string? platformFilter,
+        string? senderFilter,
+        string? recipientFilter,
         int take,
         int skip,
         CancellationToken ct
@@ -97,11 +107,15 @@ public sealed class MessageSearchService : IMessageSearchService
             LEFT JOIN MessageThreadRecord mt ON mt.ThreadId = me.ThreadId
             LEFT JOIN EvidenceItemRecord ei ON ei.EvidenceItemId = me.EvidenceItemId
             WHERE MessageEventFts MATCH $query
+              AND ($senderFilter IS NULL OR LOWER(COALESCE(me.Sender, '')) LIKE '%' || $senderFilter || '%')
+              AND ($recipientFilter IS NULL OR LOWER(COALESCE(me.Recipients, '')) LIKE '%' || $recipientFilter || '%')
             ORDER BY bm25(MessageEventFts), me.TimestampUtc DESC
             LIMIT $maxRows;
             """;
         command.Parameters.AddWithValue("$query", query);
         command.Parameters.AddWithValue("$maxRows", Math.Clamp(take + skip + 500, 50, 2000));
+        AddOptionalStringParameter(command, "$senderFilter", senderFilter);
+        AddOptionalStringParameter(command, "$recipientFilter", recipientFilter);
 
         var rawHits = new List<MessageSearchHit>();
         await using var reader = await command.ExecuteReaderAsync(ct);
@@ -114,6 +128,10 @@ public sealed class MessageSearchService : IMessageSearchService
             .Where(hit => hit.CaseId == caseId)
             .Where(hit => string.IsNullOrWhiteSpace(platformFilter)
                 || string.Equals(hit.Platform, platformFilter, StringComparison.OrdinalIgnoreCase))
+            .Where(hit => string.IsNullOrWhiteSpace(senderFilter)
+                || ContainsFilter(hit.Sender, senderFilter))
+            .Where(hit => string.IsNullOrWhiteSpace(recipientFilter)
+                || ContainsFilter(hit.Recipients, recipientFilter))
             .Skip(skip)
             .Take(take)
             .ToList();
@@ -123,6 +141,8 @@ public sealed class MessageSearchService : IMessageSearchService
         Guid caseId,
         string query,
         string? platformFilter,
+        string? senderFilter,
+        string? recipientFilter,
         int take,
         int skip,
         CancellationToken ct
@@ -156,11 +176,15 @@ public sealed class MessageSearchService : IMessageSearchService
                  OR COALESCE(me.Sender, '') LIKE '%' || $query || '%'
                  OR COALESCE(me.Recipients, '') LIKE '%' || $query || '%'
                   )
+              AND ($senderFilter IS NULL OR LOWER(COALESCE(me.Sender, '')) LIKE '%' || $senderFilter || '%')
+              AND ($recipientFilter IS NULL OR LOWER(COALESCE(me.Recipients, '')) LIKE '%' || $recipientFilter || '%')
             ORDER BY me.TimestampUtc DESC
             LIMIT $maxRows;
             """;
         command.Parameters.AddWithValue("$query", query);
         command.Parameters.AddWithValue("$maxRows", Math.Clamp(take + skip + 500, 50, 2000));
+        AddOptionalStringParameter(command, "$senderFilter", senderFilter);
+        AddOptionalStringParameter(command, "$recipientFilter", recipientFilter);
 
         var rawHits = new List<MessageSearchHit>();
         await using var reader = await command.ExecuteReaderAsync(ct);
@@ -173,6 +197,10 @@ public sealed class MessageSearchService : IMessageSearchService
             .Where(hit => hit.CaseId == caseId)
             .Where(hit => string.IsNullOrWhiteSpace(platformFilter)
                 || string.Equals(hit.Platform, platformFilter, StringComparison.OrdinalIgnoreCase))
+            .Where(hit => string.IsNullOrWhiteSpace(senderFilter)
+                || ContainsFilter(hit.Sender, senderFilter))
+            .Where(hit => string.IsNullOrWhiteSpace(recipientFilter)
+                || ContainsFilter(hit.Recipients, recipientFilter))
             .Skip(skip)
             .Take(take)
             .ToList();
@@ -188,6 +216,25 @@ public sealed class MessageSearchService : IMessageSearchService
         return string.Equals(value.Trim(), "All", StringComparison.OrdinalIgnoreCase)
             ? null
             : value.Trim();
+    }
+
+    private static string? NormalizeSubstringFilter(string? value)
+    {
+        return string.IsNullOrWhiteSpace(value) ? null : value.Trim().ToLowerInvariant();
+    }
+
+    private static bool ContainsFilter(string? value, string filter)
+    {
+        return !string.IsNullOrWhiteSpace(value)
+            && value.Contains(filter, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static void AddOptionalStringParameter(SqliteCommand command, string parameterName, string? value)
+    {
+        var parameter = command.CreateParameter();
+        parameter.ParameterName = parameterName;
+        parameter.Value = value is null ? DBNull.Value : value;
+        command.Parameters.Add(parameter);
     }
 
     private static MessageSearchHit ReadHit(SqliteDataReader reader)

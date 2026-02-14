@@ -14,7 +14,8 @@ public interface IMessageIngestService
     Task<MessageIngestResult> IngestMessagesDetailedFromEvidenceAsync(
         Guid caseId,
         EvidenceItemRecord evidence,
-        IProgress<double>? progress,
+        IProgress<MessageIngestProgress>? progress,
+        string? logContext,
         CancellationToken ct
     );
 }

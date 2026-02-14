@@ -1,4 +1,5 @@
 using CaseGraph.Core.Abstractions;
+using CaseGraph.Core.Diagnostics;
 using Microsoft.Extensions.Hosting;
 
 namespace CaseGraph.Infrastructure.Services;
@@ -19,8 +20,10 @@ public sealed class JobRunnerHostedService : BackgroundService
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
+        AppFileLogger.Log("[JobRunner] Hosted service starting.");
         await _workspaceDbInitializer.InitializeAsync(stoppingToken);
         await _jobQueueService.PrimeQueueAsync(stoppingToken);
+        AppFileLogger.Log("[JobRunner] Queue primed.");
 
         while (!stoppingToken.IsCancellationRequested)
         {
@@ -28,23 +31,29 @@ public sealed class JobRunnerHostedService : BackgroundService
             try
             {
                 jobId = await _jobQueueService.DequeueAsync(stoppingToken);
+                AppFileLogger.Log($"[JobRunner] Dequeued jobId={jobId:D}");
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
             {
+                AppFileLogger.Log("[JobRunner] Dequeue canceled by host shutdown.");
                 return;
             }
 
             try
             {
+                AppFileLogger.Log($"[JobRunner] Executing jobId={jobId:D}");
                 await _jobQueueService.ExecuteAsync(jobId, stoppingToken);
+                AppFileLogger.Log($"[JobRunner] Execution finished jobId={jobId:D}");
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
             {
+                AppFileLogger.Log("[JobRunner] Execution canceled by host shutdown.");
                 return;
             }
-            catch
+            catch (Exception ex)
             {
                 // Continue processing queued jobs after unexpected execution errors.
+                AppFileLogger.LogException($"[JobRunner] Unexpected execution failure jobId={jobId:D}", ex);
             }
         }
     }
