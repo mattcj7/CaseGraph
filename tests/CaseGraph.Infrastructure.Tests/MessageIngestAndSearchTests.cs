@@ -9,6 +9,7 @@ using DocumentFormat.OpenXml.Spreadsheet;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using System.Diagnostics;
+using System.IO.Compression;
 using System.Text;
 using System.Text.Json;
 
@@ -77,9 +78,122 @@ public sealed class MessageIngestAndSearchTests
             await db.SaveChangesAsync();
         }
 
-        var hits = await search.SearchAsync(caseInfo.CaseId, "burner", take: 20, skip: 0, CancellationToken.None);
+        var hits = await search.SearchAsync(
+            caseInfo.CaseId,
+            "burner",
+            platformFilter: null,
+            take: 20,
+            skip: 0,
+            CancellationToken.None
+        );
         Assert.NotEmpty(hits);
         Assert.Contains(hits, h => (h.Snippet ?? string.Empty).Contains("burner", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public async Task SearchAsync_Fts_RespectsPlatformFilter()
+    {
+        await using var fixture = await WorkspaceFixture.CreateAsync();
+        var workspace = fixture.Services.GetRequiredService<ICaseWorkspaceService>();
+        var search = fixture.Services.GetRequiredService<IMessageSearchService>();
+
+        var caseInfo = await workspace.CreateCaseAsync("Filter Case", CancellationToken.None);
+        var evidenceItemId = Guid.NewGuid();
+        var threadSms = Guid.NewGuid();
+        var threadSignal = Guid.NewGuid();
+
+        await using (var db = await fixture.CreateDbContextAsync())
+        {
+            db.EvidenceItems.Add(new EvidenceItemRecord
+            {
+                EvidenceItemId = evidenceItemId,
+                CaseId = caseInfo.CaseId,
+                DisplayName = "Synthetic",
+                OriginalPath = "synthetic",
+                OriginalFileName = "synthetic.txt",
+                AddedAtUtc = DateTimeOffset.UtcNow,
+                SizeBytes = 1,
+                Sha256Hex = "ab",
+                FileExtension = ".txt",
+                SourceType = "OTHER",
+                ManifestRelativePath = "manifest.json",
+                StoredRelativePath = "stored.dat"
+            });
+
+            db.MessageThreads.AddRange(
+                new MessageThreadRecord
+                {
+                    ThreadId = threadSms,
+                    CaseId = caseInfo.CaseId,
+                    EvidenceItemId = evidenceItemId,
+                    Platform = "SMS",
+                    ThreadKey = "thread-sms",
+                    CreatedAtUtc = DateTimeOffset.UtcNow,
+                    SourceLocator = "test:thread:sms",
+                    IngestModuleVersion = "test"
+                },
+                new MessageThreadRecord
+                {
+                    ThreadId = threadSignal,
+                    CaseId = caseInfo.CaseId,
+                    EvidenceItemId = evidenceItemId,
+                    Platform = "Signal",
+                    ThreadKey = "thread-signal",
+                    CreatedAtUtc = DateTimeOffset.UtcNow,
+                    SourceLocator = "test:thread:signal",
+                    IngestModuleVersion = "test"
+                }
+            );
+
+            db.MessageEvents.AddRange(
+                new MessageEventRecord
+                {
+                    MessageEventId = Guid.NewGuid(),
+                    ThreadId = threadSms,
+                    CaseId = caseInfo.CaseId,
+                    EvidenceItemId = evidenceItemId,
+                    Platform = "SMS",
+                    TimestampUtc = DateTimeOffset.UtcNow,
+                    Direction = "Incoming",
+                    Sender = "+15550100",
+                    Recipients = "+15550101",
+                    Body = "checkpoint update",
+                    IsDeleted = false,
+                    SourceLocator = "xlsx:test#Messages:R2",
+                    IngestModuleVersion = "test"
+                },
+                new MessageEventRecord
+                {
+                    MessageEventId = Guid.NewGuid(),
+                    ThreadId = threadSignal,
+                    CaseId = caseInfo.CaseId,
+                    EvidenceItemId = evidenceItemId,
+                    Platform = "Signal",
+                    TimestampUtc = DateTimeOffset.UtcNow,
+                    Direction = "Incoming",
+                    Sender = "+15550100",
+                    Recipients = "+15550101",
+                    Body = "checkpoint update",
+                    IsDeleted = false,
+                    SourceLocator = "xlsx:test#Messages:R3",
+                    IngestModuleVersion = "test"
+                }
+            );
+
+            await db.SaveChangesAsync();
+        }
+
+        var hits = await search.SearchAsync(
+            caseInfo.CaseId,
+            "checkpoint",
+            platformFilter: "SMS",
+            take: 20,
+            skip: 0,
+            CancellationToken.None
+        );
+
+        Assert.NotEmpty(hits);
+        Assert.All(hits, hit => Assert.Equal("SMS", hit.Platform));
     }
 
     [Fact]
@@ -134,6 +248,86 @@ public sealed class MessageIngestAndSearchTests
             TimeSpan.FromSeconds(5)
         );
         Assert.NotNull(summaryAudit);
+    }
+
+    [Fact]
+    public async Task MessagesIngestJob_XlsxWithoutRecognizedSheets_ReportsGuidance()
+    {
+        await using var fixture = await WorkspaceFixture.CreateAsync(startRunner: true);
+        var workspace = fixture.Services.GetRequiredService<ICaseWorkspaceService>();
+        var vault = fixture.Services.GetRequiredService<IEvidenceVaultService>();
+        var queue = fixture.Services.GetRequiredService<IJobQueueService>();
+
+        var caseInfo = await workspace.CreateCaseAsync("No Sheet Case", CancellationToken.None);
+        var sourceXlsx = fixture.CreateWorkbookWithoutMessageSheets("messages-nosheet.xlsx");
+        var evidence = await vault.ImportEvidenceFileAsync(caseInfo, sourceXlsx, null, CancellationToken.None);
+
+        var jobId = await queue.EnqueueAsync(
+            new JobEnqueueRequest(
+                JobQueueService.MessagesIngestJobType,
+                caseInfo.CaseId,
+                evidence.EvidenceItemId,
+                JsonSerializer.Serialize(new
+                {
+                    SchemaVersion = 1,
+                    caseInfo.CaseId,
+                    evidence.EvidenceItemId
+                })
+            ),
+            CancellationToken.None
+        );
+
+        var succeeded = await WaitForJobStatusAsync(
+            fixture,
+            jobId,
+            status => status == "Succeeded",
+            TimeSpan.FromSeconds(12)
+        );
+
+        Assert.Equal("No message sheets found; verify export settings.", succeeded.StatusMessage);
+    }
+
+    [Fact]
+    public async Task MessagesIngestJob_UfdrUnsupported_ReportsGuidance()
+    {
+        await using var fixture = await WorkspaceFixture.CreateAsync(startRunner: true);
+        var workspace = fixture.Services.GetRequiredService<ICaseWorkspaceService>();
+        var vault = fixture.Services.GetRequiredService<IEvidenceVaultService>();
+        var queue = fixture.Services.GetRequiredService<IJobQueueService>();
+
+        var caseInfo = await workspace.CreateCaseAsync("UFDR Unsupported Case", CancellationToken.None);
+        var sourceUfdr = fixture.CreateUfdrArchive(
+            "messages-unsupported.ufdr",
+            ("messages/readme.txt", "unsupported format")
+        );
+        var evidence = await vault.ImportEvidenceFileAsync(caseInfo, sourceUfdr, null, CancellationToken.None);
+
+        var jobId = await queue.EnqueueAsync(
+            new JobEnqueueRequest(
+                JobQueueService.MessagesIngestJobType,
+                caseInfo.CaseId,
+                evidence.EvidenceItemId,
+                JsonSerializer.Serialize(new
+                {
+                    SchemaVersion = 1,
+                    caseInfo.CaseId,
+                    evidence.EvidenceItemId
+                })
+            ),
+            CancellationToken.None
+        );
+
+        var succeeded = await WaitForJobStatusAsync(
+            fixture,
+            jobId,
+            status => status == "Succeeded",
+            TimeSpan.FromSeconds(12)
+        );
+
+        Assert.Equal(
+            "UFDR message parsing not supported in this build. Generate a Cellebrite XLSX message export and import that.",
+            succeeded.StatusMessage
+        );
     }
 
     [Fact]
@@ -353,6 +547,53 @@ public sealed class MessageIngestAndSearchTests
                 Name = "Messages"
             });
             workbookPart.Workbook.Save();
+            return path;
+        }
+
+        public string CreateWorkbookWithoutMessageSheets(string fileName)
+        {
+            var sourceDirectory = Path.Combine(_pathProvider.WorkspaceRoot, "source");
+            Directory.CreateDirectory(sourceDirectory);
+
+            var path = Path.Combine(sourceDirectory, fileName);
+            using var doc = SpreadsheetDocument.Create(path, SpreadsheetDocumentType.Workbook);
+            var workbookPart = doc.AddWorkbookPart();
+            workbookPart.Workbook = new Workbook();
+
+            var worksheetPart = workbookPart.AddNewPart<WorksheetPart>();
+            var sheetData = new SheetData();
+            worksheetPart.Worksheet = new Worksheet(sheetData);
+
+            sheetData.Append(new Row(Cell("A1", "Irrelevant")));
+            sheetData.Append(new Row(Cell("A2", "No messages here")));
+
+            var sheets = workbookPart.Workbook.AppendChild(new Sheets());
+            sheets.Append(new Sheet
+            {
+                Id = workbookPart.GetIdOfPart(worksheetPart),
+                SheetId = 1,
+                Name = "Contacts"
+            });
+            workbookPart.Workbook.Save();
+            return path;
+        }
+
+        public string CreateUfdrArchive(string fileName, params (string entryPath, string content)[] entries)
+        {
+            var sourceDirectory = Path.Combine(_pathProvider.WorkspaceRoot, "source");
+            Directory.CreateDirectory(sourceDirectory);
+
+            var path = Path.Combine(sourceDirectory, fileName);
+            using (var archive = ZipFile.Open(path, ZipArchiveMode.Create))
+            {
+                foreach (var (entryPath, content) in entries)
+                {
+                    var entry = archive.CreateEntry(entryPath, CompressionLevel.Optimal);
+                    using var writer = new StreamWriter(entry.Open(), Encoding.UTF8);
+                    writer.Write(content);
+                }
+            }
+
             return path;
         }
 

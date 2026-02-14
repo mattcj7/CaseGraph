@@ -19,7 +19,6 @@ This file tracks planned, active, and completed tickets.
 ```
 
 ## Upcoming Tickets (Planned)
-- T0007 - Search (SQLite FTS5) + Search UI
 - T0008 - Timeline UI + provenance drilldown
 - T0009 - Basic export (timeline/keyword hits)
 - T0010+ - ZIP-HTML social returns
@@ -38,3 +37,4 @@ This file tracks planned, active, and completed tickets.
 - 2026-02-13 - T0006 - Added message ingest (UFDR/XLSX best-effort), SQLite message schema + FTS search, queue integration, and working Search UI with provenance.
 - 2026-02-13 - T0006 - Added migration-first workspace DB initialization with legacy backup/rebuild repair and startup error visibility to prevent no-window startup failures.
 - 2026-02-13 - T0006 - Added startup bootstrap file logging, required-table repair with workspace.broken backups, and startup/runner DB init gating verification.
+- 2026-02-14 - T0007 - Completed message ingest/search v1 hardening with platform-filtered cancellable search, deterministic XLSX threading, UFDR/XLSX guidance statuses, and deterministic tests.

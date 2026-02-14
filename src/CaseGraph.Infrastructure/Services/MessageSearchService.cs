@@ -22,6 +22,7 @@ public sealed class MessageSearchService : IMessageSearchService
     public async Task<IReadOnlyList<MessageSearchHit>> SearchAsync(
         Guid caseId,
         string query,
+        string? platformFilter,
         int take,
         int skip,
         CancellationToken ct
@@ -36,20 +37,36 @@ public sealed class MessageSearchService : IMessageSearchService
 
         var boundedTake = Math.Clamp(take, 1, 200);
         var boundedSkip = Math.Max(0, skip);
+        var normalizedPlatformFilter = NormalizePlatformFilter(platformFilter);
 
         try
         {
-            return await SearchWithFtsAsync(caseId, query.Trim(), boundedTake, boundedSkip, ct);
+            return await SearchWithFtsAsync(
+                caseId,
+                query.Trim(),
+                normalizedPlatformFilter,
+                boundedTake,
+                boundedSkip,
+                ct
+            );
         }
         catch (SqliteException)
         {
-            return await SearchWithLikeFallbackAsync(caseId, query.Trim(), boundedTake, boundedSkip, ct);
+            return await SearchWithLikeFallbackAsync(
+                caseId,
+                query.Trim(),
+                normalizedPlatformFilter,
+                boundedTake,
+                boundedSkip,
+                ct
+            );
         }
     }
 
     private async Task<IReadOnlyList<MessageSearchHit>> SearchWithFtsAsync(
         Guid caseId,
         string query,
+        string? platformFilter,
         int take,
         int skip,
         CancellationToken ct
@@ -95,6 +112,8 @@ public sealed class MessageSearchService : IMessageSearchService
 
         return rawHits
             .Where(hit => hit.CaseId == caseId)
+            .Where(hit => string.IsNullOrWhiteSpace(platformFilter)
+                || string.Equals(hit.Platform, platformFilter, StringComparison.OrdinalIgnoreCase))
             .Skip(skip)
             .Take(take)
             .ToList();
@@ -103,6 +122,7 @@ public sealed class MessageSearchService : IMessageSearchService
     private async Task<IReadOnlyList<MessageSearchHit>> SearchWithLikeFallbackAsync(
         Guid caseId,
         string query,
+        string? platformFilter,
         int take,
         int skip,
         CancellationToken ct
@@ -151,9 +171,23 @@ public sealed class MessageSearchService : IMessageSearchService
 
         return rawHits
             .Where(hit => hit.CaseId == caseId)
+            .Where(hit => string.IsNullOrWhiteSpace(platformFilter)
+                || string.Equals(hit.Platform, platformFilter, StringComparison.OrdinalIgnoreCase))
             .Skip(skip)
             .Take(take)
             .ToList();
+    }
+
+    private static string? NormalizePlatformFilter(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return null;
+        }
+
+        return string.Equals(value.Trim(), "All", StringComparison.OrdinalIgnoreCase)
+            ? null
+            : value.Trim();
     }
 
     private static MessageSearchHit ReadHit(SqliteDataReader reader)

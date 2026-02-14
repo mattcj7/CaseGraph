@@ -6,6 +6,8 @@ using DocumentFormat.OpenXml.Spreadsheet;
 using Microsoft.EntityFrameworkCore;
 using System.Globalization;
 using System.IO.Compression;
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 using System.Xml;
 using System.Xml.Linq;
@@ -15,6 +17,9 @@ namespace CaseGraph.Infrastructure.Services;
 public sealed class MessageIngestService : IMessageIngestService
 {
     private const string IngestModuleVersion = "CaseGraph.MessagesIngest/v1";
+    private const string NoMessageSheetsStatus = "No message sheets found; verify export settings.";
+    private const string UfdrUnsupportedStatus = "UFDR message parsing not supported in this build. Generate a Cellebrite XLSX message export and import that.";
+    private const string UfdrEncryptedStatus = "UFDR content appears encrypted or unavailable in this build. Generate a Cellebrite XLSX message export and import that.";
 
     private static readonly string[] PreferredSheets =
     {
@@ -26,6 +31,23 @@ public sealed class MessageIngestService : IMessageIngestService
         "WhatsApp",
         "Signal",
         "Instagram"
+    };
+
+    private static readonly string[] UfdrKeywords =
+    {
+        "message",
+        "sms",
+        "imessage",
+        "whatsapp",
+        "chat",
+        "conversation"
+    };
+
+    private static readonly string[] UfdrEncryptedKeywords =
+    {
+        "encrypt",
+        "cipher",
+        "protected"
     };
 
     private readonly IDbContextFactory<WorkspaceDbContext> _dbContextFactory;
@@ -53,6 +75,17 @@ public sealed class MessageIngestService : IMessageIngestService
         CancellationToken ct
     )
     {
+        var result = await IngestMessagesDetailedFromEvidenceAsync(caseId, evidence, progress, ct);
+        return result.IngestedCount;
+    }
+
+    public async Task<MessageIngestResult> IngestMessagesDetailedFromEvidenceAsync(
+        Guid caseId,
+        EvidenceItemRecord evidence,
+        IProgress<double>? progress,
+        CancellationToken ct
+    )
+    {
         await _databaseInitializer.EnsureInitializedAsync(ct);
 
         var storedAbsolutePath = Path.Combine(
@@ -65,19 +98,22 @@ public sealed class MessageIngestService : IMessageIngestService
             throw new FileNotFoundException("Stored evidence file is missing.", storedAbsolutePath);
         }
 
-        IReadOnlyList<ParsedMessage> parsed = evidence.FileExtension.ToLowerInvariant() switch
+        var parseBatch = evidence.FileExtension.ToLowerInvariant() switch
         {
             ".xlsx" => await ParseXlsxAsync(storedAbsolutePath, evidence.OriginalFileName, progress, ct),
             ".ufdr" => await ParseUfdrAsync(storedAbsolutePath, progress, ct),
-            _ => Array.Empty<ParsedMessage>()
+            _ => ParseBatch.Empty("No message parser is available for this evidence type.")
         };
 
-        await PersistAsync(caseId, evidence.EvidenceItemId, parsed, ct);
+        await PersistAsync(caseId, evidence.EvidenceItemId, parseBatch.Messages, ct);
         progress?.Report(1);
-        return parsed.Count;
+        var statusMessage = parseBatch.Messages.Count == 0
+            ? parseBatch.EmptyStatusMessage ?? "No messages found in selected evidence."
+            : $"Extracted {parseBatch.Messages.Count} message(s).";
+        return new MessageIngestResult(parseBatch.Messages.Count, statusMessage);
     }
 
-    private async Task<IReadOnlyList<ParsedMessage>> ParseXlsxAsync(
+    private async Task<ParseBatch> ParseXlsxAsync(
         string filePath,
         string originalFileName,
         IProgress<double>? progress,
@@ -91,7 +127,7 @@ public sealed class MessageIngestService : IMessageIngestService
         var sheets = workbookPart.Workbook.Sheets?.OfType<Sheet>().ToList() ?? new List<Sheet>();
         if (sheets.Count == 0)
         {
-            return result;
+            return ParseBatch.Empty(NoMessageSheetsStatus);
         }
 
         var selected = new List<Sheet>();
@@ -106,7 +142,7 @@ public sealed class MessageIngestService : IMessageIngestService
 
         if (selected.Count == 0)
         {
-            selected = sheets;
+            return ParseBatch.Empty(NoMessageSheetsStatus);
         }
 
         var shared = workbookPart.SharedStringTablePart?.SharedStringTable;
@@ -162,9 +198,11 @@ public sealed class MessageIngestService : IMessageIngestService
 
                 var rowNumber = row.RowIndex?.Value ?? rowOrdinal;
                 var sheetName = sheet.Name?.Value ?? "Sheet";
+                var platform = NormalizePlatform(map.GetValueOrDefault("platform") ?? sheetName);
                 result.Add(new ParsedMessage(
-                    Platform: NormalizePlatform(map.GetValueOrDefault("platform") ?? sheetName),
-                    ThreadKey: NullIfWhiteSpace(map.GetValueOrDefault("threadkey")) ?? $"{sender}|{recipients}",
+                    Platform: platform,
+                    ThreadKey: NullIfWhiteSpace(map.GetValueOrDefault("threadkey"))
+                        ?? BuildDeterministicThreadKey(platform, sender, recipients),
                     ThreadTitle: NullIfWhiteSpace(map.GetValueOrDefault("threadtitle")),
                     TimestampUtc: ParseTimestamp(map.GetValueOrDefault("timestamp")),
                     Direction: NormalizeDirection(map.GetValueOrDefault("direction")),
@@ -178,7 +216,7 @@ public sealed class MessageIngestService : IMessageIngestService
             }
         }
 
-        return result;
+        return new ParseBatch(result, EmptyStatusMessage: null);
     }
 
     private static List<Row> GetRows(WorkbookPart workbookPart, Sheet sheet)
@@ -187,7 +225,7 @@ public sealed class MessageIngestService : IMessageIngestService
         return wsPart.Worksheet.GetFirstChild<SheetData>()?.Elements<Row>().ToList() ?? new List<Row>();
     }
 
-    private async Task<IReadOnlyList<ParsedMessage>> ParseUfdrAsync(
+    private async Task<ParseBatch> ParseUfdrAsync(
         string filePath,
         IProgress<double>? progress,
         CancellationToken ct
@@ -196,13 +234,15 @@ public sealed class MessageIngestService : IMessageIngestService
         var result = new List<ParsedMessage>();
         await using var stream = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.Read);
         using var archive = new ZipArchive(stream, ZipArchiveMode.Read, leaveOpen: true);
-        var entries = archive.Entries
-            .Where(e => (e.FullName.EndsWith(".json", StringComparison.OrdinalIgnoreCase) || e.FullName.EndsWith(".xml", StringComparison.OrdinalIgnoreCase))
-                && (e.FullName.Contains("message", StringComparison.OrdinalIgnoreCase) || e.FullName.Contains("chat", StringComparison.OrdinalIgnoreCase) || e.FullName.Contains("sms", StringComparison.OrdinalIgnoreCase)))
+        var candidateEntries = archive.Entries
+            .Where(e => UfdrKeywords.Any(keyword => e.FullName.Contains(keyword, StringComparison.OrdinalIgnoreCase)))
+            .ToList();
+        var entries = candidateEntries
+            .Where(e => e.FullName.EndsWith(".json", StringComparison.OrdinalIgnoreCase) || e.FullName.EndsWith(".xml", StringComparison.OrdinalIgnoreCase))
             .ToList();
         if (entries.Count == 0)
         {
-            return result;
+            return ParseBatch.Empty(UfdrUnsupportedStatus);
         }
 
         for (var i = 0; i < entries.Count; i++)
@@ -264,7 +304,15 @@ public sealed class MessageIngestService : IMessageIngestService
             progress?.Report(0.03 + ((i + 1) / (double)entries.Count) * 0.67);
         }
 
-        return result;
+        if (result.Count == 0)
+        {
+            var encrypted = candidateEntries.Any(
+                e => UfdrEncryptedKeywords.Any(keyword => e.FullName.Contains(keyword, StringComparison.OrdinalIgnoreCase))
+            );
+            return ParseBatch.Empty(encrypted ? UfdrEncryptedStatus : UfdrUnsupportedStatus);
+        }
+
+        return new ParseBatch(result, EmptyStatusMessage: null);
     }
 
     private async Task PersistAsync(
@@ -648,6 +696,38 @@ public sealed class MessageIngestService : IMessageIngestService
         return "OTHER";
     }
 
+    private static string BuildDeterministicThreadKey(
+        string platform,
+        string? sender,
+        string? recipients
+    )
+    {
+        var canonical = string.Join(
+            "|",
+            NormalizePlatform(platform),
+            CanonicalIdentifierSet(sender),
+            CanonicalIdentifierSet(recipients)
+        );
+        var hash = SHA256.HashData(Encoding.UTF8.GetBytes(canonical));
+        return $"v1:{Convert.ToHexString(hash.AsSpan(0, 12)).ToLowerInvariant()}";
+    }
+
+    private static string CanonicalIdentifierSet(string? raw)
+    {
+        if (string.IsNullOrWhiteSpace(raw))
+        {
+            return string.Empty;
+        }
+
+        return string.Join(
+            ",",
+            SplitIdentifiers(raw)
+                .Select(value => value.ToLowerInvariant())
+                .Distinct(StringComparer.Ordinal)
+                .OrderBy(value => value, StringComparer.Ordinal)
+        );
+    }
+
     private static bool ParseBoolean(string? value)
     {
         if (string.IsNullOrWhiteSpace(value))
@@ -661,6 +741,11 @@ public sealed class MessageIngestService : IMessageIngestService
     private static string? NullIfWhiteSpace(string? value)
     {
         return string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+    }
+
+    private sealed record ParseBatch(IReadOnlyList<ParsedMessage> Messages, string? EmptyStatusMessage)
+    {
+        public static ParseBatch Empty(string statusMessage) => new(Array.Empty<ParsedMessage>(), statusMessage);
     }
 
     private sealed record ParsedMessage(

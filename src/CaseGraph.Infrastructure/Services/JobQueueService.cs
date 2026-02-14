@@ -286,15 +286,13 @@ public sealed class JobQueueService : IJobQueueService
                     break;
                 case MessagesIngestJobType:
                 {
-                    var ingestedCount = await ExecuteMessagesIngestAsync(jobToExecute, linkedCts.Token);
+                    var ingestResult = await ExecuteMessagesIngestAsync(jobToExecute, linkedCts.Token);
                     await CompleteSucceededAsync(
                         jobId,
-                        ingestedCount == 0
-                            ? "Messages ingest completed. No messages found."
-                            : $"Messages ingest completed. Extracted {ingestedCount} message(s).",
+                        ingestResult.StatusMessage,
                         CancellationToken.None
                     );
-                    await WriteMessagesIngestSummaryAsync(jobToExecute, ingestedCount, linkedCts.Token);
+                    await WriteMessagesIngestSummaryAsync(jobToExecute, ingestResult.IngestedCount, linkedCts.Token);
                     break;
                 }
                 case TestLongRunningJobType:
@@ -420,7 +418,7 @@ public sealed class JobQueueService : IJobQueueService
         }
     }
 
-    private async Task<int> ExecuteMessagesIngestAsync(JobRecord jobRecord, CancellationToken ct)
+    private async Task<MessageIngestResult> ExecuteMessagesIngestAsync(JobRecord jobRecord, CancellationToken ct)
     {
         var payload = JsonSerializer.Deserialize<MessagesIngestPayload>(
             jobRecord.JsonPayload,
@@ -470,7 +468,7 @@ public sealed class JobQueueService : IJobQueueService
             );
         });
 
-        var ingestedCount = await _messageIngestService.IngestMessagesFromEvidenceAsync(
+        var ingestResult = await _messageIngestService.IngestMessagesDetailedFromEvidenceAsync(
             payload.CaseId,
             evidence,
             ingestProgress,
@@ -480,13 +478,11 @@ public sealed class JobQueueService : IJobQueueService
         await ReportProgressAsync(
             jobRecord.JobId,
             1,
-            ingestedCount == 0
-                ? "No messages found in selected evidence."
-                : $"Extracted {ingestedCount} message(s).",
+            ingestResult.StatusMessage,
             ct
         );
 
-        return ingestedCount;
+        return ingestResult;
     }
 
     private async Task ExecuteTestLongRunningAsync(JobRecord jobRecord, CancellationToken ct)

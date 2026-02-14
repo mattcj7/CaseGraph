@@ -10,4 +10,11 @@ public interface IMessageIngestService
         IProgress<double>? progress,
         CancellationToken ct
     );
+
+    Task<MessageIngestResult> IngestMessagesDetailedFromEvidenceAsync(
+        Guid caseId,
+        EvidenceItemRecord evidence,
+        IProgress<double>? progress,
+        CancellationToken ct
+    );
 }

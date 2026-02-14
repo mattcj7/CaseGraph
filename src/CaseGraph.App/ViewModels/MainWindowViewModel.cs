@@ -32,6 +32,7 @@ public partial class MainWindowViewModel : ObservableObject
     private readonly SemaphoreSlim _jobCompletionRefreshGate = new(1, 1);
 
     private CancellationTokenSource? _operationCts;
+    private CancellationTokenSource? _messageSearchCts;
     private Guid? _activeJobId;
     private bool _isInitialized;
 
@@ -492,6 +493,7 @@ public partial class MainWindowViewModel : ObservableObject
             return;
         }
 
+        var searchCts = BeginMessageSearch();
         IsMessageSearchInProgress = true;
         MessageSearchStatusText = "Searching messages...";
 
@@ -500,20 +502,20 @@ public partial class MainWindowViewModel : ObservableObject
             var hits = await _messageSearchService.SearchAsync(
                 CurrentCaseInfo.CaseId,
                 query,
+                string.Equals(SelectedMessageSearchPlatform, "All", StringComparison.OrdinalIgnoreCase)
+                    ? null
+                    : SelectedMessageSearchPlatform,
                 take: 250,
                 skip: 0,
-                CancellationToken.None
+                searchCts.Token
             );
 
-            var filtered = hits.AsEnumerable();
-            if (!string.Equals(SelectedMessageSearchPlatform, "All", StringComparison.OrdinalIgnoreCase))
+            if (!ReferenceEquals(_messageSearchCts, searchCts))
             {
-                filtered = filtered.Where(hit =>
-                    string.Equals(hit.Platform, SelectedMessageSearchPlatform, StringComparison.OrdinalIgnoreCase)
-                );
+                return;
             }
 
-            var ordered = filtered
+            var ordered = hits
                 .OrderByDescending(hit => hit.TimestampUtc ?? DateTimeOffset.MinValue)
                 .ToList();
 
@@ -528,9 +530,18 @@ public partial class MainWindowViewModel : ObservableObject
                 ? "No message hits."
                 : $"Found {ordered.Count} message hit(s).";
         }
+        catch (OperationCanceledException) when (searchCts.IsCancellationRequested)
+        {
+            if (!ReferenceEquals(_messageSearchCts, searchCts))
+            {
+                return;
+            }
+
+            MessageSearchStatusText = "Search canceled.";
+        }
         finally
         {
-            IsMessageSearchInProgress = false;
+            EndMessageSearch(searchCts);
         }
     }
 
@@ -827,6 +838,26 @@ public partial class MainWindowViewModel : ObservableObject
         OperationText = operationText;
 
         return new OperationScope(this, _operationCts);
+    }
+
+    private CancellationTokenSource BeginMessageSearch()
+    {
+        _messageSearchCts?.Cancel();
+        _messageSearchCts?.Dispose();
+        _messageSearchCts = new CancellationTokenSource();
+        return _messageSearchCts;
+    }
+
+    private void EndMessageSearch(CancellationTokenSource searchCts)
+    {
+        if (!ReferenceEquals(_messageSearchCts, searchCts))
+        {
+            return;
+        }
+
+        IsMessageSearchInProgress = false;
+        _messageSearchCts.Dispose();
+        _messageSearchCts = null;
     }
 
     private void EndOperation(CancellationTokenSource cts)

@@ -153,3 +153,22 @@ Append-only log of key decisions and changes. Add an entry when we:
   - Additional deterministic infrastructure test coverage now validates legacy DB repair during runner startup.
 - Alternatives considered:
   - Rely only on host logging and migration-history presence checks (rejected due to blind spots during early startup and partial schema corruption).
+
+### ADR-20260214-09: Messages ingest/search v1 contract hardening and operator guidance
+- Date: 2026-02-14
+- Ticket: T0007
+- Commit: <fill in after commit>
+- Decision:
+  - Keep the normalized message schema and SQLite FTS5 trigger-sync model, while hardening v1 behavior with platform-filtered search service contracts and cancellable UI search execution.
+  - Standardize ingest outcome guidance for no-sheet XLSX and unsupported/encrypted UFDR paths so `MessagesIngest` jobs complete with actionable operator messages.
+  - Make XLSX thread-key fallback deterministic via v1 hash derivation from platform/sender/recipients when conversation IDs are absent.
+- Rationale:
+  - Analysts need predictable query filtering and non-blocking UX when searching large message corpora.
+  - No-result ingest paths must be explicit and actionable to avoid silent operator ambiguity.
+  - Deterministic thread keys improve rebuild-per-evidence idempotency and cross-run consistency.
+- Consequences:
+  - `IMessageSearchService` now accepts platform filters directly, and search cancellation is wired through the app view model.
+  - `MessagesIngest` status text now differentiates actionable no-data cases from successful extraction counts.
+  - Deterministic ingest tests now cover platform filtering and guidance statuses for unsupported UFDR / non-message XLSX exports.
+- Alternatives considered:
+  - Keep platform filtering only in UI post-processing and generic no-data status messages (rejected due to weaker contract clarity and operator feedback).
