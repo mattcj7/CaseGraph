@@ -142,6 +142,52 @@ public sealed class EvidenceVaultServiceTests
     }
 
     [Fact]
+    public async Task GetRecentAsync_ReturnsFreshValues_AfterExternalJobUpdate()
+    {
+        await using var fixture = await WorkspaceFixture.CreateAsync(startRunner: false);
+        var jobQueue = fixture.Services.GetRequiredService<IJobQueueService>();
+
+        var payload = JsonSerializer.Serialize(
+            new
+            {
+                SchemaVersion = 1,
+                DelayMilliseconds = 5000
+            }
+        );
+
+        var jobId = await jobQueue.EnqueueAsync(
+            new JobEnqueueRequest(
+                JobQueueService.TestLongRunningJobType,
+                CaseId: null,
+                EvidenceItemId: null,
+                payload
+            ),
+            CancellationToken.None
+        );
+
+        var initial = await jobQueue.GetRecentAsync(caseId: null, take: 10, CancellationToken.None);
+        var initialJob = initial.First(job => job.JobId == jobId);
+        Assert.Equal(JobStatus.Queued, initialJob.Status);
+
+        await using (var db = await fixture.CreateDbContextAsync())
+        {
+            var record = await db.Jobs.FirstAsync(job => job.JobId == jobId);
+            record.Status = JobStatus.Succeeded.ToString();
+            record.Progress = 1;
+            record.CompletedAtUtc = DateTimeOffset.UtcNow;
+            record.StatusMessage = "Succeeded: External update.";
+            await db.SaveChangesAsync();
+        }
+
+        var refreshed = await jobQueue.GetRecentAsync(caseId: null, take: 10, CancellationToken.None);
+        var refreshedJob = refreshed.First(job => job.JobId == jobId);
+        Assert.Equal(JobStatus.Succeeded, refreshedJob.Status);
+        Assert.Equal(1, refreshedJob.Progress);
+        Assert.Equal("Succeeded: External update.", refreshedJob.StatusMessage);
+        Assert.NotNull(refreshedJob.CompletedAtUtc);
+    }
+
+    [Fact]
     public async Task Runner_ExecutesEvidenceVerifyJob_SucceedsThenFailsAfterTamper()
     {
         await using var fixture = await WorkspaceFixture.CreateAsync(startRunner: true);

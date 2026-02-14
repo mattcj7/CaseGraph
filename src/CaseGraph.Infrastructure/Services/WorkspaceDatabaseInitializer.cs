@@ -251,7 +251,8 @@ public class WorkspaceDbInitializer : IWorkspaceDbInitializer, IWorkspaceDatabas
         {
             job.Status = "Abandoned";
             job.CompletedAtUtc = now;
-            job.StatusMessage = "App shutdown before completion.";
+            job.Progress = 1;
+            job.StatusMessage = "Abandoned (app shutdown before completion)";
             job.ErrorMessage ??= "Job abandoned after unexpected app shutdown.";
 
             db.AuditEvents.Add(

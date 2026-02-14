@@ -342,6 +342,9 @@ public sealed class MessageIngestAndSearchTests
             TimeSpan.FromSeconds(12)
         );
         Assert.Equal("Succeeded", succeeded.Status);
+        Assert.Equal(1, succeeded.Progress);
+        Assert.NotNull(succeeded.CompletedAtUtc);
+        Assert.StartsWith("Succeeded:", succeeded.StatusMessage, StringComparison.Ordinal);
 
         await using var db = await fixture.CreateDbContextAsync();
         var events = await db.MessageEvents
@@ -396,7 +399,7 @@ public sealed class MessageIngestAndSearchTests
             TimeSpan.FromSeconds(12)
         );
 
-        Assert.Equal("No message sheets found; verify export settings.", succeeded.StatusMessage);
+        Assert.Equal("Succeeded: No message sheets found; verify export settings.", succeeded.StatusMessage);
     }
 
     [Fact]
@@ -437,7 +440,7 @@ public sealed class MessageIngestAndSearchTests
         );
 
         Assert.Equal(
-            "UFDR message parsing not supported in this build. Generate a Cellebrite XLSX message export and import that.",
+            "Succeeded: UFDR message parsing not supported in this build. Generate a Cellebrite XLSX message export and import that.",
             succeeded.StatusMessage
         );
     }
@@ -477,8 +480,9 @@ public sealed class MessageIngestAndSearchTests
             .FirstAsync(j => j.JobId == jobId);
 
         Assert.Equal("Canceled", record.Status);
+        Assert.Equal(1, record.Progress);
         Assert.NotNull(record.CompletedAtUtc);
-        Assert.Contains("Canceled", record.StatusMessage, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal("Canceled", record.StatusMessage);
     }
 
     [Fact]
@@ -525,7 +529,9 @@ public sealed class MessageIngestAndSearchTests
         );
 
         Assert.Equal("Canceled", canceled.Status);
+        Assert.Equal(1, canceled.Progress);
         Assert.NotNull(canceled.CompletedAtUtc);
+        Assert.Equal("Canceled", canceled.StatusMessage);
     }
 
     [Fact]

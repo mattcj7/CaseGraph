@@ -191,3 +191,22 @@ Append-only log of key decisions and changes. Add an entry when we:
   - Search contracts and UI now include sender/recipient filters, with SQL-level narrowing and matching tests.
 - Alternatives considered:
   - Introducing a separate structured logging framework for queue/ingest flows (rejected to avoid competing logging systems and added complexity).
+
+### ADR-20260214-11: Terminal job-state overwrite and fresh no-tracking UI reads
+- Date: 2026-02-14
+- Ticket: T0008A
+- Commit: <fill in after commit>
+- Decision:
+  - Normalize all terminal job transitions (`Succeeded`, `Failed`, `Canceled`, `Abandoned`) to persist `CompletedAtUtc`, `Progress=1.0`, and terminal `StatusMessage` values.
+  - Compose `MessagesIngest` success terminal messages in the runner from handler output counts, with optional handler summary override text for guidance scenarios.
+  - Keep UI job refreshes backed by fresh `DbContextFactory` queries with `AsNoTracking`, and harden running-cancel races via pending-cancel signaling until per-job CTS registration is available.
+- Rationale:
+  - Jobs that are terminal in status but partial in progress/message create “hung” operator perception and break trust in queue state.
+  - Terminal messaging must come from deterministic runner-level completion rules, independent of progress callbacks.
+  - Race-safe cancel guarantees predictable queued vs running behavior under rapid operator actions.
+- Consequences:
+  - Terminal job rows now converge on consistent completion fields, including queued cancels and app-shutdown abandonments.
+  - `MessagesIngest` completion now reliably surfaces `Succeeded: ...` summaries with 100% progress.
+  - Additional deterministic tests now cover terminal overwrite semantics, queued-cancel terminal fields, and fresh-read query behavior.
+- Alternatives considered:
+  - Preserve partial progress for canceled/failed jobs (rejected to avoid ambiguous “still in progress” UX in terminal states).

@@ -91,7 +91,7 @@ public sealed class MessageIngestService : IMessageIngestService
             logContext: null,
             ct
         );
-        return result.IngestedCount;
+        return result.MessagesExtracted;
     }
 
     public async Task<MessageIngestResult> IngestMessagesDetailedFromEvidenceAsync(
@@ -129,23 +129,27 @@ public sealed class MessageIngestService : IMessageIngestService
             _ => ParseBatch.Empty("No message parser is available for this evidence type.")
         };
 
-        await PersistAsync(caseId, evidence.EvidenceItemId, parseBatch.Messages, ct);
+        var threadsCreated = await PersistAsync(caseId, evidence.EvidenceItemId, parseBatch.Messages, ct);
         progress?.Report(new MessageIngestProgress(
             FractionComplete: 1,
             Phase: "Persisting parsed messages...",
             Processed: parseBatch.Messages.Count,
             Total: parseBatch.Messages.Count
         ));
-        var statusMessage = parseBatch.Messages.Count == 0
-            ? parseBatch.EmptyStatusMessage ?? "No messages found in selected evidence."
-            : $"Extracted {parseBatch.Messages.Count} message(s).";
+        var summaryOverride = parseBatch.Messages.Count == 0
+            ? parseBatch.EmptyStatusMessage ?? "Extracted 0 message(s)."
+            : null;
         AppFileLogger.Log(
             BuildLogMessage(
                 logContext,
-                $"[MessagesIngest] Complete case={caseId:D} evidence={evidence.EvidenceItemId:D} parsed={parseBatch.Messages.Count} elapsedMs={stopwatch.ElapsedMilliseconds} status=\"{statusMessage}\""
+                $"[MessagesIngest] Complete case={caseId:D} evidence={evidence.EvidenceItemId:D} parsed={parseBatch.Messages.Count} threads={threadsCreated} elapsedMs={stopwatch.ElapsedMilliseconds} summary=\"{summaryOverride ?? $"Extracted {parseBatch.Messages.Count} message(s)."}\""
             )
         );
-        return new MessageIngestResult(parseBatch.Messages.Count, statusMessage);
+        return new MessageIngestResult(
+            MessagesExtracted: parseBatch.Messages.Count,
+            ThreadsCreated: threadsCreated,
+            SummaryOverride: summaryOverride
+        );
     }
 
     private async Task<ParseBatch> ParseXlsxAsync(
@@ -418,7 +422,7 @@ public sealed class MessageIngestService : IMessageIngestService
         return new ParseBatch(result, EmptyStatusMessage: null);
     }
 
-    private async Task PersistAsync(
+    private async Task<int> PersistAsync(
         Guid caseId,
         Guid evidenceItemId,
         IReadOnlyList<ParsedMessage> parsed,
@@ -447,7 +451,7 @@ public sealed class MessageIngestService : IMessageIngestService
         if (parsed.Count == 0)
         {
             await tx.CommitAsync(ct);
-            return;
+            return 0;
         }
 
         var threadMap = new Dictionary<string, MessageThreadRecord>(StringComparer.OrdinalIgnoreCase);
@@ -499,6 +503,7 @@ public sealed class MessageIngestService : IMessageIngestService
         db.MessageParticipants.AddRange(BuildParticipants(threadMap.Values, eventRecords));
         await db.SaveChangesAsync(ct);
         await tx.CommitAsync(ct);
+        return threadMap.Count;
     }
 
     private static List<MessageParticipantRecord> BuildParticipants(

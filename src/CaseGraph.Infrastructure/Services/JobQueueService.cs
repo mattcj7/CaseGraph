@@ -31,6 +31,7 @@ public sealed class JobQueueService : IJobQueueService
     private readonly IAuditLogService _auditLogService;
     private readonly Channel<Guid> _dispatchChannel;
     private readonly ConcurrentDictionary<Guid, CancellationTokenSource> _runningJobs = new();
+    private readonly ConcurrentDictionary<Guid, byte> _pendingRunningCancels = new();
     private readonly JobInfoObservable _jobUpdates = new();
     private readonly SemaphoreSlim _primeSemaphore = new(1, 1);
 
@@ -131,7 +132,8 @@ public sealed class JobQueueService : IJobQueueService
             var now = _clock.UtcNow.ToUniversalTime();
             jobRecord.Status = JobStatus.Canceled.ToString();
             jobRecord.CompletedAtUtc = now;
-            jobRecord.StatusMessage = "Canceled before execution.";
+            jobRecord.Progress = 1;
+            jobRecord.StatusMessage = "Canceled";
             jobRecord.ErrorMessage = null;
 
             await db.SaveChangesAsync(ct);
@@ -146,6 +148,14 @@ public sealed class JobQueueService : IJobQueueService
                 "JobCanceled",
                 $"{canceledInfo.JobType} job canceled before execution.",
                 ct
+            );
+            return;
+        }
+
+        if (IsTerminalStatus(jobRecord.Status))
+        {
+            AppFileLogger.Log(
+                $"[JobQueue] Cancel requested jobId={jobRecord.JobId:D} state={jobRecord.Status} action=AlreadyTerminal"
             );
             return;
         }
@@ -165,14 +175,16 @@ public sealed class JobQueueService : IJobQueueService
         if (_runningJobs.TryGetValue(jobId, out var runningJobCts))
         {
             runningJobCts.Cancel();
+            _pendingRunningCancels.TryRemove(jobId, out _);
             AppFileLogger.Log(
                 $"[JobQueue] Cancel requested jobId={jobRecord.JobId:D} state=Running action=CtsCanceled"
             );
         }
         else
         {
+            _pendingRunningCancels[jobId] = 0;
             AppFileLogger.Log(
-                $"[JobQueue] Cancel requested jobId={jobRecord.JobId:D} state=Running action=CtsMissing"
+                $"[JobQueue] Cancel requested jobId={jobRecord.JobId:D} state=Running action=PendingUntilCtsAvailable"
             );
         }
     }
@@ -280,6 +292,11 @@ public sealed class JobQueueService : IJobQueueService
             return;
         }
 
+        if (_pendingRunningCancels.TryRemove(jobId, out _))
+        {
+            linkedCts.Cancel();
+        }
+
         try
         {
             var jobToExecute = await GetJobRecordAsync(jobId, linkedCts.Token);
@@ -312,10 +329,10 @@ public sealed class JobQueueService : IJobQueueService
                     var ingestResult = await ExecuteMessagesIngestAsync(jobToExecute, linkedCts.Token);
                     await CompleteSucceededAsync(
                         jobId,
-                        ingestResult.StatusMessage,
+                        ComposeMessagesIngestSuccessSummary(ingestResult),
                         CancellationToken.None
                     );
-                    await WriteMessagesIngestSummaryAsync(jobToExecute, ingestResult.IngestedCount, linkedCts.Token);
+                    await WriteMessagesIngestSummaryAsync(jobToExecute, ingestResult.MessagesExtracted, linkedCts.Token);
                     break;
                 }
                 case TestLongRunningJobType:
@@ -336,7 +353,7 @@ public sealed class JobQueueService : IJobQueueService
         }
         catch (OperationCanceledException) when (linkedCts.IsCancellationRequested)
         {
-            await CompleteCanceledAsync(jobId, "Canceled by operator.", CancellationToken.None);
+            await CompleteCanceledAsync(jobId, CancellationToken.None);
             AppFileLogger.Log($"[JobQueue] Canceled jobId={jobId:D}");
         }
         catch (Exception ex)
@@ -346,7 +363,9 @@ public sealed class JobQueueService : IJobQueueService
         }
         finally
         {
+            await EnsureTerminalStateWrittenAsync(jobId, linkedCts.IsCancellationRequested, CancellationToken.None);
             _runningJobs.TryRemove(jobId, out _);
+            _pendingRunningCancels.TryRemove(jobId, out _);
         }
     }
 
@@ -529,12 +548,12 @@ public sealed class JobQueueService : IJobQueueService
         await ReportProgressAsync(
             jobRecord.JobId,
             1,
-            ingestResult.StatusMessage,
+            ComposeMessagesIngestSuccessSummary(ingestResult),
             ct
         );
 
         AppFileLogger.Log(
-            $"[MessagesIngest] Job complete jobId={jobRecord.JobId:D} correlation={jobRecord.CorrelationId} parsed={ingestResult.IngestedCount} elapsedMs={ingestStopwatch.ElapsedMilliseconds} status=\"{ingestResult.StatusMessage}\""
+            $"[MessagesIngest] Job complete jobId={jobRecord.JobId:D} correlation={jobRecord.CorrelationId} parsed={ingestResult.MessagesExtracted} threads={ingestResult.ThreadsCreated} elapsedMs={ingestStopwatch.ElapsedMilliseconds} status=\"{ComposeMessagesIngestSuccessSummary(ingestResult)}\""
         );
 
         return ingestResult;
@@ -622,9 +641,8 @@ public sealed class JobQueueService : IJobQueueService
         var completedInfo = await CompleteAsync(
             jobId,
             JobStatus.Succeeded,
-            statusMessage,
+            $"Succeeded: {statusMessage}",
             errorMessage: null,
-            forceProgressToComplete: true,
             ct
         );
 
@@ -643,12 +661,14 @@ public sealed class JobQueueService : IJobQueueService
 
     private async Task CompleteFailedAsync(Guid jobId, string errorMessage, CancellationToken ct)
     {
+        var normalizedError = string.IsNullOrWhiteSpace(errorMessage)
+            ? "Unhandled error."
+            : errorMessage.Trim();
         var completedInfo = await CompleteAsync(
             jobId,
             JobStatus.Failed,
-            $"Failed: {errorMessage}",
-            errorMessage,
-            forceProgressToComplete: false,
+            $"Failed: {normalizedError}",
+            normalizedError,
             ct
         );
 
@@ -665,14 +685,13 @@ public sealed class JobQueueService : IJobQueueService
         );
     }
 
-    private async Task CompleteCanceledAsync(Guid jobId, string statusMessage, CancellationToken ct)
+    private async Task CompleteCanceledAsync(Guid jobId, CancellationToken ct)
     {
         var completedInfo = await CompleteAsync(
             jobId,
             JobStatus.Canceled,
-            statusMessage,
+            "Canceled",
             errorMessage: null,
-            forceProgressToComplete: false,
             ct
         );
 
@@ -694,7 +713,6 @@ public sealed class JobQueueService : IJobQueueService
         JobStatus status,
         string statusMessage,
         string? errorMessage,
-        bool forceProgressToComplete,
         CancellationToken ct
     )
     {
@@ -711,10 +729,7 @@ public sealed class JobQueueService : IJobQueueService
         jobRecord.CompletedAtUtc = _clock.UtcNow.ToUniversalTime();
         jobRecord.StatusMessage = statusMessage;
         jobRecord.ErrorMessage = errorMessage;
-        if (forceProgressToComplete)
-        {
-            jobRecord.Progress = 1;
-        }
+        jobRecord.Progress = 1;
 
         await db.SaveChangesAsync(ct);
 
@@ -859,6 +874,43 @@ public sealed class JobQueueService : IJobQueueService
         }
 
         return phase;
+    }
+
+    private static string ComposeMessagesIngestSuccessSummary(MessageIngestResult ingestResult)
+    {
+        if (!string.IsNullOrWhiteSpace(ingestResult.SummaryOverride))
+        {
+            return ingestResult.SummaryOverride.Trim();
+        }
+
+        return $"Extracted {ingestResult.MessagesExtracted} message(s).";
+    }
+
+    private async Task EnsureTerminalStateWrittenAsync(
+        Guid jobId,
+        bool cancellationRequested,
+        CancellationToken ct
+    )
+    {
+        await _databaseInitializer.EnsureInitializedAsync(ct);
+        await using var db = await _dbContextFactory.CreateDbContextAsync(ct);
+        var jobRecord = await db.Jobs.FirstOrDefaultAsync(j => j.JobId == jobId, ct);
+        if (jobRecord is null || IsTerminalStatus(jobRecord.Status))
+        {
+            return;
+        }
+
+        jobRecord.Status = cancellationRequested ? JobStatus.Canceled.ToString() : JobStatus.Failed.ToString();
+        jobRecord.CompletedAtUtc = _clock.UtcNow.ToUniversalTime();
+        jobRecord.Progress = 1;
+        jobRecord.StatusMessage = cancellationRequested
+            ? "Canceled"
+            : "Failed: Terminal state repair after unexpected runner flow.";
+        jobRecord.ErrorMessage = cancellationRequested
+            ? null
+            : "Terminal state repair after unexpected runner flow.";
+        await db.SaveChangesAsync(ct);
+        _jobUpdates.Publish(MapJobInfo(jobRecord));
     }
 
     private sealed class EvidenceImportPayload
