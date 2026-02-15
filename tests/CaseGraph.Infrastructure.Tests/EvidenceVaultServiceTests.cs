@@ -255,7 +255,42 @@ public sealed class EvidenceVaultServiceTests
     }
 
     [Fact]
-    public async Task CancelAsync_LongRunningJob_TransitionsToCanceled()
+    public async Task Runner_LongRunningJob_Success_FinalizesTerminalFields()
+    {
+        await using var fixture = await WorkspaceFixture.CreateAsync(startRunner: true);
+        var jobQueue = fixture.Services.GetRequiredService<IJobQueueService>();
+
+        var jobId = await jobQueue.EnqueueAsync(
+            new JobEnqueueRequest(
+                JobQueueService.TestLongRunningJobType,
+                CaseId: null,
+                EvidenceItemId: null,
+                JsonSerializer.Serialize(
+                    new
+                    {
+                        SchemaVersion = 1,
+                        DelayMilliseconds = 200
+                    }
+                )
+            ),
+            CancellationToken.None
+        );
+
+        var succeeded = await WaitForJobStatusAsync(
+            fixture,
+            jobId,
+            status => status == "Succeeded",
+            TimeSpan.FromSeconds(10)
+        );
+
+        Assert.Equal("Succeeded", succeeded.Status);
+        Assert.Equal(1, succeeded.Progress);
+        Assert.NotNull(succeeded.CompletedAtUtc);
+        Assert.StartsWith("Succeeded:", succeeded.StatusMessage, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task CancelAsync_LongRunningJob_FinalizesTerminalFields()
     {
         await using var fixture = await WorkspaceFixture.CreateAsync(startRunner: true);
         var jobQueue = fixture.Services.GetRequiredService<IJobQueueService>();
@@ -293,6 +328,45 @@ public sealed class EvidenceVaultServiceTests
         );
 
         Assert.Equal("Canceled", canceled.Status);
+        Assert.Equal(1, canceled.Progress);
+        Assert.NotNull(canceled.CompletedAtUtc);
+        Assert.Equal("Canceled", canceled.StatusMessage);
+    }
+
+    [Fact]
+    public async Task Runner_LongRunningJob_Failure_FinalizesTerminalFields()
+    {
+        await using var fixture = await WorkspaceFixture.CreateAsync(startRunner: true);
+        var jobQueue = fixture.Services.GetRequiredService<IJobQueueService>();
+
+        var jobId = await jobQueue.EnqueueAsync(
+            new JobEnqueueRequest(
+                JobQueueService.TestLongRunningJobType,
+                CaseId: null,
+                EvidenceItemId: null,
+                JsonSerializer.Serialize(
+                    new
+                    {
+                        SchemaVersion = 1,
+                        DelayMilliseconds = 0
+                    }
+                )
+            ),
+            CancellationToken.None
+        );
+
+        var failed = await WaitForJobStatusAsync(
+            fixture,
+            jobId,
+            status => status == "Failed",
+            TimeSpan.FromSeconds(10)
+        );
+
+        Assert.Equal("Failed", failed.Status);
+        Assert.Equal(1, failed.Progress);
+        Assert.NotNull(failed.CompletedAtUtc);
+        Assert.StartsWith("Failed:", failed.StatusMessage, StringComparison.Ordinal);
+        Assert.False(string.IsNullOrWhiteSpace(failed.ErrorMessage));
     }
 
     private static async Task<JobRecord> WaitForJobStatusAsync(

@@ -297,9 +297,14 @@ public sealed class JobQueueService : IJobQueueService
             linkedCts.Cancel();
         }
 
+        var terminalStatus = JobStatus.Failed;
+        var terminalStatusMessage = "Failed: Terminal state repair after unexpected runner flow.";
+        string? terminalErrorMessage = "Terminal state repair after unexpected runner flow.";
+        JobRecord? jobToExecute = null;
+
         try
         {
-            var jobToExecute = await GetJobRecordAsync(jobId, linkedCts.Token);
+            jobToExecute = await GetJobRecordAsync(jobId, linkedCts.Token);
             if (jobToExecute is null)
             {
                 return;
@@ -310,38 +315,30 @@ public sealed class JobQueueService : IJobQueueService
             {
                 case EvidenceImportJobType:
                     await ExecuteEvidenceImportAsync(jobToExecute, linkedCts.Token);
-                    await CompleteSucceededAsync(
-                        jobId,
-                        "Evidence import completed.",
-                        CancellationToken.None
-                    );
+                    terminalStatus = JobStatus.Succeeded;
+                    terminalStatusMessage = "Succeeded: Evidence import completed.";
+                    terminalErrorMessage = null;
                     break;
                 case EvidenceVerifyJobType:
                     await ExecuteEvidenceVerifyAsync(jobToExecute, linkedCts.Token);
-                    await CompleteSucceededAsync(
-                        jobId,
-                        "Evidence verify completed.",
-                        CancellationToken.None
-                    );
+                    terminalStatus = JobStatus.Succeeded;
+                    terminalStatusMessage = "Succeeded: Evidence verify completed.";
+                    terminalErrorMessage = null;
                     break;
                 case MessagesIngestJobType:
                 {
                     var ingestResult = await ExecuteMessagesIngestAsync(jobToExecute, linkedCts.Token);
-                    await CompleteSucceededAsync(
-                        jobId,
-                        ComposeMessagesIngestSuccessSummary(ingestResult),
-                        CancellationToken.None
-                    );
+                    terminalStatus = JobStatus.Succeeded;
+                    terminalStatusMessage = $"Succeeded: {ComposeMessagesIngestSuccessSummary(ingestResult)}";
+                    terminalErrorMessage = null;
                     await WriteMessagesIngestSummaryAsync(jobToExecute, ingestResult.MessagesExtracted, linkedCts.Token);
                     break;
                 }
                 case TestLongRunningJobType:
                     await ExecuteTestLongRunningAsync(jobToExecute, linkedCts.Token);
-                    await CompleteSucceededAsync(
-                        jobId,
-                        "Test long-running job completed.",
-                        CancellationToken.None
-                    );
+                    terminalStatus = JobStatus.Succeeded;
+                    terminalStatusMessage = "Succeeded: Test long-running job completed.";
+                    terminalErrorMessage = null;
                     break;
                 default:
                     throw new NotSupportedException($"Unsupported job type \"{jobToExecute.JobType}\".");
@@ -353,17 +350,48 @@ public sealed class JobQueueService : IJobQueueService
         }
         catch (OperationCanceledException) when (linkedCts.IsCancellationRequested)
         {
-            await CompleteCanceledAsync(jobId, CancellationToken.None);
+            terminalStatus = JobStatus.Canceled;
+            terminalStatusMessage = "Canceled";
+            terminalErrorMessage = null;
             AppFileLogger.Log($"[JobQueue] Canceled jobId={jobId:D}");
         }
         catch (Exception ex)
         {
-            await CompleteFailedAsync(jobId, ex.Message, CancellationToken.None);
+            terminalStatus = JobStatus.Failed;
+            terminalStatusMessage = $"Failed: {SummarizeExceptionMessage(ex)}";
+            terminalErrorMessage = ex.ToString();
             AppFileLogger.LogException($"[JobQueue] Failed jobId={jobId:D}", ex);
         }
         finally
         {
-            await EnsureTerminalStateWrittenAsync(jobId, linkedCts.IsCancellationRequested, CancellationToken.None);
+            linkedCts.Cancel();
+            var terminalInfo = await FinalizeTerminalStateAsync(
+                jobId,
+                terminalStatus,
+                terminalStatusMessage,
+                terminalErrorMessage,
+                CancellationToken.None
+            );
+
+            if (terminalInfo is not null)
+            {
+                var (actionType, summary) = terminalStatus switch
+                {
+                    JobStatus.Succeeded => ("JobSucceeded", $"{terminalInfo.JobType} job succeeded."),
+                    JobStatus.Canceled => ("JobCanceled", $"{terminalInfo.JobType} job canceled."),
+                    JobStatus.Failed => ("JobFailed", $"{terminalInfo.JobType} job failed."),
+                    JobStatus.Abandoned => ("JobAbandoned", $"{terminalInfo.JobType} job abandoned."),
+                    _ => ("JobFailed", $"{terminalInfo.JobType} job failed.")
+                };
+
+                await WriteLifecycleAuditAsync(
+                    terminalInfo,
+                    actionType,
+                    summary,
+                    CancellationToken.None
+                );
+            }
+
             _runningJobs.TryRemove(jobId, out _);
             _pendingRunningCancels.TryRemove(jobId, out _);
         }
@@ -636,79 +664,7 @@ public sealed class JobQueueService : IJobQueueService
         _jobUpdates.Publish(MapJobInfo(jobRecord));
     }
 
-    private async Task CompleteSucceededAsync(Guid jobId, string statusMessage, CancellationToken ct)
-    {
-        var completedInfo = await CompleteAsync(
-            jobId,
-            JobStatus.Succeeded,
-            $"Succeeded: {statusMessage}",
-            errorMessage: null,
-            ct
-        );
-
-        if (completedInfo is null)
-        {
-            return;
-        }
-
-        await WriteLifecycleAuditAsync(
-            completedInfo,
-            "JobSucceeded",
-            $"{completedInfo.JobType} job succeeded.",
-            ct
-        );
-    }
-
-    private async Task CompleteFailedAsync(Guid jobId, string errorMessage, CancellationToken ct)
-    {
-        var normalizedError = string.IsNullOrWhiteSpace(errorMessage)
-            ? "Unhandled error."
-            : errorMessage.Trim();
-        var completedInfo = await CompleteAsync(
-            jobId,
-            JobStatus.Failed,
-            $"Failed: {normalizedError}",
-            normalizedError,
-            ct
-        );
-
-        if (completedInfo is null)
-        {
-            return;
-        }
-
-        await WriteLifecycleAuditAsync(
-            completedInfo,
-            "JobFailed",
-            $"{completedInfo.JobType} job failed.",
-            ct
-        );
-    }
-
-    private async Task CompleteCanceledAsync(Guid jobId, CancellationToken ct)
-    {
-        var completedInfo = await CompleteAsync(
-            jobId,
-            JobStatus.Canceled,
-            "Canceled",
-            errorMessage: null,
-            ct
-        );
-
-        if (completedInfo is null)
-        {
-            return;
-        }
-
-        await WriteLifecycleAuditAsync(
-            completedInfo,
-            "JobCanceled",
-            $"{completedInfo.JobType} job canceled.",
-            ct
-        );
-    }
-
-    private async Task<JobInfo?> CompleteAsync(
+    private async Task<JobInfo?> FinalizeTerminalStateAsync(
         Guid jobId,
         JobStatus status,
         string statusMessage,
@@ -720,7 +676,7 @@ public sealed class JobQueueService : IJobQueueService
 
         await using var db = await _dbContextFactory.CreateDbContextAsync(ct);
         var jobRecord = await db.Jobs.FirstOrDefaultAsync(j => j.JobId == jobId, ct);
-        if (jobRecord is null || IsTerminalStatus(jobRecord.Status))
+        if (jobRecord is null)
         {
             return null;
         }
@@ -886,31 +842,15 @@ public sealed class JobQueueService : IJobQueueService
         return $"Extracted {ingestResult.MessagesExtracted} message(s).";
     }
 
-    private async Task EnsureTerminalStateWrittenAsync(
-        Guid jobId,
-        bool cancellationRequested,
-        CancellationToken ct
-    )
+    private static string SummarizeExceptionMessage(Exception ex)
     {
-        await _databaseInitializer.EnsureInitializedAsync(ct);
-        await using var db = await _dbContextFactory.CreateDbContextAsync(ct);
-        var jobRecord = await db.Jobs.FirstOrDefaultAsync(j => j.JobId == jobId, ct);
-        if (jobRecord is null || IsTerminalStatus(jobRecord.Status))
+        var message = ex.GetBaseException().Message;
+        if (string.IsNullOrWhiteSpace(message))
         {
-            return;
+            return "Unhandled error.";
         }
 
-        jobRecord.Status = cancellationRequested ? JobStatus.Canceled.ToString() : JobStatus.Failed.ToString();
-        jobRecord.CompletedAtUtc = _clock.UtcNow.ToUniversalTime();
-        jobRecord.Progress = 1;
-        jobRecord.StatusMessage = cancellationRequested
-            ? "Canceled"
-            : "Failed: Terminal state repair after unexpected runner flow.";
-        jobRecord.ErrorMessage = cancellationRequested
-            ? null
-            : "Terminal state repair after unexpected runner flow.";
-        await db.SaveChangesAsync(ct);
-        _jobUpdates.Publish(MapJobInfo(jobRecord));
+        return message.Trim();
     }
 
     private sealed class EvidenceImportPayload

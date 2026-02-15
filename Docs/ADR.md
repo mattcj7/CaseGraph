@@ -210,3 +210,21 @@ Append-only log of key decisions and changes. Add an entry when we:
   - Additional deterministic tests now cover terminal overwrite semantics, queued-cancel terminal fields, and fresh-read query behavior.
 - Alternatives considered:
   - Preserve partial progress for canceled/failed jobs (rejected to avoid ambiguous “still in progress” UX in terminal states).
+
+### ADR-20260215-12: Runner-final terminal overwrite in finally with non-cancel save token
+- Date: 2026-02-15
+- Ticket: T0008B
+- Commit: <fill in after commit>
+- Decision:
+  - Enforce a single terminal overwrite in `JobQueueService.ExecuteAsync` `finally` for all runner-completed terminal outcomes (`Succeeded`, `Failed`, `Canceled`), setting `CompletedAtUtc`, `Progress=1.0`, terminal `StatusMessage`, and `ErrorMessage` as applicable.
+  - Cancel linked job tokens before final persistence, then write terminal state with `CancellationToken.None` to guarantee save even after cancellation is requested.
+  - Publish a final `JobUpdate` event only after the terminal overwrite save succeeds.
+- Rationale:
+  - Asynchronous progress callbacks can race with completion and leave terminal jobs with stale mid-run `Progress`/`StatusMessage` values.
+  - Terminal persistence must be deterministic and cancellation-safe so UI and audits always observe terminal truth.
+- Consequences:
+  - Final terminal fields are now overwritten as the last runner write, preventing post-completion progress regressions.
+  - Failed jobs now retain full exception strings in `ErrorMessage` while `StatusMessage` carries a concise `Failed: ...` summary.
+  - Deterministic infrastructure tests now assert success/cancel/failure terminal finalize invariants.
+- Alternatives considered:
+  - Relying on per-path completion helpers without a final unconditional overwrite (rejected due to callback race windows).

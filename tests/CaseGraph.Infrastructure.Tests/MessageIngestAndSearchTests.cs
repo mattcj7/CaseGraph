@@ -344,7 +344,7 @@ public sealed class MessageIngestAndSearchTests
         Assert.Equal("Succeeded", succeeded.Status);
         Assert.Equal(1, succeeded.Progress);
         Assert.NotNull(succeeded.CompletedAtUtc);
-        Assert.StartsWith("Succeeded:", succeeded.StatusMessage, StringComparison.Ordinal);
+        Assert.Equal("Succeeded: Extracted 2 message(s).", succeeded.StatusMessage);
 
         await using var db = await fixture.CreateDbContextAsync();
         var events = await db.MessageEvents
