@@ -14,7 +14,12 @@ public class WorkspaceDbInitializer : IWorkspaceDbInitializer, IWorkspaceDatabas
         "CaseRecord",
         "EvidenceItemRecord",
         "AuditEventRecord",
-        "JobRecord"
+        "JobRecord",
+        "TargetRecord",
+        "TargetAliasRecord",
+        "IdentifierRecord",
+        "TargetIdentifierLinkRecord",
+        "MessageParticipantLinkRecord"
     };
 
     private readonly IDbContextFactory<WorkspaceDbContext> _dbContextFactory;

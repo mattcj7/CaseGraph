@@ -228,3 +228,23 @@ Append-only log of key decisions and changes. Add an entry when we:
   - Deterministic infrastructure tests now assert success/cancel/failure terminal finalize invariants.
 - Alternatives considered:
   - Relying on per-path completion helpers without a final unconditional overwrite (rejected due to callback race windows).
+
+### ADR-20260215-13: People/Targets v1 schema, normalization, and explicit conflict policy
+- Date: 2026-02-15
+- Ticket: T0009
+- Commit: <fill in after commit>
+- Decision:
+  - Add normalized target/identifier persistence with `TargetRecord`, `TargetAliasRecord`, `IdentifierRecord`, `TargetIdentifierLinkRecord`, and `MessageParticipantLinkRecord`.
+  - Enforce identifier uniqueness by `(CaseId, Type, ValueNormalized)` and target-identifier uniqueness by `(TargetId, IdentifierId)`.
+  - Implement manual-vs-derived provenance fields on target/identifier/link records, with derived message links carrying message evidence provenance.
+  - Require explicit user conflict resolution for identifier collisions (`Cancel`, `MoveIdentifierToRequestedTarget`, `UseExistingTarget`) with cancel-default behavior.
+- Rationale:
+  - Investigative workflows need a defensible, queryable people registry with auditable linkage from message participants to known targets.
+  - Normalization and uniqueness constraints prevent accidental duplicates while preserving explicit operator control for conflict cases.
+  - Provenance and explicit conflict choices support explainability and no-silent-merge requirements.
+- Consequences:
+  - People/Targets UI can create/edit targets, aliases, identifiers, and link message participants with explicit approvals.
+  - Audits now include target create/update, alias changes, identifier create/update/remove/link/unlink, and participant link events.
+  - New deterministic tests cover normalization, conflict behavior, and derived-link provenance.
+- Alternatives considered:
+  - Implicit auto-merge on identifier collisions (rejected due to defensibility and false-link risk).

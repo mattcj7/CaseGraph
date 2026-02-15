@@ -16,7 +16,7 @@ public sealed class NavigationService : INavigationService
             [NavigationPage.Import] = ("Import", "Queue-backed evidence import with progress, cancel, and activity feed."),
             [NavigationPage.Search] = ("Search", "FTS-backed message search with provenance and citation copy."),
             [NavigationPage.Timeline] = ("Timeline", "Chronological event analysis placeholder view."),
-            [NavigationPage.PeopleTargets] = ("People / Targets", "People and target profile placeholder workspace."),
+            [NavigationPage.PeopleTargets] = ("People / Targets", "Manage known people, aliases, identifiers, and message links."),
             [NavigationPage.Locations] = ("Locations", "Geospatial analysis placeholder with map and proximity tools."),
             [NavigationPage.Associations] = ("Associations", "Association graph placeholder for relationship analysis."),
             [NavigationPage.Reports] = ("Reports", "Report and export orchestration placeholder."),
@@ -51,6 +51,11 @@ public sealed class NavigationService : INavigationService
         if (page == NavigationPage.ReviewQueue)
         {
             return new ReviewQueueView();
+        }
+
+        if (page == NavigationPage.PeopleTargets)
+        {
+            return new PeopleTargetsView();
         }
 
         return new PlaceholderView(content.Title, content.Description);

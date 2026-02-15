@@ -1,5 +1,6 @@
 using CaseGraph.App.Models;
 using CaseGraph.App.Services;
+using CaseGraph.App.Views.Dialogs;
 using CaseGraph.Core.Abstractions;
 using CaseGraph.Core.Models;
 using CaseGraph.Infrastructure.Persistence;
@@ -29,6 +30,7 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
     private readonly IMessageSearchService _messageSearchService;
     private readonly IAuditLogService _auditLogService;
     private readonly IJobQueueService _jobQueueService;
+    private readonly ITargetRegistryService _targetRegistryService;
     private readonly IDbContextFactory<WorkspaceDbContext> _dbContextFactory;
     private readonly IWorkspacePathProvider _workspacePathProvider;
     private readonly IUserInteractionService _userInteractionService;
@@ -41,6 +43,7 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
     private Guid? _activeJobId;
     private bool _isInitialized;
     private bool _isDisposed;
+    private int _selectedTargetWhereSeenCount;
 
     public ObservableCollection<NavigationItem> NavigationItems { get; } = new();
 
@@ -53,6 +56,12 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
     public ObservableCollection<JobInfo> RecentJobs { get; } = new();
 
     public ObservableCollection<MessageSearchHit> MessageSearchResults { get; } = new();
+
+    public ObservableCollection<TargetSummary> Targets { get; } = new();
+
+    public ObservableCollection<TargetAliasInfo> SelectedTargetAliases { get; } = new();
+
+    public ObservableCollection<TargetIdentifierInfo> SelectedTargetIdentifiers { get; } = new();
 
     public IReadOnlyList<string> MessageSearchPlatformFilters { get; } =
     [
@@ -111,6 +120,51 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
     private JobInfo? latestMessagesParseJob;
 
     [ObservableProperty]
+    private TargetSummary? selectedTargetSummary;
+
+    [ObservableProperty]
+    private TargetAliasInfo? selectedTargetAlias;
+
+    [ObservableProperty]
+    private TargetIdentifierInfo? selectedTargetIdentifier;
+
+    [ObservableProperty]
+    private string targetSearchQuery = string.Empty;
+
+    [ObservableProperty]
+    private string newTargetDisplayName = string.Empty;
+
+    [ObservableProperty]
+    private string newTargetPrimaryAlias = string.Empty;
+
+    [ObservableProperty]
+    private string newTargetNotes = string.Empty;
+
+    [ObservableProperty]
+    private string selectedTargetDisplayName = string.Empty;
+
+    [ObservableProperty]
+    private string selectedTargetPrimaryAlias = string.Empty;
+
+    [ObservableProperty]
+    private string selectedTargetNotes = string.Empty;
+
+    [ObservableProperty]
+    private string newAliasText = string.Empty;
+
+    [ObservableProperty]
+    private string identifierEditorValueRaw = string.Empty;
+
+    [ObservableProperty]
+    private string identifierEditorNotes = string.Empty;
+
+    [ObservableProperty]
+    private TargetIdentifierType identifierEditorType = TargetIdentifierType.Phone;
+
+    [ObservableProperty]
+    private bool identifierEditorIsPrimary;
+
+    [ObservableProperty]
     private string messageSearchQuery = string.Empty;
 
     [ObservableProperty]
@@ -157,6 +211,19 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
     public bool CanCancelLatestMessagesParseJob => LatestMessagesParseJob is not null
         && !IsTerminalStatus(LatestMessagesParseJob.Status);
 
+    public bool HasSelectedTarget => SelectedTargetSummary is not null;
+
+    public bool HasSelectedTargetAlias => SelectedTargetAlias is not null;
+
+    public bool HasSelectedTargetIdentifier => SelectedTargetIdentifier is not null;
+
+    public string SelectedTargetWhereSeenSummary => SelectedTargetSummary is null
+        ? "No target selected."
+        : $"Linked message events: {_selectedTargetWhereSeenCount:0}";
+
+    public IReadOnlyList<TargetIdentifierType> AvailableIdentifierTypes { get; } =
+        Enum.GetValues<TargetIdentifierType>();
+
     public IRelayCommand ToggleThemeCommand { get; }
 
     public IRelayCommand ToggleEvidenceDrawerCommand { get; }
@@ -176,6 +243,32 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
     public IAsyncRelayCommand RefreshLatestMessagesParseJobCommand { get; }
 
     public IAsyncRelayCommand CancelLatestMessagesParseJobCommand { get; }
+
+    public IAsyncRelayCommand RefreshTargetsCommand { get; }
+
+    public IAsyncRelayCommand CreateTargetCommand { get; }
+
+    public IAsyncRelayCommand SaveSelectedTargetCommand { get; }
+
+    public IAsyncRelayCommand AddAliasCommand { get; }
+
+    public IAsyncRelayCommand RemoveAliasCommand { get; }
+
+    public IAsyncRelayCommand AddIdentifierCommand { get; }
+
+    public IAsyncRelayCommand UpdateIdentifierCommand { get; }
+
+    public IAsyncRelayCommand RemoveIdentifierCommand { get; }
+
+    public IAsyncRelayCommand OpenSearchForSelectedTargetCommand { get; }
+
+    public IAsyncRelayCommand CreateTargetFromSenderCommand { get; }
+
+    public IAsyncRelayCommand LinkSenderToExistingTargetCommand { get; }
+
+    public IAsyncRelayCommand CreateTargetFromRecipientsCommand { get; }
+
+    public IAsyncRelayCommand LinkRecipientsToExistingTargetCommand { get; }
 
     public IAsyncRelayCommand SearchMessagesCommand { get; }
 
@@ -197,6 +290,7 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
         IMessageSearchService messageSearchService,
         IAuditLogService auditLogService,
         IJobQueueService jobQueueService,
+        ITargetRegistryService targetRegistryService,
         IDbContextFactory<WorkspaceDbContext> dbContextFactory,
         IWorkspacePathProvider workspacePathProvider,
         IUserInteractionService userInteractionService
@@ -209,6 +303,7 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
         _messageSearchService = messageSearchService;
         _auditLogService = auditLogService;
         _jobQueueService = jobQueueService;
+        _targetRegistryService = targetRegistryService;
         _dbContextFactory = dbContextFactory;
         _workspacePathProvider = workspacePathProvider;
         _userInteractionService = userInteractionService;
@@ -233,6 +328,19 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
         ParseMessagesFromEvidenceCommand = new AsyncRelayCommand(ParseMessagesFromSelectedEvidenceAsync);
         RefreshLatestMessagesParseJobCommand = new AsyncRelayCommand(RefreshLatestMessagesParseJobManuallyAsync);
         CancelLatestMessagesParseJobCommand = new AsyncRelayCommand(CancelLatestMessagesParseJobAsync);
+        RefreshTargetsCommand = new AsyncRelayCommand(() => RefreshTargetsAsync(CancellationToken.None));
+        CreateTargetCommand = new AsyncRelayCommand(CreateTargetAsync);
+        SaveSelectedTargetCommand = new AsyncRelayCommand(SaveSelectedTargetAsync);
+        AddAliasCommand = new AsyncRelayCommand(AddAliasAsync);
+        RemoveAliasCommand = new AsyncRelayCommand(RemoveAliasAsync);
+        AddIdentifierCommand = new AsyncRelayCommand(AddIdentifierAsync);
+        UpdateIdentifierCommand = new AsyncRelayCommand(UpdateIdentifierAsync);
+        RemoveIdentifierCommand = new AsyncRelayCommand(RemoveIdentifierAsync);
+        OpenSearchForSelectedTargetCommand = new AsyncRelayCommand(OpenSearchForSelectedTargetAsync);
+        CreateTargetFromSenderCommand = new AsyncRelayCommand(CreateTargetFromSenderAsync);
+        LinkSenderToExistingTargetCommand = new AsyncRelayCommand(LinkSenderToExistingTargetAsync);
+        CreateTargetFromRecipientsCommand = new AsyncRelayCommand(CreateTargetFromRecipientsAsync);
+        LinkRecipientsToExistingTargetCommand = new AsyncRelayCommand(LinkRecipientsToExistingTargetAsync);
         SearchMessagesCommand = new AsyncRelayCommand(SearchMessagesAsync);
         CopyStoredPathCommand = new RelayCommand(CopyStoredPath);
         CopySha256Command = new RelayCommand(CopySha256);
@@ -285,12 +393,63 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
         OnPropertyChanged(nameof(SelectedStoredAbsolutePath));
         UpdateSelectedEvidenceVerifyStatus();
         ResetLatestMessagesParseJobTracking();
+        _ = RefreshTargetsAsync(CancellationToken.None);
     }
 
     partial void OnLatestMessagesParseJobChanged(JobInfo? value)
     {
         OnPropertyChanged(nameof(CanCancelLatestMessagesParseJob));
         UpdateSelectedEvidenceMessagesStatus();
+    }
+
+    partial void OnSelectedTargetSummaryChanged(TargetSummary? value)
+    {
+        OnPropertyChanged(nameof(HasSelectedTarget));
+        OnPropertyChanged(nameof(HasSelectedTargetAlias));
+        OnPropertyChanged(nameof(HasSelectedTargetIdentifier));
+        SelectedTargetAlias = null;
+        SelectedTargetIdentifier = null;
+
+        if (value is null)
+        {
+            SelectedTargetDisplayName = string.Empty;
+            SelectedTargetPrimaryAlias = string.Empty;
+            SelectedTargetNotes = string.Empty;
+            _selectedTargetWhereSeenCount = 0;
+            SelectedTargetAliases.Clear();
+            SelectedTargetIdentifiers.Clear();
+            OnPropertyChanged(nameof(SelectedTargetWhereSeenSummary));
+            return;
+        }
+
+        SelectedTargetDisplayName = value.DisplayName;
+        SelectedTargetPrimaryAlias = value.PrimaryAlias ?? string.Empty;
+        SelectedTargetNotes = value.Notes ?? string.Empty;
+        _ = RefreshSelectedTargetDetailsAsync(CancellationToken.None);
+    }
+
+    partial void OnSelectedTargetAliasChanged(TargetAliasInfo? value)
+    {
+        OnPropertyChanged(nameof(HasSelectedTargetAlias));
+    }
+
+    partial void OnSelectedTargetIdentifierChanged(TargetIdentifierInfo? value)
+    {
+        OnPropertyChanged(nameof(HasSelectedTargetIdentifier));
+        if (value is null)
+        {
+            return;
+        }
+
+        IdentifierEditorType = value.Type;
+        IdentifierEditorValueRaw = value.ValueRaw;
+        IdentifierEditorNotes = value.Notes ?? string.Empty;
+        IdentifierEditorIsPrimary = value.IsPrimary;
+    }
+
+    partial void OnTargetSearchQueryChanged(string value)
+    {
+        _ = RefreshTargetsAsync(CancellationToken.None);
     }
 
     partial void OnIsDarkThemeChanged(bool value)
@@ -480,6 +639,606 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
         {
             OperationText = "Messages ingest canceled.";
         }
+    }
+
+    private async Task RefreshTargetsAsync(CancellationToken ct)
+    {
+        if (CurrentCaseInfo is null)
+        {
+            Targets.Clear();
+            SelectedTargetSummary = null;
+            return;
+        }
+
+        var selectedTargetId = SelectedTargetSummary?.TargetId;
+        var targets = await _targetRegistryService.GetTargetsAsync(
+            CurrentCaseInfo.CaseId,
+            TargetSearchQuery,
+            ct
+        );
+
+        Targets.Clear();
+        foreach (var target in targets)
+        {
+            Targets.Add(target);
+        }
+
+        SelectedTargetSummary = selectedTargetId.HasValue
+            ? Targets.FirstOrDefault(t => t.TargetId == selectedTargetId.Value)
+            : Targets.FirstOrDefault();
+    }
+
+    private async Task RefreshSelectedTargetDetailsAsync(CancellationToken ct)
+    {
+        if (CurrentCaseInfo is null || SelectedTargetSummary is null)
+        {
+            _selectedTargetWhereSeenCount = 0;
+            SelectedTargetAliases.Clear();
+            SelectedTargetIdentifiers.Clear();
+            OnPropertyChanged(nameof(SelectedTargetWhereSeenSummary));
+            return;
+        }
+
+        var details = await _targetRegistryService.GetTargetDetailsAsync(
+            CurrentCaseInfo.CaseId,
+            SelectedTargetSummary.TargetId,
+            ct
+        );
+        if (details is null)
+        {
+            _selectedTargetWhereSeenCount = 0;
+            SelectedTargetAliases.Clear();
+            SelectedTargetIdentifiers.Clear();
+            OnPropertyChanged(nameof(SelectedTargetWhereSeenSummary));
+            return;
+        }
+
+        _selectedTargetWhereSeenCount = details.WhereSeenMessageCount;
+        OnPropertyChanged(nameof(SelectedTargetWhereSeenSummary));
+
+        SelectedTargetAliases.Clear();
+        foreach (var alias in details.Aliases)
+        {
+            SelectedTargetAliases.Add(alias);
+        }
+
+        SelectedTargetIdentifiers.Clear();
+        foreach (var identifier in details.Identifiers)
+        {
+            SelectedTargetIdentifiers.Add(identifier);
+        }
+
+        SelectedTargetDisplayName = details.Summary.DisplayName;
+        SelectedTargetPrimaryAlias = details.Summary.PrimaryAlias ?? string.Empty;
+        SelectedTargetNotes = details.Summary.Notes ?? string.Empty;
+    }
+
+    private async Task CreateTargetAsync()
+    {
+        if (CurrentCaseInfo is null)
+        {
+            OperationText = "Open a case before creating targets.";
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(NewTargetDisplayName))
+        {
+            OperationText = "Target display name is required.";
+            return;
+        }
+
+        var created = await _targetRegistryService.CreateTargetAsync(
+            new CreateTargetRequest(
+                CurrentCaseInfo.CaseId,
+                NewTargetDisplayName,
+                NewTargetPrimaryAlias,
+                NewTargetNotes
+            ),
+            CancellationToken.None
+        );
+
+        NewTargetDisplayName = string.Empty;
+        NewTargetPrimaryAlias = string.Empty;
+        NewTargetNotes = string.Empty;
+        await RefreshTargetsAsync(CancellationToken.None);
+        SelectedTargetSummary = Targets.FirstOrDefault(t => t.TargetId == created.TargetId);
+        OperationText = $"Target created: {created.DisplayName}";
+    }
+
+    private async Task SaveSelectedTargetAsync()
+    {
+        if (CurrentCaseInfo is null || SelectedTargetSummary is null)
+        {
+            OperationText = "Select a target to save.";
+            return;
+        }
+
+        var updated = await _targetRegistryService.UpdateTargetAsync(
+            new UpdateTargetRequest(
+                CurrentCaseInfo.CaseId,
+                SelectedTargetSummary.TargetId,
+                SelectedTargetDisplayName,
+                SelectedTargetPrimaryAlias,
+                SelectedTargetNotes
+            ),
+            CancellationToken.None
+        );
+
+        await RefreshTargetsAsync(CancellationToken.None);
+        SelectedTargetSummary = Targets.FirstOrDefault(t => t.TargetId == updated.TargetId);
+        OperationText = $"Target updated: {updated.DisplayName}";
+    }
+
+    private async Task AddAliasAsync()
+    {
+        if (CurrentCaseInfo is null || SelectedTargetSummary is null)
+        {
+            OperationText = "Select a target before adding an alias.";
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(NewAliasText))
+        {
+            OperationText = "Alias value is required.";
+            return;
+        }
+
+        await _targetRegistryService.AddAliasAsync(
+            new AddTargetAliasRequest(
+                CurrentCaseInfo.CaseId,
+                SelectedTargetSummary.TargetId,
+                NewAliasText
+            ),
+            CancellationToken.None
+        );
+
+        NewAliasText = string.Empty;
+        await RefreshSelectedTargetDetailsAsync(CancellationToken.None);
+        OperationText = "Alias added.";
+    }
+
+    private async Task RemoveAliasAsync()
+    {
+        if (CurrentCaseInfo is null || SelectedTargetSummary is null || SelectedTargetAlias is null)
+        {
+            OperationText = "Select an alias to remove.";
+            return;
+        }
+
+        var confirm = MessageBox.Show(
+            Application.Current.MainWindow,
+            $"Remove alias \"{SelectedTargetAlias.Alias}\"?",
+            "Remove Alias",
+            MessageBoxButton.YesNo,
+            MessageBoxImage.Question,
+            MessageBoxResult.No
+        );
+        if (confirm != MessageBoxResult.Yes)
+        {
+            OperationText = "Alias remove canceled.";
+            return;
+        }
+
+        await _targetRegistryService.RemoveAliasAsync(
+            CurrentCaseInfo.CaseId,
+            SelectedTargetAlias.AliasId,
+            CancellationToken.None
+        );
+
+        SelectedTargetAlias = null;
+        await RefreshSelectedTargetDetailsAsync(CancellationToken.None);
+        OperationText = "Alias removed.";
+    }
+
+    private async Task AddIdentifierAsync()
+    {
+        if (CurrentCaseInfo is null || SelectedTargetSummary is null)
+        {
+            OperationText = "Select a target before adding an identifier.";
+            return;
+        }
+
+        var targetId = SelectedTargetSummary.TargetId;
+        var resolution = IdentifierConflictResolution.Cancel;
+        while (true)
+        {
+            try
+            {
+                var result = await _targetRegistryService.AddIdentifierAsync(
+                    new AddTargetIdentifierRequest(
+                        CurrentCaseInfo.CaseId,
+                        targetId,
+                        IdentifierEditorType,
+                        IdentifierEditorValueRaw,
+                        IdentifierEditorNotes,
+                        IdentifierEditorIsPrimary,
+                        resolution
+                    ),
+                    CancellationToken.None
+                );
+
+                await RefreshTargetsAsync(CancellationToken.None);
+                SelectedTargetSummary = Targets.FirstOrDefault(t => t.TargetId == result.EffectiveTargetId);
+                await RefreshSelectedTargetDetailsAsync(CancellationToken.None);
+                OperationText = result.UsedExistingTarget
+                    ? "Identifier already belonged to another target. Kept existing target."
+                    : "Identifier added.";
+                return;
+            }
+            catch (IdentifierConflictException ex)
+            {
+                resolution = PromptConflictResolution(ex.Conflict);
+                if (resolution == IdentifierConflictResolution.Cancel)
+                {
+                    OperationText = "Identifier add canceled.";
+                    return;
+                }
+            }
+        }
+    }
+
+    private async Task UpdateIdentifierAsync()
+    {
+        if (CurrentCaseInfo is null || SelectedTargetSummary is null || SelectedTargetIdentifier is null)
+        {
+            OperationText = "Select an identifier to update.";
+            return;
+        }
+
+        var targetId = SelectedTargetSummary.TargetId;
+        var identifierId = SelectedTargetIdentifier.IdentifierId;
+        var resolution = IdentifierConflictResolution.Cancel;
+        while (true)
+        {
+            try
+            {
+                var result = await _targetRegistryService.UpdateIdentifierAsync(
+                    new UpdateTargetIdentifierRequest(
+                        CurrentCaseInfo.CaseId,
+                        targetId,
+                        identifierId,
+                        IdentifierEditorType,
+                        IdentifierEditorValueRaw,
+                        IdentifierEditorNotes,
+                        IdentifierEditorIsPrimary,
+                        resolution
+                    ),
+                    CancellationToken.None
+                );
+
+                await RefreshTargetsAsync(CancellationToken.None);
+                SelectedTargetSummary = Targets.FirstOrDefault(t => t.TargetId == result.EffectiveTargetId);
+                await RefreshSelectedTargetDetailsAsync(CancellationToken.None);
+                OperationText = result.UsedExistingTarget
+                    ? "Identifier already belonged to another target. Kept existing target."
+                    : "Identifier updated.";
+                return;
+            }
+            catch (IdentifierConflictException ex)
+            {
+                resolution = PromptConflictResolution(ex.Conflict);
+                if (resolution == IdentifierConflictResolution.Cancel)
+                {
+                    OperationText = "Identifier update canceled.";
+                    return;
+                }
+            }
+        }
+    }
+
+    private async Task RemoveIdentifierAsync()
+    {
+        if (CurrentCaseInfo is null || SelectedTargetSummary is null || SelectedTargetIdentifier is null)
+        {
+            OperationText = "Select an identifier to remove.";
+            return;
+        }
+
+        var confirm = MessageBox.Show(
+            Application.Current.MainWindow,
+            $"Remove identifier \"{SelectedTargetIdentifier.ValueRaw}\"?",
+            "Remove Identifier",
+            MessageBoxButton.YesNo,
+            MessageBoxImage.Warning,
+            MessageBoxResult.No
+        );
+        if (confirm != MessageBoxResult.Yes)
+        {
+            OperationText = "Identifier remove canceled.";
+            return;
+        }
+
+        await _targetRegistryService.RemoveIdentifierAsync(
+            new RemoveTargetIdentifierRequest(
+                CurrentCaseInfo.CaseId,
+                SelectedTargetSummary.TargetId,
+                SelectedTargetIdentifier.IdentifierId
+            ),
+            CancellationToken.None
+        );
+
+        SelectedTargetIdentifier = null;
+        await RefreshSelectedTargetDetailsAsync(CancellationToken.None);
+        OperationText = "Identifier removed.";
+    }
+
+    private async Task OpenSearchForSelectedTargetAsync()
+    {
+        if (CurrentCaseInfo is null || SelectedTargetSummary is null)
+        {
+            OperationText = "Select a target before opening filtered search.";
+            return;
+        }
+
+        var identifier = SelectedTargetIdentifier ?? SelectedTargetIdentifiers.FirstOrDefault();
+        if (identifier is null)
+        {
+            OperationText = "Select a target identifier before opening filtered search.";
+            return;
+        }
+
+        MessageSearchQuery = BuildParticipantSearchQuery(identifier);
+        var participantFilter = BuildParticipantSearchFilter(identifier);
+        MessageSearchSenderFilter = participantFilter;
+        MessageSearchRecipientFilter = participantFilter;
+        SelectedMessageSearchPlatform = "All";
+        SelectedNavigationItem = NavigationItems.FirstOrDefault(item => item.Page == NavigationPage.Search);
+
+        await SearchMessagesAsync();
+    }
+
+    private Task CreateTargetFromSenderAsync()
+    {
+        return LinkMessageParticipantsFromSelectedHitAsync(MessageParticipantRole.Sender, createTarget: true);
+    }
+
+    private Task LinkSenderToExistingTargetAsync()
+    {
+        return LinkMessageParticipantsFromSelectedHitAsync(MessageParticipantRole.Sender, createTarget: false);
+    }
+
+    private Task CreateTargetFromRecipientsAsync()
+    {
+        return LinkMessageParticipantsFromSelectedHitAsync(MessageParticipantRole.Recipient, createTarget: true);
+    }
+
+    private Task LinkRecipientsToExistingTargetAsync()
+    {
+        return LinkMessageParticipantsFromSelectedHitAsync(
+            MessageParticipantRole.Recipient,
+            createTarget: false
+        );
+    }
+
+    private async Task LinkMessageParticipantsFromSelectedHitAsync(
+        MessageParticipantRole role,
+        bool createTarget
+    )
+    {
+        if (CurrentCaseInfo is null || SelectedMessageSearchResult is null)
+        {
+            MessageSearchStatusText = "Select a message hit before linking participants.";
+            return;
+        }
+
+        var participants = ExtractParticipants(SelectedMessageSearchResult, role);
+        if (participants.Count == 0)
+        {
+            MessageSearchStatusText = role == MessageParticipantRole.Sender
+                ? "Selected message has no sender value."
+                : "Selected message has no recipient values.";
+            return;
+        }
+
+        await RefreshTargetsAsync(CancellationToken.None);
+
+        Guid? requestedTargetId = null;
+        string? requestedTargetName = null;
+        if (!createTarget)
+        {
+            var selectedTarget = PromptForTargetSelection();
+            if (selectedTarget is null)
+            {
+                MessageSearchStatusText = "Link canceled.";
+                return;
+            }
+
+            requestedTargetId = selectedTarget.TargetId;
+            requestedTargetName = selectedTarget.DisplayName;
+        }
+
+        var linkedCount = 0;
+        MessageParticipantLinkResult? lastResult = null;
+        foreach (var participant in participants)
+        {
+            if (createTarget)
+            {
+                var namePrompt = new TextInputDialog(
+                    title: $"Create Target from {role}",
+                    prompt: $"Enter a target name for {role.ToString().ToLowerInvariant()} value \"{participant}\":",
+                    confirmButtonText: "Create + Link",
+                    initialValue: participant
+                )
+                {
+                    Owner = Application.Current.MainWindow
+                };
+
+                if (namePrompt.ShowDialog() != true || string.IsNullOrWhiteSpace(namePrompt.Value))
+                {
+                    MessageSearchStatusText = linkedCount == 0
+                        ? "Create/link canceled."
+                        : $"Linked {linkedCount} participant(s).";
+                    return;
+                }
+
+                requestedTargetName = namePrompt.Value;
+            }
+
+            var confirmationTarget = createTarget
+                ? $"new target \"{requestedTargetName}\""
+                : $"existing target \"{requestedTargetName}\"";
+            var confirmation = MessageBox.Show(
+                Application.Current.MainWindow,
+                $"Link {role.ToString().ToLowerInvariant()} value \"{participant}\" to {confirmationTarget}?",
+                "Confirm Participant Link",
+                MessageBoxButton.YesNo,
+                MessageBoxImage.Question,
+                MessageBoxResult.No
+            );
+            if (confirmation != MessageBoxResult.Yes)
+            {
+                continue;
+            }
+
+            var conflictResolution = IdentifierConflictResolution.Cancel;
+            while (true)
+            {
+                try
+                {
+                    lastResult = await _targetRegistryService.LinkMessageParticipantAsync(
+                        new LinkMessageParticipantRequest(
+                            CurrentCaseInfo.CaseId,
+                            SelectedMessageSearchResult.MessageEventId,
+                            role,
+                            participant,
+                            requestedTargetId,
+                            createTarget ? requestedTargetName : null,
+                            conflictResolution
+                        ),
+                        CancellationToken.None
+                    );
+                    linkedCount++;
+                    break;
+                }
+                catch (IdentifierConflictException ex)
+                {
+                    conflictResolution = PromptConflictResolution(ex.Conflict);
+                    if (conflictResolution == IdentifierConflictResolution.Cancel)
+                    {
+                        break;
+                    }
+                }
+            }
+        }
+
+        await RefreshTargetsAsync(CancellationToken.None);
+        if (lastResult is not null)
+        {
+            SelectedTargetSummary = Targets.FirstOrDefault(
+                target => target.TargetId == lastResult.EffectiveTargetId
+            );
+            await RefreshSelectedTargetDetailsAsync(CancellationToken.None);
+        }
+
+        MessageSearchStatusText = linkedCount == 0
+            ? "No participants were linked."
+            : $"Linked {linkedCount} participant(s).";
+    }
+
+    private TargetSummary? PromptForTargetSelection()
+    {
+        if (Targets.Count == 0)
+        {
+            MessageSearchStatusText = "No targets exist yet. Create one first.";
+            return null;
+        }
+
+        var dialog = new TargetPickerDialog(
+            "Select Target",
+            "Choose an existing target to link this participant.",
+            Targets.ToList()
+        )
+        {
+            Owner = Application.Current.MainWindow
+        };
+
+        if (dialog.ShowDialog() != true || !dialog.SelectedTargetId.HasValue)
+        {
+            return null;
+        }
+
+        return Targets.FirstOrDefault(target => target.TargetId == dialog.SelectedTargetId.Value);
+    }
+
+    private IdentifierConflictResolution PromptConflictResolution(IdentifierConflictInfo conflict)
+    {
+        var choice = MessageBox.Show(
+            Application.Current.MainWindow,
+            $"Identifier conflict:\n\n" +
+            $"Type: {conflict.Type}\n" +
+            $"Value: {conflict.ValueRaw}\n" +
+            $"Already linked to: {conflict.ExistingTargetDisplayName}\n\n" +
+            "Yes = Move identifier to requested target\n" +
+            "No = Keep existing target link\n" +
+            "Cancel = Stop",
+            "Identifier Conflict",
+            MessageBoxButton.YesNoCancel,
+            MessageBoxImage.Warning,
+            MessageBoxResult.Cancel
+        );
+
+        return choice switch
+        {
+            MessageBoxResult.Yes => IdentifierConflictResolution.MoveIdentifierToRequestedTarget,
+            MessageBoxResult.No => IdentifierConflictResolution.UseExistingTarget,
+            _ => IdentifierConflictResolution.Cancel
+        };
+    }
+
+    private static IReadOnlyList<string> ExtractParticipants(
+        MessageSearchHit hit,
+        MessageParticipantRole role
+    )
+    {
+        if (role == MessageParticipantRole.Sender)
+        {
+            if (string.IsNullOrWhiteSpace(hit.Sender))
+            {
+                return Array.Empty<string>();
+            }
+
+            return [hit.Sender.Trim()];
+        }
+
+        if (string.IsNullOrWhiteSpace(hit.Recipients))
+        {
+            return Array.Empty<string>();
+        }
+
+        var parsed = hit.Recipients
+            .Split(
+                [',', ';', '\n', '\r', '|'],
+                StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries
+            )
+            .Where(value => value.Length > 0)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        if (parsed.Count > 0)
+        {
+            return parsed;
+        }
+
+        return [hit.Recipients.Trim()];
+    }
+
+    private static string BuildParticipantSearchFilter(TargetIdentifierInfo identifier)
+    {
+        if (identifier.Type == TargetIdentifierType.Phone)
+        {
+            var digitsOnly = new string(identifier.ValueNormalized.Where(char.IsDigit).ToArray());
+            return digitsOnly.Length > 0 ? digitsOnly : identifier.ValueNormalized;
+        }
+
+        return string.IsNullOrWhiteSpace(identifier.ValueNormalized)
+            ? identifier.ValueRaw
+            : identifier.ValueNormalized;
+    }
+
+    private static string BuildParticipantSearchQuery(TargetIdentifierInfo identifier)
+    {
+        var filter = BuildParticipantSearchFilter(identifier);
+        return string.IsNullOrWhiteSpace(filter) ? identifier.ValueRaw : filter;
     }
 
     private async Task RefreshRecentActivityAsync(CancellationToken ct)

@@ -1,0 +1,229 @@
+<UserControl x:Class="CaseGraph.App.Views.Pages.PeopleTargetsView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             Background="{DynamicResource ContentBackgroundBrush}">
+    <Grid Margin="{StaticResource Space16}">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+        </Grid.RowDefinitions>
+
+        <DockPanel Grid.Row="0">
+            <TextBlock DockPanel.Dock="Left"
+                       Text="People / Targets"
+                       Style="{StaticResource PageTitleTextStyle}" />
+            <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
+                <TextBox Width="260"
+                         Margin="{StaticResource SpaceRight12}"
+                         Text="{Binding TargetSearchQuery, UpdateSourceTrigger=PropertyChanged}"
+                         Style="{StaticResource TopBarTextBoxStyle}"
+                         ToolTip="Search targets by name or alias" />
+                <Button Content="Refresh"
+                        Command="{Binding RefreshTargetsCommand}"
+                        Style="{StaticResource TopBarButtonStyle}" />
+            </StackPanel>
+        </DockPanel>
+
+        <Grid Grid.Row="1" Margin="{StaticResource SpaceTop12}">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="1.2*" />
+                <ColumnDefinition Width="16" />
+                <ColumnDefinition Width="2*" />
+            </Grid.ColumnDefinitions>
+
+            <Border Grid.Column="0" Style="{StaticResource PlaceholderHintBorderStyle}">
+                <Grid>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="*" />
+                    </Grid.RowDefinitions>
+
+                    <TextBlock Text="Targets" Style="{StaticResource SectionTitleTextStyle}" />
+                    <ListBox Grid.Row="1"
+                             Margin="{StaticResource SpaceTop12}"
+                             ItemsSource="{Binding Targets}"
+                             SelectedItem="{Binding SelectedTargetSummary, Mode=TwoWay}"
+                             DisplayMemberPath="DisplayName" />
+                </Grid>
+            </Border>
+
+            <ScrollViewer Grid.Column="2" VerticalScrollBarVisibility="Auto">
+                <StackPanel>
+                    <Border Style="{StaticResource PlaceholderHintBorderStyle}">
+                        <StackPanel>
+                            <TextBlock Text="Create New Target" Style="{StaticResource SectionTitleTextStyle}" />
+
+                            <TextBlock Margin="{StaticResource SpaceTop12}"
+                                       Style="{StaticResource SecondaryBodyTextStyle}"
+                                       Text="Display Name" />
+                            <TextBox Text="{Binding NewTargetDisplayName, UpdateSourceTrigger=PropertyChanged}"
+                                     Style="{StaticResource TopBarTextBoxStyle}" />
+
+                            <TextBlock Margin="{StaticResource SpaceTop8}"
+                                       Style="{StaticResource SecondaryBodyTextStyle}"
+                                       Text="Primary Alias" />
+                            <TextBox Text="{Binding NewTargetPrimaryAlias, UpdateSourceTrigger=PropertyChanged}"
+                                     Style="{StaticResource TopBarTextBoxStyle}" />
+
+                            <TextBlock Margin="{StaticResource SpaceTop8}"
+                                       Style="{StaticResource SecondaryBodyTextStyle}"
+                                       Text="Notes" />
+                            <TextBox Text="{Binding NewTargetNotes, UpdateSourceTrigger=PropertyChanged}"
+                                     MinHeight="70"
+                                     TextWrapping="Wrap"
+                                     AcceptsReturn="True"
+                                     Style="{StaticResource TopBarTextBoxStyle}" />
+
+                            <Button Margin="{StaticResource SpaceTop12}"
+                                    Content="Create Target"
+                                    Command="{Binding CreateTargetCommand}"
+                                    Style="{StaticResource TopBarButtonStyle}" />
+                        </StackPanel>
+                    </Border>
+
+                    <Border Margin="{StaticResource SpaceTop12}" Style="{StaticResource PlaceholderHintBorderStyle}">
+                        <StackPanel>
+                            <TextBlock Text="Selected Target" Style="{StaticResource SectionTitleTextStyle}" />
+
+                            <TextBlock Margin="{StaticResource SpaceTop12}"
+                                       Style="{StaticResource SecondaryBodyTextStyle}"
+                                       Text="Display Name" />
+                            <TextBox Text="{Binding SelectedTargetDisplayName, UpdateSourceTrigger=PropertyChanged}"
+                                     Style="{StaticResource TopBarTextBoxStyle}" />
+
+                            <TextBlock Margin="{StaticResource SpaceTop8}"
+                                       Style="{StaticResource SecondaryBodyTextStyle}"
+                                       Text="Primary Alias" />
+                            <TextBox Text="{Binding SelectedTargetPrimaryAlias, UpdateSourceTrigger=PropertyChanged}"
+                                     Style="{StaticResource TopBarTextBoxStyle}" />
+
+                            <TextBlock Margin="{StaticResource SpaceTop8}"
+                                       Style="{StaticResource SecondaryBodyTextStyle}"
+                                       Text="Notes" />
+                            <TextBox Text="{Binding SelectedTargetNotes, UpdateSourceTrigger=PropertyChanged}"
+                                     MinHeight="70"
+                                     TextWrapping="Wrap"
+                                     AcceptsReturn="True"
+                                     Style="{StaticResource TopBarTextBoxStyle}" />
+
+                            <Button Margin="{StaticResource SpaceTop12}"
+                                    Content="Save Target"
+                                    Command="{Binding SaveSelectedTargetCommand}"
+                                    IsEnabled="{Binding HasSelectedTarget}"
+                                    Style="{StaticResource TopBarButtonStyle}" />
+                        </StackPanel>
+                    </Border>
+
+                    <Border Margin="{StaticResource SpaceTop12}" Style="{StaticResource PlaceholderHintBorderStyle}">
+                        <StackPanel>
+                            <TextBlock Text="Aliases" Style="{StaticResource SectionTitleTextStyle}" />
+
+                            <ListBox Margin="{StaticResource SpaceTop12}"
+                                     MinHeight="90"
+                                     ItemsSource="{Binding SelectedTargetAliases}"
+                                     SelectedItem="{Binding SelectedTargetAlias, Mode=TwoWay}"
+                                     DisplayMemberPath="Alias" />
+
+                            <TextBox Margin="{StaticResource SpaceTop8}"
+                                     Text="{Binding NewAliasText, UpdateSourceTrigger=PropertyChanged}"
+                                     Style="{StaticResource TopBarTextBoxStyle}"
+                                     ToolTip="Add alias" />
+
+                            <StackPanel Margin="{StaticResource SpaceTop8}" Orientation="Horizontal">
+                                <Button Content="Add Alias"
+                                        Command="{Binding AddAliasCommand}"
+                                        IsEnabled="{Binding HasSelectedTarget}"
+                                        Style="{StaticResource TopBarButtonStyle}" />
+                                <Button Margin="{StaticResource SpaceLeft8}"
+                                        Content="Remove Alias"
+                                        Command="{Binding RemoveAliasCommand}"
+                                        IsEnabled="{Binding HasSelectedTargetAlias}"
+                                        Style="{StaticResource TopBarButtonStyle}" />
+                            </StackPanel>
+                        </StackPanel>
+                    </Border>
+
+                    <Border Margin="{StaticResource SpaceTop12}" Style="{StaticResource PlaceholderHintBorderStyle}">
+                        <StackPanel>
+                            <TextBlock Text="Identifiers" Style="{StaticResource SectionTitleTextStyle}" />
+
+                            <DataGrid Margin="{StaticResource SpaceTop12}"
+                                      MinHeight="150"
+                                      ItemsSource="{Binding SelectedTargetIdentifiers}"
+                                      SelectedItem="{Binding SelectedTargetIdentifier, Mode=TwoWay}"
+                                      AutoGenerateColumns="False"
+                                      CanUserAddRows="False"
+                                      CanUserDeleteRows="False"
+                                      IsReadOnly="True">
+                                <DataGrid.Columns>
+                                    <DataGridTextColumn Header="Type" Binding="{Binding Type}" Width="*" />
+                                    <DataGridTextColumn Header="Raw" Binding="{Binding ValueRaw}" Width="1.7*" />
+                                    <DataGridTextColumn Header="Normalized" Binding="{Binding ValueNormalized}" Width="1.7*" />
+                                    <DataGridCheckBoxColumn Header="Primary" Binding="{Binding IsPrimary}" Width="Auto" />
+                                </DataGrid.Columns>
+                            </DataGrid>
+
+                            <Grid Margin="{StaticResource SpaceTop8}">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="180" />
+                                    <ColumnDefinition Width="8" />
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="8" />
+                                    <ColumnDefinition Width="*" />
+                                </Grid.ColumnDefinitions>
+
+                                <ComboBox Grid.Column="0"
+                                          ItemsSource="{Binding AvailableIdentifierTypes}"
+                                          SelectedItem="{Binding IdentifierEditorType, Mode=TwoWay}"
+                                          Style="{StaticResource TopBarComboBoxStyle}" />
+                                <TextBox Grid.Column="2"
+                                         Text="{Binding IdentifierEditorValueRaw, UpdateSourceTrigger=PropertyChanged}"
+                                         Style="{StaticResource TopBarTextBoxStyle}"
+                                         ToolTip="Identifier value" />
+                                <TextBox Grid.Column="4"
+                                         Text="{Binding IdentifierEditorNotes, UpdateSourceTrigger=PropertyChanged}"
+                                         Style="{StaticResource TopBarTextBoxStyle}"
+                                         ToolTip="Notes" />
+                            </Grid>
+
+                            <CheckBox Margin="{StaticResource SpaceTop8}"
+                                      Content="Primary identifier"
+                                      IsChecked="{Binding IdentifierEditorIsPrimary, Mode=TwoWay}" />
+
+                            <StackPanel Margin="{StaticResource SpaceTop8}" Orientation="Horizontal">
+                                <Button Content="Add Identifier"
+                                        Command="{Binding AddIdentifierCommand}"
+                                        IsEnabled="{Binding HasSelectedTarget}"
+                                        Style="{StaticResource TopBarButtonStyle}" />
+                                <Button Margin="{StaticResource SpaceLeft8}"
+                                        Content="Update Identifier"
+                                        Command="{Binding UpdateIdentifierCommand}"
+                                        IsEnabled="{Binding HasSelectedTargetIdentifier}"
+                                        Style="{StaticResource TopBarButtonStyle}" />
+                                <Button Margin="{StaticResource SpaceLeft8}"
+                                        Content="Remove Identifier"
+                                        Command="{Binding RemoveIdentifierCommand}"
+                                        IsEnabled="{Binding HasSelectedTargetIdentifier}"
+                                        Style="{StaticResource TopBarButtonStyle}" />
+                            </StackPanel>
+                        </StackPanel>
+                    </Border>
+
+                    <Border Margin="{StaticResource SpaceTop12}" Style="{StaticResource PlaceholderHintBorderStyle}">
+                        <StackPanel>
+                            <TextBlock Text="Where Seen" Style="{StaticResource SectionTitleTextStyle}" />
+                            <TextBlock Margin="{StaticResource SpaceTop8}"
+                                       Style="{StaticResource BodyTextStyle}"
+                                       Text="{Binding SelectedTargetWhereSeenSummary}" />
+                            <Button Margin="{StaticResource SpaceTop8}"
+                                    Content="Open Filtered Search"
+                                    Command="{Binding OpenSearchForSelectedTargetCommand}"
+                                    IsEnabled="{Binding HasSelectedTargetIdentifier}"
+                                    Style="{StaticResource TopBarButtonStyle}" />
+                        </StackPanel>
+                    </Border>
+                </StackPanel>
+            </ScrollViewer>
+        </Grid>
+    </Grid>
+</UserControl>

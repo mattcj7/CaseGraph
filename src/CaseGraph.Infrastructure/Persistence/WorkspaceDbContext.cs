@@ -24,6 +24,16 @@ public sealed class WorkspaceDbContext : DbContext
 
     public DbSet<MessageParticipantRecord> MessageParticipants => Set<MessageParticipantRecord>();
 
+    public DbSet<TargetRecord> Targets => Set<TargetRecord>();
+
+    public DbSet<TargetAliasRecord> TargetAliases => Set<TargetAliasRecord>();
+
+    public DbSet<IdentifierRecord> Identifiers => Set<IdentifierRecord>();
+
+    public DbSet<TargetIdentifierLinkRecord> TargetIdentifierLinks => Set<TargetIdentifierLinkRecord>();
+
+    public DbSet<MessageParticipantLinkRecord> MessageParticipantLinks => Set<MessageParticipantLinkRecord>();
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         modelBuilder.Entity<CaseRecord>(entity =>
@@ -124,6 +134,106 @@ public sealed class WorkspaceDbContext : DbContext
                 .WithMany(t => t.Participants)
                 .HasForeignKey(e => e.ThreadId)
                 .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.Entity<TargetRecord>(entity =>
+        {
+            entity.ToTable("TargetRecord");
+            entity.HasKey(e => e.TargetId);
+            entity.Property(e => e.DisplayName).IsRequired();
+            entity.Property(e => e.SourceType).IsRequired();
+            entity.Property(e => e.SourceLocator).IsRequired();
+            entity.Property(e => e.IngestModuleVersion).IsRequired();
+            entity.HasIndex(e => new { e.CaseId, e.DisplayName });
+
+            entity.HasOne(e => e.Case)
+                .WithMany()
+                .HasForeignKey(e => e.CaseId)
+                .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.Entity<TargetAliasRecord>(entity =>
+        {
+            entity.ToTable("TargetAliasRecord");
+            entity.HasKey(e => e.AliasId);
+            entity.Property(e => e.Alias).IsRequired();
+            entity.Property(e => e.AliasNormalized).IsRequired();
+            entity.Property(e => e.SourceType).IsRequired();
+            entity.Property(e => e.SourceLocator).IsRequired();
+            entity.Property(e => e.IngestModuleVersion).IsRequired();
+            entity.HasIndex(e => new { e.CaseId, e.AliasNormalized, e.TargetId }).IsUnique();
+
+            entity.HasOne(e => e.Target)
+                .WithMany(t => t.Aliases)
+                .HasForeignKey(e => e.TargetId)
+                .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.Entity<IdentifierRecord>(entity =>
+        {
+            entity.ToTable("IdentifierRecord");
+            entity.HasKey(e => e.IdentifierId);
+            entity.Property(e => e.Type).IsRequired();
+            entity.Property(e => e.ValueRaw).IsRequired();
+            entity.Property(e => e.ValueNormalized).IsRequired();
+            entity.Property(e => e.SourceType).IsRequired();
+            entity.Property(e => e.SourceLocator).IsRequired();
+            entity.Property(e => e.IngestModuleVersion).IsRequired();
+            entity.HasIndex(e => new { e.CaseId, e.Type, e.ValueNormalized }).IsUnique();
+
+            entity.HasOne(e => e.Case)
+                .WithMany()
+                .HasForeignKey(e => e.CaseId)
+                .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.Entity<TargetIdentifierLinkRecord>(entity =>
+        {
+            entity.ToTable("TargetIdentifierLinkRecord");
+            entity.HasKey(e => e.LinkId);
+            entity.Property(e => e.SourceType).IsRequired();
+            entity.Property(e => e.SourceLocator).IsRequired();
+            entity.Property(e => e.IngestModuleVersion).IsRequired();
+            entity.HasIndex(e => new { e.TargetId, e.IdentifierId }).IsUnique();
+
+            entity.HasOne(e => e.Target)
+                .WithMany(t => t.IdentifierLinks)
+                .HasForeignKey(e => e.TargetId)
+                .OnDelete(DeleteBehavior.Cascade);
+
+            entity.HasOne(e => e.Identifier)
+                .WithMany(i => i.TargetLinks)
+                .HasForeignKey(e => e.IdentifierId)
+                .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.Entity<MessageParticipantLinkRecord>(entity =>
+        {
+            entity.ToTable("MessageParticipantLinkRecord");
+            entity.HasKey(e => e.ParticipantLinkId);
+            entity.Property(e => e.Role).IsRequired();
+            entity.Property(e => e.ParticipantRaw).IsRequired();
+            entity.Property(e => e.SourceType).IsRequired();
+            entity.Property(e => e.SourceLocator).IsRequired();
+            entity.Property(e => e.IngestModuleVersion).IsRequired();
+            entity.HasIndex(e => new { e.CaseId, e.IdentifierId });
+            entity.HasIndex(e => new { e.CaseId, e.TargetId });
+            entity.HasIndex(e => new { e.CaseId, e.MessageEventId });
+
+            entity.HasOne(e => e.MessageEvent)
+                .WithMany()
+                .HasForeignKey(e => e.MessageEventId)
+                .OnDelete(DeleteBehavior.Cascade);
+
+            entity.HasOne(e => e.Identifier)
+                .WithMany()
+                .HasForeignKey(e => e.IdentifierId)
+                .OnDelete(DeleteBehavior.Cascade);
+
+            entity.HasOne(e => e.Target)
+                .WithMany()
+                .HasForeignKey(e => e.TargetId)
+                .OnDelete(DeleteBehavior.SetNull);
         });
     }
 }
