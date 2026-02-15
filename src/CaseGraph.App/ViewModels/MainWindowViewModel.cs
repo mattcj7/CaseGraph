@@ -2,8 +2,11 @@ using CaseGraph.App.Models;
 using CaseGraph.App.Services;
 using CaseGraph.Core.Abstractions;
 using CaseGraph.Core.Models;
+using CaseGraph.Infrastructure.Persistence;
+using CaseGraph.Infrastructure.Persistence.Entities;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
+using Microsoft.EntityFrameworkCore;
 using System.Collections.ObjectModel;
 using System.Collections.Specialized;
 using System.IO;
@@ -13,7 +16,7 @@ using System.Windows;
 
 namespace CaseGraph.App.ViewModels;
 
-public partial class MainWindowViewModel : ObservableObject
+public partial class MainWindowViewModel : ObservableObject, IDisposable
 {
     private const string EvidenceImportJobType = "EvidenceImport";
     private const string EvidenceVerifyJobType = "EvidenceVerify";
@@ -26,6 +29,7 @@ public partial class MainWindowViewModel : ObservableObject
     private readonly IMessageSearchService _messageSearchService;
     private readonly IAuditLogService _auditLogService;
     private readonly IJobQueueService _jobQueueService;
+    private readonly IDbContextFactory<WorkspaceDbContext> _dbContextFactory;
     private readonly IWorkspacePathProvider _workspacePathProvider;
     private readonly IUserInteractionService _userInteractionService;
     private readonly IDisposable _jobUpdateSubscription;
@@ -33,8 +37,10 @@ public partial class MainWindowViewModel : ObservableObject
 
     private CancellationTokenSource? _operationCts;
     private CancellationTokenSource? _messageSearchCts;
+    private CancellationTokenSource? _latestMessagesParseRefreshCts;
     private Guid? _activeJobId;
     private bool _isInitialized;
+    private bool _isDisposed;
 
     public ObservableCollection<NavigationItem> NavigationItems { get; } = new();
 
@@ -102,6 +108,9 @@ public partial class MainWindowViewModel : ObservableObject
     private string selectedEvidenceMessagesStatus = "No messages parse job yet.";
 
     [ObservableProperty]
+    private JobInfo? latestMessagesParseJob;
+
+    [ObservableProperty]
     private string messageSearchQuery = string.Empty;
 
     [ObservableProperty]
@@ -145,6 +154,9 @@ public partial class MainWindowViewModel : ObservableObject
         }
     }
 
+    public bool CanCancelLatestMessagesParseJob => LatestMessagesParseJob is not null
+        && !IsTerminalStatus(LatestMessagesParseJob.Status);
+
     public IRelayCommand ToggleThemeCommand { get; }
 
     public IRelayCommand ToggleEvidenceDrawerCommand { get; }
@@ -160,6 +172,10 @@ public partial class MainWindowViewModel : ObservableObject
     public IAsyncRelayCommand VerifySelectedEvidenceCommand { get; }
 
     public IAsyncRelayCommand ParseMessagesFromEvidenceCommand { get; }
+
+    public IAsyncRelayCommand RefreshLatestMessagesParseJobCommand { get; }
+
+    public IAsyncRelayCommand CancelLatestMessagesParseJobCommand { get; }
 
     public IAsyncRelayCommand SearchMessagesCommand { get; }
 
@@ -181,6 +197,7 @@ public partial class MainWindowViewModel : ObservableObject
         IMessageSearchService messageSearchService,
         IAuditLogService auditLogService,
         IJobQueueService jobQueueService,
+        IDbContextFactory<WorkspaceDbContext> dbContextFactory,
         IWorkspacePathProvider workspacePathProvider,
         IUserInteractionService userInteractionService
     )
@@ -192,6 +209,7 @@ public partial class MainWindowViewModel : ObservableObject
         _messageSearchService = messageSearchService;
         _auditLogService = auditLogService;
         _jobQueueService = jobQueueService;
+        _dbContextFactory = dbContextFactory;
         _workspacePathProvider = workspacePathProvider;
         _userInteractionService = userInteractionService;
 
@@ -213,6 +231,8 @@ public partial class MainWindowViewModel : ObservableObject
         ImportFilesCommand = new AsyncRelayCommand(ImportFilesAsync);
         VerifySelectedEvidenceCommand = new AsyncRelayCommand(VerifySelectedEvidenceAsync);
         ParseMessagesFromEvidenceCommand = new AsyncRelayCommand(ParseMessagesFromSelectedEvidenceAsync);
+        RefreshLatestMessagesParseJobCommand = new AsyncRelayCommand(RefreshLatestMessagesParseJobManuallyAsync);
+        CancelLatestMessagesParseJobCommand = new AsyncRelayCommand(CancelLatestMessagesParseJobAsync);
         SearchMessagesCommand = new AsyncRelayCommand(SearchMessagesAsync);
         CopyStoredPathCommand = new RelayCommand(CopyStoredPath);
         CopySha256Command = new RelayCommand(CopySha256);
@@ -251,7 +271,7 @@ public partial class MainWindowViewModel : ObservableObject
         OnPropertyChanged(nameof(HasSelectedEvidenceItem));
         OnPropertyChanged(nameof(SelectedStoredAbsolutePath));
         UpdateSelectedEvidenceVerifyStatus();
-        UpdateSelectedEvidenceMessagesStatus();
+        ResetLatestMessagesParseJobTracking();
 
         if (value is not null)
         {
@@ -264,6 +284,12 @@ public partial class MainWindowViewModel : ObservableObject
         OnPropertyChanged(nameof(CurrentCaseSummary));
         OnPropertyChanged(nameof(SelectedStoredAbsolutePath));
         UpdateSelectedEvidenceVerifyStatus();
+        ResetLatestMessagesParseJobTracking();
+    }
+
+    partial void OnLatestMessagesParseJobChanged(JobInfo? value)
+    {
+        OnPropertyChanged(nameof(CanCancelLatestMessagesParseJob));
         UpdateSelectedEvidenceMessagesStatus();
     }
 
@@ -448,6 +474,7 @@ public partial class MainWindowViewModel : ObservableObject
             OperationText = $"Queued messages ingest job {jobId:D}.";
             OperationProgress = 0;
             await RefreshRecentJobsAsync(CancellationToken.None);
+            await RefreshLatestMessagesParseJobAsync(CancellationToken.None);
         }
         catch (OperationCanceledException)
         {
@@ -672,7 +699,7 @@ public partial class MainWindowViewModel : ObservableObject
         var jobs = await _jobQueueService.GetRecentAsync(CurrentCaseInfo.CaseId, 50, ct);
         SetRecentJobs(jobs.OrderByDescending(job => job.CreatedAtUtc));
         UpdateSelectedEvidenceVerifyStatus();
-        UpdateSelectedEvidenceMessagesStatus();
+        await RefreshLatestMessagesParseJobAsync(ct);
         SyncStatusBarFromJobs();
     }
 
@@ -731,7 +758,7 @@ public partial class MainWindowViewModel : ObservableObject
 
         SyncStatusBarFromJobs(job);
         UpdateSelectedEvidenceVerifyStatus();
-        UpdateSelectedEvidenceMessagesStatus();
+        ApplyLatestMessagesParseJobUpdate(job);
 
         if (IsTerminalStatus(job.Status))
         {
@@ -832,19 +859,138 @@ public partial class MainWindowViewModel : ObservableObject
             return;
         }
 
-        var latestParse = RecentJobs
-            .Where(job => job.JobType == MessagesIngestJobType)
-            .Where(job => job.EvidenceItemId == SelectedEvidenceItem.EvidenceItemId)
-            .OrderByDescending(job => job.CreatedAtUtc)
-            .FirstOrDefault();
-
-        if (latestParse is null)
+        if (LatestMessagesParseJob is null)
         {
             SelectedEvidenceMessagesStatus = "No messages parse job yet.";
             return;
         }
 
-        SelectedEvidenceMessagesStatus = $"{latestParse.Status}: {FormatJobStatusMessage(latestParse)}";
+        SelectedEvidenceMessagesStatus = $"{LatestMessagesParseJob.Status}: {FormatJobStatusMessage(LatestMessagesParseJob)}";
+    }
+
+    private void ResetLatestMessagesParseJobTracking()
+    {
+        CancelLatestMessagesParseRefresh();
+        LatestMessagesParseJob = null;
+        UpdateSelectedEvidenceMessagesStatus();
+
+        if (CurrentCaseInfo is null || SelectedEvidenceItem is null)
+        {
+            return;
+        }
+
+        QueueLatestMessagesParseJobRefresh();
+    }
+
+    private void QueueLatestMessagesParseJobRefresh()
+    {
+        CancelLatestMessagesParseRefresh();
+
+        var refreshCts = new CancellationTokenSource();
+        _latestMessagesParseRefreshCts = refreshCts;
+        _ = RefreshLatestMessagesParseJobForSelectionAsync(refreshCts);
+    }
+
+    private async Task RefreshLatestMessagesParseJobForSelectionAsync(CancellationTokenSource refreshCts)
+    {
+        try
+        {
+            await RefreshLatestMessagesParseJobAsync(refreshCts.Token);
+        }
+        catch (OperationCanceledException) when (refreshCts.IsCancellationRequested)
+        {
+        }
+        finally
+        {
+            if (ReferenceEquals(_latestMessagesParseRefreshCts, refreshCts))
+            {
+                _latestMessagesParseRefreshCts = null;
+            }
+
+            refreshCts.Dispose();
+        }
+    }
+
+    private void CancelLatestMessagesParseRefresh()
+    {
+        var refreshCts = _latestMessagesParseRefreshCts;
+        _latestMessagesParseRefreshCts = null;
+        refreshCts?.Cancel();
+        refreshCts?.Dispose();
+    }
+
+    private void ApplyLatestMessagesParseJobUpdate(JobInfo job)
+    {
+        if (job.JobType != MessagesIngestJobType || SelectedEvidenceItem is null)
+        {
+            return;
+        }
+
+        if (job.EvidenceItemId != SelectedEvidenceItem.EvidenceItemId)
+        {
+            return;
+        }
+
+        LatestMessagesParseJob = job;
+    }
+
+    private async Task RefreshLatestMessagesParseJobManuallyAsync()
+    {
+        CancelLatestMessagesParseRefresh();
+        await RefreshLatestMessagesParseJobAsync(CancellationToken.None);
+    }
+
+    private async Task CancelLatestMessagesParseJobAsync()
+    {
+        if (LatestMessagesParseJob is null || IsTerminalStatus(LatestMessagesParseJob.Status))
+        {
+            return;
+        }
+
+        await _jobQueueService.CancelAsync(LatestMessagesParseJob.JobId, CancellationToken.None);
+    }
+
+    private async Task RefreshLatestMessagesParseJobAsync(CancellationToken ct)
+    {
+        if (CurrentCaseInfo is null || SelectedEvidenceItem is null)
+        {
+            LatestMessagesParseJob = null;
+            return;
+        }
+
+        var caseId = CurrentCaseInfo.CaseId;
+        var evidenceItemId = SelectedEvidenceItem.EvidenceItemId;
+        var latestJob = await QueryLatestMessagesParseJobAsync(caseId, evidenceItemId, ct);
+
+        if (ct.IsCancellationRequested)
+        {
+            return;
+        }
+
+        if (CurrentCaseInfo?.CaseId != caseId || SelectedEvidenceItem?.EvidenceItemId != evidenceItemId)
+        {
+            return;
+        }
+
+        LatestMessagesParseJob = latestJob;
+    }
+
+    private async Task<JobInfo?> QueryLatestMessagesParseJobAsync(
+        Guid caseId,
+        Guid evidenceItemId,
+        CancellationToken ct
+    )
+    {
+        await using var db = await _dbContextFactory.CreateDbContextAsync(ct);
+        var latestRecord = await db.Jobs
+            .AsNoTracking()
+            .Where(job => job.CaseId == caseId)
+            .Where(job => job.EvidenceItemId == evidenceItemId)
+            .Where(job => job.JobType == MessagesIngestJobType)
+            .OrderByDescending(job => job.CreatedAtUtc)
+            .FirstOrDefaultAsync(ct);
+
+        return latestRecord is null ? null : MapJobRecordToInfo(latestRecord);
     }
 
     private static bool IsTerminalStatus(JobStatus status)
@@ -931,6 +1077,50 @@ public partial class MainWindowViewModel : ObservableObject
             100
         );
         return $"{percent:0}% - {job.StatusMessage}";
+    }
+
+    private static JobInfo MapJobRecordToInfo(JobRecord record)
+    {
+        return new JobInfo
+        {
+            JobId = record.JobId,
+            CreatedAtUtc = record.CreatedAtUtc,
+            StartedAtUtc = record.StartedAtUtc,
+            CompletedAtUtc = record.CompletedAtUtc,
+            Status = Enum.TryParse<JobStatus>(record.Status, true, out var parsedStatus)
+                ? parsedStatus
+                : JobStatus.Failed,
+            JobType = record.JobType,
+            CaseId = record.CaseId,
+            EvidenceItemId = record.EvidenceItemId,
+            Progress = Math.Clamp(record.Progress, 0, 1),
+            StatusMessage = record.StatusMessage,
+            ErrorMessage = record.ErrorMessage,
+            JsonPayload = record.JsonPayload,
+            CorrelationId = record.CorrelationId,
+            Operator = record.Operator
+        };
+    }
+
+    public void Dispose()
+    {
+        if (_isDisposed)
+        {
+            return;
+        }
+
+        _isDisposed = true;
+        CancelLatestMessagesParseRefresh();
+        _operationCts?.Cancel();
+        _operationCts?.Dispose();
+        _operationCts = null;
+
+        _messageSearchCts?.Cancel();
+        _messageSearchCts?.Dispose();
+        _messageSearchCts = null;
+
+        _jobUpdateSubscription.Dispose();
+        _jobCompletionRefreshGate.Dispose();
     }
 
     private sealed class OperationScope : IDisposable

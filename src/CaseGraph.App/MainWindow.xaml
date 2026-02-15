@@ -194,12 +194,40 @@
                                    Text="{Binding SelectedEvidenceVerifyStatus}"
                                    TextWrapping="Wrap" />
 
-                        <TextBlock Margin="{StaticResource SpaceTop12}"
-                                   Style="{StaticResource SecondaryBodyTextStyle}"
-                                   Text="Latest Messages Parse Job" />
+                        <DockPanel Margin="{StaticResource SpaceTop12}">
+                            <TextBlock DockPanel.Dock="Left"
+                                       Style="{StaticResource SecondaryBodyTextStyle}"
+                                       VerticalAlignment="Center"
+                                       Text="Latest Messages Parse Job" />
+                            <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
+                                <Button Margin="0,0,8,0"
+                                        MinHeight="28"
+                                        Padding="10,0"
+                                        Content="Refresh"
+                                        Command="{Binding RefreshLatestMessagesParseJobCommand}"
+                                        Style="{StaticResource TopBarButtonStyle}" />
+                                <Button MinHeight="28"
+                                        Padding="10,0"
+                                        Content="Cancel Parse Job"
+                                        Command="{Binding CancelLatestMessagesParseJobCommand}"
+                                        IsEnabled="{Binding CanCancelLatestMessagesParseJob}"
+                                        Visibility="{Binding CanCancelLatestMessagesParseJob, Converter={StaticResource BoolToVisibilityConverter}}"
+                                        Style="{StaticResource TopBarButtonStyle}" />
+                            </StackPanel>
+                        </DockPanel>
+
                         <TextBlock Style="{StaticResource BodyTextStyle}"
                                    Text="{Binding SelectedEvidenceMessagesStatus}"
                                    TextWrapping="Wrap" />
+                        <TextBlock Margin="{StaticResource SpaceTop8}"
+                                   Style="{StaticResource SecondaryBodyTextStyle}"
+                                   Text="{Binding LatestMessagesParseJob.Progress, StringFormat=Progress {0:P0}, TargetNullValue=Progress (none)}" />
+                        <TextBlock Margin="{StaticResource SpaceTop8}"
+                                   Style="{StaticResource SecondaryBodyTextStyle}"
+                                   Text="{Binding LatestMessagesParseJob.StartedAtUtc, StringFormat=Started {0:u}, TargetNullValue=Started (none)}" />
+                        <TextBlock Margin="{StaticResource SpaceTop8}"
+                                   Style="{StaticResource SecondaryBodyTextStyle}"
+                                   Text="{Binding LatestMessagesParseJob.CompletedAtUtc, StringFormat=Completed {0:u}, TargetNullValue=Completed (none)}" />
                     </StackPanel>
                 </ScrollViewer>
             </Border>

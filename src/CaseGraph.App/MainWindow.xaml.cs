@@ -1,4 +1,5 @@
 using CaseGraph.App.ViewModels;
+using System;
 using System.Windows;
 using Wpf.Ui.Controls;
 
@@ -18,5 +19,11 @@ public partial class MainWindow : FluentWindow
     private async void OnLoaded(object sender, RoutedEventArgs e)
     {
         await _viewModel.InitializeAsync();
+    }
+
+    protected override void OnClosed(EventArgs e)
+    {
+        _viewModel.Dispose();
+        base.OnClosed(e);
     }
 }
