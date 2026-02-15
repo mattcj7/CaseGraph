@@ -1,3 +1,4 @@
+using CaseGraph.Core.Diagnostics;
 using CaseGraph.App.ViewModels;
 using System;
 using System.Windows;
@@ -18,7 +19,21 @@ public partial class MainWindow : FluentWindow
 
     private async void OnLoaded(object sender, RoutedEventArgs e)
     {
-        await _viewModel.InitializeAsync();
+        try
+        {
+            await _viewModel.InitializeAsync();
+        }
+        catch (Exception ex)
+        {
+            AppFileLogger.LogException("MainWindow initialization failed.", ex);
+            System.Windows.MessageBox.Show(
+                ex.ToString(),
+                "CaseGraph Main Window Error",
+                System.Windows.MessageBoxButton.OK,
+                System.Windows.MessageBoxImage.Error
+            );
+            Application.Current.Shutdown(-1);
+        }
     }
 
     protected override void OnClosed(EventArgs e)

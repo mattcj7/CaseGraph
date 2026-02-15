@@ -129,16 +129,31 @@ public sealed class MessageIngestService : IMessageIngestService
             _ => ParseBatch.Empty("No message parser is available for this evidence type.")
         };
 
-        var threadsCreated = await PersistAsync(caseId, evidence.EvidenceItemId, parseBatch.Messages, ct);
+        if (parseBatch.Messages.Count == 0)
+        {
+            var emptySummary = parseBatch.EmptyStatusMessage ?? "Extracted 0 message(s).";
+            AppFileLogger.Log(
+                BuildLogMessage(
+                    logContext,
+                    $"[MessagesIngest] Complete case={caseId:D} evidence={evidence.EvidenceItemId:D} parsed=0 threads=0 elapsedMs={stopwatch.ElapsedMilliseconds} summary=\"{emptySummary}\""
+                )
+            );
+            return new MessageIngestResult(
+                MessagesExtracted: 0,
+                ThreadsCreated: 0,
+                SummaryOverride: emptySummary
+            );
+        }
+
         progress?.Report(new MessageIngestProgress(
             FractionComplete: 1,
             Phase: "Persisting parsed messages...",
             Processed: parseBatch.Messages.Count,
             Total: parseBatch.Messages.Count
         ));
-        var summaryOverride = parseBatch.Messages.Count == 0
-            ? parseBatch.EmptyStatusMessage ?? "Extracted 0 message(s)."
-            : null;
+
+        var threadsCreated = await PersistAsync(caseId, evidence.EvidenceItemId, parseBatch.Messages, ct);
+        var summaryOverride = (string?)null;
         AppFileLogger.Log(
             BuildLogMessage(
                 logContext,

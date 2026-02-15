@@ -9,223 +9,70 @@ This file tracks planned, active, and completed tickets.
   - **Upcoming Tickets** (current and deduplicated)
   - **Completed Tickets** (append-only)
 
-## Active Ticket
-- ID: T0009
-- Title: People/Targets v1 (Manual Entry + Identifier Registry + Link from Messages)
-
-## Active Ticket Spec
-```md
-# Ticket: T0009 - People/Targets v1 (Manual Entry + Identifier Registry + Link from Messages)
+# T0009A - Stabilization Hotfix: App Launch + Job Progress Finalization + Evidence Verify
 
 ## Goal
-Add a user-friendly **People/Targets** workflow that lets investigators:
-- Manually create/edit targets (gang members / associates)
-- Store and manage **identifiers** (phones, socials, emails, vehicles, etc.)
-- Link message participants (sender/recipient strings) to known targets with explicit user approval
-- See where an identifier appears in evidence (starting with MessageEvents)
+Fix current instability introduced around T0009/T0008 series:
+- App sometimes runs without opening a window (WPF startup failure)
+- Jobs show Succeeded but progress is < 1.0 and status messages are wrong
+- EvidenceVerify jobs repeatedly fail SHA mismatch (likely path/hash mismatch + duplicate enqueue)
+- Debug/TestLongRunningDelay job can fail due to invalid payload
 
-This sets the foundation for associations/graphs and defensible “why linked” views.
+## Observed Symptoms (from app log)
+- Startup failure: XamlParseException cannot find StaticResource "SpaceTop8" (MainWindow.xaml ~line 222)
+- MessagesIngest completes quickly but JobRecord.Progress ends < 1.0; status message sometimes stuck on "Persisting parsed messages..."
+- EvidenceVerify enqueued twice for the same evidence; first completes, second fails with SHA-256 mismatch
+- TestLongRunningDelay jobs fail with "Invalid TestLongRunningDelay payload."
 
-## Context
-We now have Messages ingest + FTS search with sender/recipient fields. We need a normalized way to:
-- build a “known people” database
-- track aliases/identifiers
-- link evidence events to targets without silent merges
+## Requirements
+### R1 — Fix WPF startup crash
+- Locate where `SpaceTop8` is referenced (MainWindow.xaml ~line 222).
+- Ensure `SpaceTop8` exists in merged dictionaries at runtime with correct type (Thickness/Double/etc based on usage).
+- Add missing spacing keys if needed and ensure dictionaries are merged in App.xaml or Theme root.
 
-## Scope
-### In scope
-1) **Database schema for People/Targets + Identifiers**
-2) **People/Targets UI page**
-3) **Linking UI from Search → Message Detail**
-4) **No silent merges**: conflicts prompt user and explain why
-5) **Audit logging** for all create/edit/link actions
+### R2 — Make Job progress/status terminal-safe (no overwrites after completion)
+- Ensure progress updates cannot overwrite a terminal job (Succeeded/Failed/Canceled).
+- Ensure progress is monotonic (never decreases).
+- When a job completes successfully, persist:
+  - Status = Succeeded
+  - Progress = 1.0
+  - StatusMessage = final summary (e.g., "Extracted 10000 message(s).")
+- If progress events arrive late/out-of-order, ignore them once Status is terminal and/or CompletedAtUtc is set.
 
-### Out of scope
-- Association graph rendering (that’s T0010+)
-- Automatic entity resolution/merging
-- Contact ingest / call logs ingest / media parsing
+### R3 — Fix MessagesIngest “no sheets found” guidance + failing test
+- Ensure the final JobRecord.StatusMessage for “no recognized message sheets” remains the guidance message.
+- Update/repair failing test `MessagesIngestJob_XlsxWithoutRecognizedSheets_ReportsGuidance` so it validates:
+  - Status == Succeeded
+  - StatusMessage contains the guidance string (and is not overwritten by progress text)
 
-## Acceptance Criteria (Testable)
-- [ ] User can create a Target with name + aliases + notes
-- [ ] User can add identifiers (phone/social/email/vehicle/etc.) to a Target
-- [ ] User can edit/remove identifiers with audit trail
-- [ ] From a message detail view, user can:
-  - [ ] “Create Target from Sender”
-  - [ ] “Link Sender to Existing Target”
-  - [ ] Same for recipients
-- [ ] If an identifier already exists for a different Target, UI shows a **conflict dialog**:
-  - [ ] explains the conflict (“this phone is already linked to X”)
-  - [ ] requires explicit user choice (cancel, move identifier, or link same target)
-- [ ] `dotnet build` passes
-- [ ] `dotnet test` passes (includes identifier normalization + conflict rules)
-- [ ] `Docs/TICKETS.md` updated (Upcoming + Completed) and ADR appended
+### R4 — EvidenceVerify SHA mismatch + duplicate verify jobs
+- Ensure the hash stored + verified is consistently for the immutable Evidence Vault copy (not the original source path).
+- Prevent double-enqueue of EvidenceVerify for the same evidence while another verify is queued/running.
+- If a real mismatch happens, surface a clear operator message (chain-of-custody warning), but do not crash the app.
 
-## Deliverables
-- Code: Core models/services + Infrastructure EF migrations
-- UI: People/Targets page + Message detail link actions + conflict dialogs
-- Database (migrations): new tables + indexes/constraints
-- Tests: unit tests for normalization/conflict + repository/service tests
-- Docs: ADR entry, update tickets list
+### R5 — TestLongRunningDelay safety
+- Make TestLongRunningDelay:
+  - Not enqueue in production builds (preferred), OR
+  - Payload parsing is safe: missing/invalid payload results in a default delay or a clean job failure message, not an exception that destabilizes runtime.
 
-## Data Model Changes
-### Entity/Table: TargetRecord
-- TargetId: Guid (PK)
-- CaseId: Guid (FK)
-- DisplayName: string
-- PrimaryAlias: string? 
-- Notes: string?
-- CreatedAtUtc: DateTimeOffset
-- UpdatedAtUtc: DateTimeOffset
-- SourceType: string  // "Manual" | "Derived"
-- SourceEvidenceItemId: Guid?  // nullable for Manual
-- SourceLocator: string        // required even for Manual: e.g. "manual:targets:create"
-- IngestModuleVersion: string  // e.g. "manual-ui@1"
+### R6 — Add “last-ditch” exception visibility
+- Ensure all unhandled UI exceptions and job exceptions are logged.
+- If MainWindow fails to construct/show, show a blocking error dialog and exit cleanly (no silent background process).
 
-Indexes:
-- (CaseId, DisplayName)
+## Acceptance Criteria
+- App launches reliably (MainWindow appears) on existing workspace DBs.
+- MessagesIngest jobs end with Progress == 1.0 and correct final StatusMessage.
+- Cancel/queued/running jobs do not overwrite terminal job records after completion.
+- EvidenceVerify does not repeatedly fail SHA mismatch due to path confusion / double-enqueue.
+- `dotnet test` passes (including the previously failing guidance test).
 
-### Entity/Table: TargetAliasRecord
-- AliasId: Guid (PK)
-- TargetId: Guid (FK)
-- CaseId: Guid
-- Alias: string
-- AliasNormalized: string
-- SourceType: string
-- SourceEvidenceItemId: Guid?
-- SourceLocator: string
-- IngestModuleVersion: string
+## Dev Notes / Implementation Hints
+- Consider enforcing terminal-safe updates in the JobRecord persistence layer:
+  - UPDATE ... WHERE Status IN (Queued, Running)
+- Consider clamping and monotonic progress:
+  - job.Progress = max(job.Progress, incomingProgress)
+- If needed: add timestamps/sequence numbers to ignore stale progress events.
 
-Unique:
-- (CaseId, AliasNormalized, TargetId)  // allow same alias on same target once
-
-### Entity/Table: IdentifierRecord
-- IdentifierId: Guid (PK)
-- CaseId: Guid (FK)
-- Type: string  // Phone, Email, SocialHandle, VehiclePlate, VIN, IMEI, IMSI, DeviceId, Username, Other
-- ValueRaw: string
-- ValueNormalized: string
-- Notes: string?
-- CreatedAtUtc: DateTimeOffset
-- SourceType: string
-- SourceEvidenceItemId: Guid?
-- SourceLocator: string
-- IngestModuleVersion: string
-
-Unique:
-- (CaseId, Type, ValueNormalized)
-
-### Entity/Table: TargetIdentifierLinkRecord
-- LinkId: Guid (PK)
-- CaseId: Guid
-- TargetId: Guid (FK)
-- IdentifierId: Guid (FK)
-- IsPrimary: bool
-- CreatedAtUtc: DateTimeOffset
-- SourceType: string
-- SourceEvidenceItemId: Guid?
-- SourceLocator: string
-- IngestModuleVersion: string
-
-Unique:
-- (TargetId, IdentifierId)
-
-### (Optional but recommended) Entity/Table: MessageParticipantLinkRecord
-Links a MessageEvent participant string to an Identifier/Target for explainability.
-- ParticipantLinkId: Guid (PK)
-- CaseId: Guid
-- MessageEventId: Guid (FK)
-- Role: string // Sender | Recipient
-- ParticipantRaw: string
-- IdentifierId: Guid (FK)
-- TargetId: Guid? (FK)
-- CreatedAtUtc: DateTimeOffset
-- SourceType: string
-- SourceEvidenceItemId: Guid
-- SourceLocator: string
-- IngestModuleVersion: string
-
-Indexes:
-- (CaseId, IdentifierId)
-- (CaseId, TargetId)
-- (CaseId, MessageEventId)
-
-## Provenance & Audit Requirements
-### Provenance
-For manual data:
-- SourceType = "Manual"
-- SourceEvidenceItemId = NULL
-- SourceLocator = "manual:<page>/<action>" (required)
-- IngestModuleVersion = "manual-ui@1"
-
-For derived links from messages:
-- SourceType = "Derived"
-- SourceEvidenceItemId = MessageEvent.EvidenceItemId
-- SourceLocator = MessageEvent.SourceLocator + role info (e.g., "...;role=Sender")
-- IngestModuleVersion = "targets-linker@1"
-
-### Audit
-Log these actions/events:
-- TargetCreated / TargetUpdated / TargetDeleted (if allowed)
-- AliasAdded / AliasRemoved
-- IdentifierCreated / IdentifierUpdated / IdentifierRemoved
-- IdentifierLinkedToTarget / IdentifierUnlinkedFromTarget
-- ParticipantLinked (message->identifier/target)
-Each audit entry should include CaseId + TargetId/IdentifierId when applicable.
-
-## Performance & Resource Management Requirements
-- Use async/await for I/O; never block UI thread.
-- Use short-lived DbContexts; prefer IDbContextFactory for UI-driven reads.
-- Keep queries indexed (Identifier uniqueness by (CaseId, Type, ValueNormalized)).
-- CancellationToken supported for long-running loads (e.g., targets list with paging).
-- Dispose resources deterministically.
-
-## Implementation Notes / Edge Cases
-- Normalization:
-  - Phone: strip non-digits; if 10 digits assume US and normalize to +1XXXXXXXXXX; if already starts with + keep E.164-like form
-  - Email: trim + lowercase
-  - Social handle: trim + lowercase; preserve leading @ in raw but not required in normalized
-  - Plate/VIN: uppercase + remove spaces/hyphens
-- Conflict dialog:
-  - Trigger when inserting IdentifierRecord violates unique constraint OR when attempting to link to a different target.
-  - Present options:
-    1) Cancel
-    2) Link existing identifier to this target (only if user confirms move/unlink from other target or allow multi-target if policy allows)
-  - Default is Cancel (defensive).
-- No silent merges:
-  - Never auto-create targets from participants; always user-driven.
-- UI should be simple:
-  - Left list of Targets (searchable)
-  - Detail panel with Aliases + Identifiers + Notes
-  - “Add Alias” / “Add Identifier” buttons
-  - “Where seen” section (initially: message count and a link to filtered search)
-
-## Test Plan
-### Unit tests
-- Identifier normalization for each type
-- Conflict behavior when identifier already exists
-- Linking creates correct provenance fields (manual vs derived)
-
-### Integration tests (if applicable)
-- EF migration creates unique constraints
-- Service methods enforce constraints and return friendly errors
-
-## How to Verify Manually
-1. Run app, open a case with messages ingested
-2. Go to People/Targets → create a target “Test Target”
-3. Add phone identifier “(555) 123-0001”
-4. Search messages and open a message where sender is +15551230001
-5. Click “Link Sender to Existing Target” → pick “Test Target”
-6. Confirm target “Where seen” shows message count > 0
-7. Attempt to create a new target and add the same phone → conflict dialog appears
-
-## Codex Instructions
-- Follow offline-only constraints (no network calls/telemetry).
-- Preserve provenance and immutability of raw evidence.
-- No silent merges.
-- Update Docs/TICKETS.md Upcoming + Completed at end of pass.
-- Append ADR entry documenting schema + normalization + conflict policy.
-- End with summary + files changed + steps to verify + tests run.
-```
 
 ## Upcoming Tickets
 - T0010 - Association graph v1 and relationship visualization (pending spec authoring).
@@ -244,3 +91,5 @@ Each audit entry should include CaseId + TargetId/IdentifierId when applicable.
 - 2026-02-15 - T0008B - Enforced final non-throttled terminal overwrite in runner, with cancellation-safe save and deterministic success/cancel/failure finalize tests.
 - 2026-02-15 - T0008C - Added Evidence Drawer live MessagesIngest job syncing with fresh no-tracking refresh, terminal-aware cancel visibility, and manual refresh control.
 - 2026-02-15 - T0009 - Added People/Targets v1 schema, UI workflows, message participant linking, explicit conflict handling, audits, and deterministic tests.
+- 2026-02-15 - T0009A - Fixed missing spacing resource startup crash and hardened no-sheet MessagesIngest terminal guidance/progress behavior.
+- 2026-02-15 - T0009A - Stabilized app launch exception visibility, terminal-safe/monotonic job progress writes, verify-job dedupe, and immutable-vault hash verification regressions.

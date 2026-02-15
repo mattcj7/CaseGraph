@@ -109,6 +109,30 @@ public sealed class EvidenceVaultServiceTests
     }
 
     [Fact]
+    public async Task VerifyEvidenceAsync_SourceFileModified_AfterImport_StillUsesVaultCopy()
+    {
+        await using var fixture = await WorkspaceFixture.CreateAsync();
+        var workspace = fixture.Services.GetRequiredService<ICaseWorkspaceService>();
+        var vault = fixture.Services.GetRequiredService<IEvidenceVaultService>();
+
+        var caseInfo = await workspace.CreateCaseAsync("Source Mutation Verify Case", CancellationToken.None);
+        var sourceFile = fixture.CreateSourceFile("source-mutated.txt", "Immutable vault baseline");
+        var evidenceItem = await vault.ImportEvidenceFileAsync(caseInfo, sourceFile, null, CancellationToken.None);
+
+        await File.WriteAllTextAsync(sourceFile, "source changed after import", CancellationToken.None);
+
+        var (ok, message) = await vault.VerifyEvidenceAsync(
+            caseInfo,
+            evidenceItem,
+            null,
+            CancellationToken.None
+        );
+
+        Assert.True(ok);
+        Assert.Contains("succeeded", message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public async Task EnqueueAsync_PersistsQueuedJobRecord()
     {
         await using var fixture = await WorkspaceFixture.CreateAsync(startRunner: false);
@@ -252,6 +276,57 @@ public sealed class EvidenceVaultServiceTests
         );
         Assert.Equal("Failed", failed.Status);
         Assert.Contains("mismatch", failed.StatusMessage, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task EnqueueAsync_EvidenceVerify_DeduplicatesActiveJobsForSameEvidence()
+    {
+        await using var fixture = await WorkspaceFixture.CreateAsync(startRunner: false);
+        var workspace = fixture.Services.GetRequiredService<ICaseWorkspaceService>();
+        var vault = fixture.Services.GetRequiredService<IEvidenceVaultService>();
+        var jobQueue = fixture.Services.GetRequiredService<IJobQueueService>();
+
+        var caseInfo = await workspace.CreateCaseAsync("Verify Dedupe Case", CancellationToken.None);
+        var sourceFile = fixture.CreateSourceFile("verify-dedupe.bin", "baseline");
+        var evidenceItem = await vault.ImportEvidenceFileAsync(caseInfo, sourceFile, null, CancellationToken.None);
+
+        var payload = JsonSerializer.Serialize(new
+        {
+            SchemaVersion = 1,
+            caseInfo.CaseId,
+            evidenceItem.EvidenceItemId
+        });
+
+        var firstJobId = await jobQueue.EnqueueAsync(
+            new JobEnqueueRequest(
+                JobQueueService.EvidenceVerifyJobType,
+                caseInfo.CaseId,
+                evidenceItem.EvidenceItemId,
+                payload
+            ),
+            CancellationToken.None
+        );
+        var secondJobId = await jobQueue.EnqueueAsync(
+            new JobEnqueueRequest(
+                JobQueueService.EvidenceVerifyJobType,
+                caseInfo.CaseId,
+                evidenceItem.EvidenceItemId,
+                payload
+            ),
+            CancellationToken.None
+        );
+
+        Assert.Equal(firstJobId, secondJobId);
+
+        await using var db = await fixture.CreateDbContextAsync();
+        var activeVerifyJobs = await db.Jobs
+            .AsNoTracking()
+            .Where(job => job.JobType == JobQueueService.EvidenceVerifyJobType)
+            .Where(job => job.CaseId == caseInfo.CaseId && job.EvidenceItemId == evidenceItem.EvidenceItemId)
+            .Where(job => job.Status == JobStatus.Queued.ToString() || job.Status == JobStatus.Running.ToString())
+            .ToListAsync();
+
+        Assert.Single(activeVerifyJobs);
     }
 
     [Fact]

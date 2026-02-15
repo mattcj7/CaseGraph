@@ -74,6 +74,14 @@ public sealed class JobQueueService : IJobQueueService
             throw new NotSupportedException($"Unsupported job type \"{request.JobType}\".");
         }
 
+        if (string.Equals(request.JobType, TestLongRunningJobType, StringComparison.Ordinal)
+            && !IsDebugBuild())
+        {
+            throw new NotSupportedException(
+                "TestLongRunningDelay jobs are only available in DEBUG builds."
+            );
+        }
+
         await _databaseInitializer.EnsureInitializedAsync(ct);
 
         var now = _clock.UtcNow.ToUniversalTime();
@@ -96,6 +104,24 @@ public sealed class JobQueueService : IJobQueueService
 
         await using (var db = await _dbContextFactory.CreateDbContextAsync(ct))
         {
+            if (ShouldDeduplicateEvidenceVerify(request))
+            {
+                var existing = await FindActiveEvidenceVerifyDuplicateAsync(
+                    db,
+                    request.CaseId!.Value,
+                    request.EvidenceItemId!.Value,
+                    ct
+                );
+
+                if (existing is not null)
+                {
+                    AppFileLogger.Log(
+                        $"[JobQueue] Deduped verify enqueue; using existing jobId={existing.JobId:D} case={request.CaseId:D} evidence={request.EvidenceItemId:D}"
+                    );
+                    return existing.JobId;
+                }
+            }
+
             db.Jobs.Add(jobRecord);
             await db.SaveChangesAsync(ct);
         }
@@ -649,15 +675,33 @@ public sealed class JobQueueService : IJobQueueService
             return;
         }
 
+        if (jobRecord.CompletedAtUtc.HasValue || IsTerminalStatus(jobRecord.Status))
+        {
+            return;
+        }
+
+        if (clampedProgress + 0.0005 < jobRecord.Progress)
+        {
+            return;
+        }
+
+        var monotonicProgress = Math.Max(jobRecord.Progress, clampedProgress);
+
         if (
-            Math.Abs(jobRecord.Progress - clampedProgress) < 0.005
+            Math.Abs(jobRecord.Progress - monotonicProgress) < 0.0005
             && string.Equals(jobRecord.StatusMessage, statusMessage, StringComparison.Ordinal)
         )
         {
             return;
         }
 
-        jobRecord.Progress = clampedProgress;
+        if (Math.Abs(jobRecord.Progress - monotonicProgress) < 0.0005
+            && ShouldIgnoreSameProgressMessage(jobRecord.StatusMessage, statusMessage))
+        {
+            return;
+        }
+
+        jobRecord.Progress = monotonicProgress;
         jobRecord.StatusMessage = statusMessage;
         await db.SaveChangesAsync(ct);
 
@@ -793,6 +837,70 @@ public sealed class JobQueueService : IJobQueueService
             or nameof(JobStatus.Failed)
             or nameof(JobStatus.Canceled)
             or nameof(JobStatus.Abandoned);
+    }
+
+    private static bool ShouldDeduplicateEvidenceVerify(JobEnqueueRequest request)
+    {
+        return string.Equals(request.JobType, EvidenceVerifyJobType, StringComparison.Ordinal)
+            && request.CaseId.HasValue
+            && request.EvidenceItemId.HasValue;
+    }
+
+    private static bool ShouldIgnoreSameProgressMessage(string currentMessage, string incomingMessage)
+    {
+        if (string.Equals(currentMessage, incomingMessage, StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        var currentTerminalLike = IsTerminalLikeProgressMessage(currentMessage);
+        var incomingTerminalLike = IsTerminalLikeProgressMessage(incomingMessage);
+        return currentTerminalLike && !incomingTerminalLike;
+    }
+
+    private static bool IsTerminalLikeProgressMessage(string message)
+    {
+        if (string.IsNullOrWhiteSpace(message))
+        {
+            return false;
+        }
+
+        return message.StartsWith("Extracted ", StringComparison.Ordinal)
+            || message.StartsWith("No message sheets found;", StringComparison.Ordinal)
+            || message.StartsWith("UFDR ", StringComparison.Ordinal)
+            || message.StartsWith("Succeeded:", StringComparison.Ordinal)
+            || message.StartsWith("Failed:", StringComparison.Ordinal)
+            || string.Equals(message, "Canceled", StringComparison.Ordinal);
+    }
+
+    private static bool IsDebugBuild()
+    {
+#if DEBUG
+        return true;
+#else
+        return false;
+#endif
+    }
+
+    private static async Task<JobRecord?> FindActiveEvidenceVerifyDuplicateAsync(
+        WorkspaceDbContext db,
+        Guid caseId,
+        Guid evidenceItemId,
+        CancellationToken ct
+    )
+    {
+        var activeStatuses = new[]
+        {
+            JobStatus.Queued.ToString(),
+            JobStatus.Running.ToString()
+        };
+
+        return await db.Jobs
+            .AsNoTracking()
+            .Where(job => job.JobType == EvidenceVerifyJobType)
+            .Where(job => job.CaseId == caseId && job.EvidenceItemId == evidenceItemId)
+            .Where(job => activeStatuses.Contains(job.Status))
+            .FirstOrDefaultAsync(ct);
     }
 
     private static JobInfo MapJobInfo(JobRecord record)

@@ -163,19 +163,54 @@ public sealed class EvidenceVaultService : IEvidenceVaultService
             return (false, missingMessage);
         }
 
+        var expectedHash = await ResolveExpectedHashAsync(caseInfo.CaseId, item, ct);
         await using var stream = CreateReadStream(storedFilePath);
         var computedHash = await ComputeHashAsync(stream, progress, ct);
 
-        if (string.Equals(computedHash, item.Sha256Hex, StringComparison.OrdinalIgnoreCase))
+        if (string.Equals(computedHash, expectedHash, StringComparison.OrdinalIgnoreCase))
         {
             const string successMessage = "Integrity verification succeeded.";
             await WriteVerifyAuditAsync(caseInfo, item, true, successMessage, ct);
             return (true, successMessage);
         }
 
-        const string failMessage = "SHA-256 mismatch. Stored file contents changed.";
+        const string failMessage = "SHA-256 mismatch. Stored evidence vault copy differs from recorded hash. Chain-of-custody warning: investigate storage integrity and re-import if required.";
         await WriteVerifyAuditAsync(caseInfo, item, false, failMessage, ct);
         return (false, failMessage);
+    }
+
+    private async Task<string> ResolveExpectedHashAsync(
+        Guid caseId,
+        EvidenceItem item,
+        CancellationToken ct
+    )
+    {
+        if (string.IsNullOrWhiteSpace(item.ManifestRelativePath))
+        {
+            return item.Sha256Hex;
+        }
+
+        var manifestPath = Path.Combine(
+            GetCaseRootPath(caseId),
+            item.ManifestRelativePath.Replace('/', Path.DirectorySeparatorChar)
+        );
+        if (!File.Exists(manifestPath))
+        {
+            return item.Sha256Hex;
+        }
+
+        await using var stream = CreateReadStream(manifestPath);
+        using var json = await JsonDocument.ParseAsync(stream, cancellationToken: ct);
+        if (json.RootElement.TryGetProperty("Sha256Hex", out var shaElement))
+        {
+            var fromManifest = shaElement.GetString();
+            if (!string.IsNullOrWhiteSpace(fromManifest))
+            {
+                return fromManifest.Trim();
+            }
+        }
+
+        return item.Sha256Hex;
     }
 
     private async Task WriteVerifyAuditAsync(

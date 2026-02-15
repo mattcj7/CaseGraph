@@ -399,7 +399,13 @@ public sealed class MessageIngestAndSearchTests
             TimeSpan.FromSeconds(12)
         );
 
-        Assert.Equal("Succeeded: No message sheets found; verify export settings.", succeeded.StatusMessage);
+        Assert.Equal(1, succeeded.Progress);
+        Assert.StartsWith(
+            "Succeeded: No message sheets found; verify export settings.",
+            succeeded.StatusMessage,
+            StringComparison.Ordinal
+        );
+        Assert.DoesNotContain("Persisting parsed messages", succeeded.StatusMessage, StringComparison.Ordinal);
     }
 
     [Fact]

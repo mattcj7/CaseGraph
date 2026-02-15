@@ -6,7 +6,9 @@
     <Thickness x:Key="Space16">16</Thickness>
     <Thickness x:Key="Space24">24</Thickness>
 
+    <Thickness x:Key="SpaceTop8">0,8,0,0</Thickness>
     <Thickness x:Key="SpaceTop12">0,12,0,0</Thickness>
     <Thickness x:Key="SpaceTop16">0,16,0,0</Thickness>
+    <Thickness x:Key="SpaceLeft8">8,0,0,0</Thickness>
     <Thickness x:Key="SpaceRight12">0,0,12,0</Thickness>
 </ResourceDictionary>
