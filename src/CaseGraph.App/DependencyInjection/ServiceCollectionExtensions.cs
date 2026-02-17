@@ -36,6 +36,7 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<IMessageSearchService, MessageSearchService>();
         services.AddSingleton<IMessageIngestService, MessageIngestService>();
         services.AddSingleton<ITargetRegistryService, TargetRegistryService>();
+        services.AddSingleton<IJobQueryService, JobQueryService>();
         services.AddSingleton<JobQueueService>();
         services.AddSingleton<IJobQueueService>(provider => provider.GetRequiredService<JobQueueService>());
         services.AddHostedService<JobRunnerHostedService>();

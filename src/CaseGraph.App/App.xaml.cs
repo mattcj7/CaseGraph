@@ -1,6 +1,7 @@
 using CaseGraph.Core.Abstractions;
 using CaseGraph.Core.Diagnostics;
 using CaseGraph.App.DependencyInjection;
+using CaseGraph.App.Services;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using System;
@@ -58,8 +59,8 @@ public partial class App : Application
         }
         catch (Exception ex)
         {
-            AppFileLogger.LogException("Startup failure.", ex);
-            ShowFatalErrorAndShutdown("CaseGraph Startup Error", ex);
+            var correlationId = UiExceptionReporter.LogException("Startup failure.", ex);
+            ShowFatalErrorAndShutdown("CaseGraph Startup Error", ex, correlationId);
         }
     }
 
@@ -91,34 +92,36 @@ public partial class App : Application
         DispatcherUnhandledExceptionEventArgs e
     )
     {
-        AppFileLogger.LogException("Unhandled UI exception.", e.Exception);
+        var correlationId = UiExceptionReporter.LogException("Unhandled UI exception.", e.Exception);
         e.Handled = true;
-        ShowFatalErrorAndShutdown("CaseGraph UI Error", e.Exception);
+        ShowFatalErrorAndShutdown("CaseGraph UI Error", e.Exception, correlationId);
     }
 
     private void OnAppDomainUnhandledException(object? sender, UnhandledExceptionEventArgs e)
     {
         if (e.ExceptionObject is Exception ex)
         {
-            AppFileLogger.LogException("Unhandled AppDomain exception.", ex);
-            ShowFatalErrorAndShutdown("CaseGraph Fatal Error", ex);
+            var correlationId = UiExceptionReporter.LogException("Unhandled AppDomain exception.", ex);
+            ShowFatalErrorAndShutdown("CaseGraph Fatal Error", ex, correlationId);
         }
         else
         {
-            AppFileLogger.Log(
-                $"Unhandled AppDomain exception (non-Exception object): {e.ExceptionObject}"
+            var correlationId = UiExceptionReporter.LogExceptionObject(
+                "Unhandled AppDomain exception (non-Exception object).",
+                e.ExceptionObject
             );
-            ShowFatalErrorAndShutdown("CaseGraph Fatal Error", null);
+            ShowFatalErrorAndShutdown("CaseGraph Fatal Error", null, correlationId);
         }
     }
 
     private void OnUnobservedTaskException(object? sender, UnobservedTaskExceptionEventArgs e)
     {
-        AppFileLogger.LogException("Unobserved task exception.", e.Exception);
+        var correlationId = UiExceptionReporter.LogException("Unobserved task exception.", e.Exception);
         e.SetObserved();
+        ShowFatalErrorAndShutdown("CaseGraph Background Task Error", e.Exception, correlationId);
     }
 
-    private void ShowFatalErrorAndShutdown(string title, Exception? ex)
+    private void ShowFatalErrorAndShutdown(string title, Exception? ex, string correlationId)
     {
         if (_fatalShutdownRequested)
         {
@@ -129,12 +132,7 @@ public partial class App : Application
 
         try
         {
-            MessageBox.Show(
-                ex?.ToString() ?? "Unexpected fatal error.",
-                title,
-                MessageBoxButton.OK,
-                MessageBoxImage.Error
-            );
+            UiExceptionReporter.ShowErrorDialog(title, ex, correlationId);
         }
         catch
         {

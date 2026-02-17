@@ -29,6 +29,7 @@ public sealed class JobQueueService : IJobQueueService
     private readonly IEvidenceVaultService _evidenceVaultService;
     private readonly IMessageIngestService _messageIngestService;
     private readonly IAuditLogService _auditLogService;
+    private readonly IJobQueryService _jobQueryService;
     private readonly Channel<Guid> _dispatchChannel;
     private readonly ConcurrentDictionary<Guid, CancellationTokenSource> _runningJobs = new();
     private readonly ConcurrentDictionary<Guid, byte> _pendingRunningCancels = new();
@@ -44,7 +45,8 @@ public sealed class JobQueueService : IJobQueueService
         ICaseWorkspaceService caseWorkspaceService,
         IEvidenceVaultService evidenceVaultService,
         IMessageIngestService messageIngestService,
-        IAuditLogService auditLogService
+        IAuditLogService auditLogService,
+        IJobQueryService jobQueryService
     )
     {
         _dbContextFactory = dbContextFactory;
@@ -54,6 +56,7 @@ public sealed class JobQueueService : IJobQueueService
         _evidenceVaultService = evidenceVaultService;
         _messageIngestService = messageIngestService;
         _auditLogService = auditLogService;
+        _jobQueryService = jobQueryService;
         _dispatchChannel = Channel.CreateUnbounded<Guid>(
             new UnboundedChannelOptions
             {
@@ -217,24 +220,7 @@ public sealed class JobQueueService : IJobQueueService
 
     public async Task<IReadOnlyList<JobInfo>> GetRecentAsync(Guid? caseId, int take, CancellationToken ct)
     {
-        await _databaseInitializer.EnsureInitializedAsync(ct);
-
-        var boundedTake = take <= 0 ? 20 : take;
-
-        await using var db = await _dbContextFactory.CreateDbContextAsync(ct);
-        var query = db.Jobs.AsNoTracking().AsQueryable();
-        if (caseId.HasValue)
-        {
-            query = query.Where(job => job.CaseId == caseId.Value);
-        }
-
-        var records = await query.ToListAsync(ct);
-
-        return records
-            .OrderByDescending(job => job.CreatedAtUtc)
-            .Take(boundedTake)
-            .Select(MapJobInfo)
-            .ToList();
+        return await _jobQueryService.GetRecentJobsAsync(caseId, take, ct);
     }
 
     public async Task PrimeQueueAsync(CancellationToken ct)

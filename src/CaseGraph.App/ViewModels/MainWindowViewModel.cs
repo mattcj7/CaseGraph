@@ -3,11 +3,8 @@ using CaseGraph.App.Services;
 using CaseGraph.App.Views.Dialogs;
 using CaseGraph.Core.Abstractions;
 using CaseGraph.Core.Models;
-using CaseGraph.Infrastructure.Persistence;
-using CaseGraph.Infrastructure.Persistence.Entities;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
-using Microsoft.EntityFrameworkCore;
 using System.Collections.ObjectModel;
 using System.Collections.Specialized;
 using System.IO;
@@ -30,8 +27,8 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
     private readonly IMessageSearchService _messageSearchService;
     private readonly IAuditLogService _auditLogService;
     private readonly IJobQueueService _jobQueueService;
+    private readonly IJobQueryService _jobQueryService;
     private readonly ITargetRegistryService _targetRegistryService;
-    private readonly IDbContextFactory<WorkspaceDbContext> _dbContextFactory;
     private readonly IWorkspacePathProvider _workspacePathProvider;
     private readonly IUserInteractionService _userInteractionService;
     private readonly IDisposable _jobUpdateSubscription;
@@ -290,8 +287,8 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
         IMessageSearchService messageSearchService,
         IAuditLogService auditLogService,
         IJobQueueService jobQueueService,
+        IJobQueryService jobQueryService,
         ITargetRegistryService targetRegistryService,
-        IDbContextFactory<WorkspaceDbContext> dbContextFactory,
         IWorkspacePathProvider workspacePathProvider,
         IUserInteractionService userInteractionService
     )
@@ -303,8 +300,8 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
         _messageSearchService = messageSearchService;
         _auditLogService = auditLogService;
         _jobQueueService = jobQueueService;
+        _jobQueryService = jobQueryService;
         _targetRegistryService = targetRegistryService;
-        _dbContextFactory = dbContextFactory;
         _workspacePathProvider = workspacePathProvider;
         _userInteractionService = userInteractionService;
 
@@ -1455,8 +1452,8 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
             return;
         }
 
-        var jobs = await _jobQueueService.GetRecentAsync(CurrentCaseInfo.CaseId, 50, ct);
-        SetRecentJobs(jobs.OrderByDescending(job => job.CreatedAtUtc));
+        var jobs = await _jobQueryService.GetRecentJobsAsync(CurrentCaseInfo.CaseId, 50, ct);
+        SetRecentJobs(jobs);
         UpdateSelectedEvidenceVerifyStatus();
         await RefreshLatestMessagesParseJobAsync(ct);
         SyncStatusBarFromJobs();
@@ -1740,16 +1737,12 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
         CancellationToken ct
     )
     {
-        await using var db = await _dbContextFactory.CreateDbContextAsync(ct);
-        var latestRecord = await db.Jobs
-            .AsNoTracking()
-            .Where(job => job.CaseId == caseId)
-            .Where(job => job.EvidenceItemId == evidenceItemId)
-            .Where(job => job.JobType == MessagesIngestJobType)
-            .OrderByDescending(job => job.CreatedAtUtc)
-            .FirstOrDefaultAsync(ct);
-
-        return latestRecord is null ? null : MapJobRecordToInfo(latestRecord);
+        return await _jobQueryService.GetLatestJobForEvidenceAsync(
+            caseId,
+            evidenceItemId,
+            MessagesIngestJobType,
+            ct
+        );
     }
 
     private static bool IsTerminalStatus(JobStatus status)
@@ -1836,29 +1829,6 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
             100
         );
         return $"{percent:0}% - {job.StatusMessage}";
-    }
-
-    private static JobInfo MapJobRecordToInfo(JobRecord record)
-    {
-        return new JobInfo
-        {
-            JobId = record.JobId,
-            CreatedAtUtc = record.CreatedAtUtc,
-            StartedAtUtc = record.StartedAtUtc,
-            CompletedAtUtc = record.CompletedAtUtc,
-            Status = Enum.TryParse<JobStatus>(record.Status, true, out var parsedStatus)
-                ? parsedStatus
-                : JobStatus.Failed,
-            JobType = record.JobType,
-            CaseId = record.CaseId,
-            EvidenceItemId = record.EvidenceItemId,
-            Progress = Math.Clamp(record.Progress, 0, 1),
-            StatusMessage = record.StatusMessage,
-            ErrorMessage = record.ErrorMessage,
-            JsonPayload = record.JsonPayload,
-            CorrelationId = record.CorrelationId,
-            Operator = record.Operator
-        };
     }
 
     public void Dispose()

@@ -18,6 +18,8 @@ public sealed class WorkspaceDbContext : DbContext
 
     public DbSet<JobRecord> Jobs => Set<JobRecord>();
 
+    public DbSet<JobOrderKeyRecord> JobOrderKeys => Set<JobOrderKeyRecord>();
+
     public DbSet<MessageThreadRecord> MessageThreads => Set<MessageThreadRecord>();
 
     public DbSet<MessageEventRecord> MessageEvents => Set<MessageEventRecord>();
@@ -81,6 +83,24 @@ public sealed class WorkspaceDbContext : DbContext
             entity.Property(e => e.JsonPayload).IsRequired();
             entity.Property(e => e.CorrelationId).IsRequired();
             entity.Property(e => e.Operator).IsRequired();
+        });
+
+        modelBuilder.Entity<JobOrderKeyRecord>(entity =>
+        {
+            entity.HasNoKey();
+            entity.ToSqlQuery(
+                """
+                SELECT
+                    JobId,
+                    CaseId,
+                    EvidenceItemId,
+                    JobType,
+                    CAST(CreatedAtUtc AS TEXT) AS CreatedAtUtc,
+                    CAST(StartedAtUtc AS TEXT) AS StartedAtUtc,
+                    CAST(CompletedAtUtc AS TEXT) AS CompletedAtUtc
+                FROM JobRecord
+                """
+            );
         });
 
         modelBuilder.Entity<MessageThreadRecord>(entity =>

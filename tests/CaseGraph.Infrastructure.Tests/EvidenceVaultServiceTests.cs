@@ -528,6 +528,7 @@ public sealed class EvidenceVaultServiceTests
             services.AddSingleton<IEvidenceVaultService, EvidenceVaultService>();
             services.AddSingleton<IMessageSearchService, MessageSearchService>();
             services.AddSingleton<IMessageIngestService, MessageIngestService>();
+            services.AddSingleton<IJobQueryService, JobQueryService>();
             services.AddSingleton<JobQueueService>();
             services.AddSingleton<IJobQueueService>(
                 provider => provider.GetRequiredService<JobQueueService>()

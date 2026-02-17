@@ -1,4 +1,4 @@
-using CaseGraph.Core.Diagnostics;
+using CaseGraph.App.Services;
 using CaseGraph.App.ViewModels;
 using System;
 using System.Windows;
@@ -25,13 +25,11 @@ public partial class MainWindow : FluentWindow
         }
         catch (Exception ex)
         {
-            AppFileLogger.LogException("MainWindow initialization failed.", ex);
-            System.Windows.MessageBox.Show(
-                ex.ToString(),
-                "CaseGraph Main Window Error",
-                System.Windows.MessageBoxButton.OK,
-                System.Windows.MessageBoxImage.Error
+            var correlationId = UiExceptionReporter.LogException(
+                "MainWindow initialization failed.",
+                ex
             );
+            UiExceptionReporter.ShowErrorDialog("CaseGraph Main Window Error", ex, correlationId);
             Application.Current.Shutdown(-1);
         }
     }

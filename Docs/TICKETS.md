@@ -9,69 +9,84 @@ This file tracks planned, active, and completed tickets.
   - **Upcoming Tickets** (current and deduplicated)
   - **Completed Tickets** (append-only)
 
-# T0009A - Stabilization Hotfix: App Launch + Job Progress Finalization + Evidence Verify
+## Active Ticket
+- ID: T0009B
+- Title: Fix SQLite DateTimeOffset ORDER BY crashes + Add SQLite integration tests for Open Case queries + Improve UI exception logging
+
+## Active Ticket Spec
+```md
+# Ticket: T0009B - Fix SQLite DateTimeOffset ORDER BY crashes + Add SQLite integration tests for Open Case queries + Improve UI exception logging
 
 ## Goal
-Fix current instability introduced around T0009/T0008 series:
-- App sometimes runs without opening a window (WPF startup failure)
-- Jobs show Succeeded but progress is < 1.0 and status messages are wrong
-- EvidenceVerify jobs repeatedly fail SHA mismatch (likely path/hash mismatch + duplicate enqueue)
-- Debug/TestLongRunningDelay job can fail due to invalid payload
+1) Fix app crash when opening a case caused by EF Core SQLite translation failing on `OrderBy(DateTimeOffset)`.
+2) Add SQLite-backed integration tests that exercise the “open case” query paths so these issues are caught automatically.
+3) Ensure UI exceptions that show in the error dialog are ALSO written to the rolling log file with a correlation ID.
 
-## Observed Symptoms (from app log)
-- Startup failure: XamlParseException cannot find StaticResource "SpaceTop8" (MainWindow.xaml ~line 222)
-- MessagesIngest completes quickly but JobRecord.Progress ends < 1.0; status message sometimes stuck on "Persisting parsed messages..."
-- EvidenceVerify enqueued twice for the same evidence; first completes, second fails with SHA-256 mismatch
-- TestLongRunningDelay jobs fail with "Invalid TestLongRunningDelay payload."
+## Context / Evidence
+UI error dialog shows:
+- System.NotSupportedException: SQLite does not support expressions of type 'DateTimeOffset' in ORDER BY clauses
+Stack trace points to:
+- MainWindowViewModel.QueryLatestMessagesParseJobAsync (and subsequent Refresh... calls)
 
-## Requirements
-### R1 — Fix WPF startup crash
-- Locate where `SpaceTop8` is referenced (MainWindow.xaml ~line 222).
-- Ensure `SpaceTop8` exists in merged dictionaries at runtime with correct type (Thickness/Double/etc based on usage).
-- Add missing spacing keys if needed and ensure dictionaries are merged in App.xaml or Theme root.
+Additionally, some runtime exceptions are not visible in app logs; we need reliable logging for UI crashes.
 
-### R2 — Make Job progress/status terminal-safe (no overwrites after completion)
-- Ensure progress updates cannot overwrite a terminal job (Succeeded/Failed/Canceled).
-- Ensure progress is monotonic (never decreases).
-- When a job completes successfully, persist:
-  - Status = Succeeded
-  - Progress = 1.0
-  - StatusMessage = final summary (e.g., "Extracted 10000 message(s).")
-- If progress events arrive late/out-of-order, ignore them once Status is terminal and/or CompletedAtUtc is set.
+## Scope
 
-### R3 — Fix MessagesIngest “no sheets found” guidance + failing test
-- Ensure the final JobRecord.StatusMessage for “no recognized message sheets” remains the guidance message.
-- Update/repair failing test `MessagesIngestJob_XlsxWithoutRecognizedSheets_ReportsGuidance` so it validates:
-  - Status == Succeeded
-  - StatusMessage contains the guidance string (and is not overwritten by progress text)
+### 1) Stop using DateTimeOffset in ORDER BY (SQLite-safe ordering)
+- Update ALL EF queries that order by DateTimeOffset (CreatedAtUtc/StartedAtUtc/CompletedAtUtc) to use a SQLite-supported ordering key.
+- Preferred minimal approach (no migrations):
+  - Replace `OrderByDescending(x => x.CreatedAtUtc)` with ordering by stored column text:
+    - Use `EF.Property<string>(entity, nameof(Entity.CreatedAtUtc))`
+  - For “latest” logic use a COALESCE sort key:
+    - CompletedAtUtc ?? StartedAtUtc ?? CreatedAtUtc
+- Ensure app can open cases and refresh “latest jobs” without throwing.
 
-### R4 — EvidenceVerify SHA mismatch + duplicate verify jobs
-- Ensure the hash stored + verified is consistently for the immutable Evidence Vault copy (not the original source path).
-- Prevent double-enqueue of EvidenceVerify for the same evidence while another verify is queued/running.
-- If a real mismatch happens, surface a clear operator message (chain-of-custody warning), but do not crash the app.
+### 2) Centralize job query logic into an Infrastructure service (testable)
+- Create `IJobQueryService` in Infrastructure (or similar) with methods:
+  - `GetLatestJobForEvidenceAsync(caseId, evidenceItemId, jobType, ct)`
+  - `GetRecentJobsAsync(caseId, take, ct)`
+- Move the SQLite-safe ordering logic here.
+- Update ViewModels to call the service instead of embedding LINQ directly.
 
-### R5 — TestLongRunningDelay safety
-- Make TestLongRunningDelay:
-  - Not enqueue in production builds (preferred), OR
-  - Payload parsing is safe: missing/invalid payload results in a default delay or a clean job failure message, not an exception that destabilizes runtime.
+### 3) Add SQLite integration tests that would have caught this crash
+In `tests/CaseGraph.Infrastructure.Tests`:
+- Create a temp SQLite workspace DB (file-based or SQLite in-memory with shared cache),
+  apply migrations / EnsureCreated as appropriate.
+- Seed minimal Case + Evidence + JobRecord rows with varying timestamps.
+- Test 1: `GetLatestJobForEvidenceAsync` does NOT throw and returns correct “latest”.
+- Test 2: `GetRecentJobsAsync` does NOT throw and returns jobs in expected order.
 
-### R6 — Add “last-ditch” exception visibility
-- Ensure all unhandled UI exceptions and job exceptions are logged.
-- If MainWindow fails to construct/show, show a blocking error dialog and exit cleanly (no silent background process).
+These tests must execute the real SQLite provider (NOT EF InMemory).
 
-## Acceptance Criteria
-- App launches reliably (MainWindow appears) on existing workspace DBs.
-- MessagesIngest jobs end with Progress == 1.0 and correct final StatusMessage.
-- Cancel/queued/running jobs do not overwrite terminal job records after completion.
-- EvidenceVerify does not repeatedly fail SHA mismatch due to path confusion / double-enqueue.
-- `dotnet test` passes (including the previously failing guidance test).
+### 4) Improve UI exception logging (no silent crashes)
+- Ensure any exception shown in the UI error dialog is logged to file with:
+  - Exception.ToString()
+  - CorrelationId (new Guid per exception)
+  - Active CaseId (if available)
+- Ensure WPF global handlers are wired:
+  - `Application.DispatcherUnhandledException`
+  - `TaskScheduler.UnobservedTaskException`
+  - `AppDomain.CurrentDomain.UnhandledException`
+All should log and then show a user-friendly dialog (or reuse existing dialog).
 
-## Dev Notes / Implementation Hints
-- Consider enforcing terminal-safe updates in the JobRecord persistence layer:
-  - UPDATE ... WHERE Status IN (Queued, Running)
-- Consider clamping and monotonic progress:
-  - job.Progress = max(job.Progress, incomingProgress)
-- If needed: add timestamps/sequence numbers to ignore stale progress events.
+## Acceptance Criteria (Testable)
+- [ ] Opening a case no longer crashes due to DateTimeOffset ORDER BY translation.
+- [ ] SQLite integration tests exist and pass; they would fail if DateTimeOffset ORDER BY reappears.
+- [ ] UI exceptions are written to the rolling log with correlation ID.
+- [ ] `dotnet test` passes.
+- [ ] `dotnet run --project src/CaseGraph.App` opens and can open a case.
+
+## Manual Verification
+1) Launch app, create/open case → no crash.
+2) Import evidence, run Parse Messages → no crash when refreshing “latest parse job”.
+3) Trigger a controlled exception (optional) and confirm it appears in the log file with a correlation ID.
+
+## Codex Instructions
+- Implement ONLY this ticket scope.
+- Keep queries AsNoTracking and use short-lived DbContexts (IDbContextFactory recommended).
+- Update Docs/TICKETS.md Upcoming + Completed at end of pass.
+- End with summary, files changed, steps to verify, tests run.
+
 
 
 ## Upcoming Tickets
@@ -93,3 +108,4 @@ Fix current instability introduced around T0009/T0008 series:
 - 2026-02-15 - T0009 - Added People/Targets v1 schema, UI workflows, message participant linking, explicit conflict handling, audits, and deterministic tests.
 - 2026-02-15 - T0009A - Fixed missing spacing resource startup crash and hardened no-sheet MessagesIngest terminal guidance/progress behavior.
 - 2026-02-15 - T0009A - Stabilized app launch exception visibility, terminal-safe/monotonic job progress writes, verify-job dedupe, and immutable-vault hash verification regressions.
+- 2026-02-17 - T0009B - Moved latest/recent job reads into a SQLite-safe infrastructure job query service with integration coverage, and added correlation-aware UI exception logging across global handlers.
