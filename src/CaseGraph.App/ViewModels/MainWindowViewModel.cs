@@ -23,9 +23,10 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
     private readonly INavigationService _navigationService;
     private readonly IThemeService _themeService;
     private readonly ICaseWorkspaceService _caseWorkspaceService;
+    private readonly ICaseQueryService _caseQueryService;
     private readonly IEvidenceVaultService _evidenceVaultService;
     private readonly IMessageSearchService _messageSearchService;
-    private readonly IAuditLogService _auditLogService;
+    private readonly IAuditQueryService _auditQueryService;
     private readonly IJobQueueService _jobQueueService;
     private readonly IJobQueryService _jobQueryService;
     private readonly ITargetRegistryService _targetRegistryService;
@@ -283,9 +284,10 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
         INavigationService navigationService,
         IThemeService themeService,
         ICaseWorkspaceService caseWorkspaceService,
+        ICaseQueryService caseQueryService,
         IEvidenceVaultService evidenceVaultService,
         IMessageSearchService messageSearchService,
-        IAuditLogService auditLogService,
+        IAuditQueryService auditQueryService,
         IJobQueueService jobQueueService,
         IJobQueryService jobQueryService,
         ITargetRegistryService targetRegistryService,
@@ -296,9 +298,10 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
         _navigationService = navigationService;
         _themeService = themeService;
         _caseWorkspaceService = caseWorkspaceService;
+        _caseQueryService = caseQueryService;
         _evidenceVaultService = evidenceVaultService;
         _messageSearchService = messageSearchService;
-        _auditLogService = auditLogService;
+        _auditQueryService = auditQueryService;
         _jobQueueService = jobQueueService;
         _jobQueryService = jobQueryService;
         _targetRegistryService = targetRegistryService;
@@ -507,7 +510,7 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
     {
         var selectedCaseId = SelectedCase?.CaseId;
         var currentCaseId = CurrentCaseInfo?.CaseId;
-        var cases = await _caseWorkspaceService.ListCasesAsync(ct);
+        var cases = await _caseQueryService.GetRecentCasesAsync(ct);
 
         AvailableCases.Clear();
         foreach (var caseInfo in cases)
@@ -1246,9 +1249,9 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
             return;
         }
 
-        var events = await _auditLogService.GetRecentAsync(CurrentCaseInfo.CaseId, 20, ct);
+        var events = await _auditQueryService.GetRecentAuditAsync(CurrentCaseInfo.CaseId, 20, ct);
         RecentAuditEvents.Clear();
-        foreach (var auditEvent in events.OrderByDescending(e => e.TimestampUtc))
+        foreach (var auditEvent in events)
         {
             RecentAuditEvents.Add(auditEvent);
         }
@@ -1398,10 +1401,10 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
     private async Task OpenCaseInternalAsync(Guid caseId, CancellationToken ct)
     {
         var openedCase = await _caseWorkspaceService.OpenCaseAsync(caseId, ct);
-        var loadedCase = await _caseWorkspaceService.LoadCaseAsync(caseId, ct);
+        var evidence = await _caseQueryService.GetEvidenceForCaseAsync(caseId, ct);
 
         CurrentCaseInfo = openedCase;
-        SetEvidenceItems(loadedCase.evidence);
+        SetEvidenceItems(evidence);
         SelectedEvidenceItem = EvidenceItems.FirstOrDefault();
         IsEvidenceDrawerOpen = SelectedEvidenceItem is not null;
 
@@ -1421,9 +1424,15 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
             return;
         }
 
-        var loadedCase = await _caseWorkspaceService.LoadCaseAsync(CurrentCaseInfo.CaseId, ct);
-        CurrentCaseInfo = loadedCase.caseInfo;
-        SetEvidenceItems(loadedCase.evidence);
+        var refreshedCase = await _caseQueryService.GetCaseAsync(CurrentCaseInfo.CaseId, ct);
+        if (refreshedCase is null)
+        {
+            return;
+        }
+
+        var evidence = await _caseQueryService.GetEvidenceForCaseAsync(CurrentCaseInfo.CaseId, ct);
+        CurrentCaseInfo = refreshedCase;
+        SetEvidenceItems(evidence);
     }
 
     private void SetEvidenceItems(IEnumerable<EvidenceItem> evidence)
@@ -1431,7 +1440,7 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
         var selectedId = SelectedEvidenceItem?.EvidenceItemId;
 
         EvidenceItems.Clear();
-        foreach (var evidenceItem in evidence.OrderByDescending(e => e.AddedAtUtc))
+        foreach (var evidenceItem in evidence)
         {
             EvidenceItems.Add(evidenceItem);
         }

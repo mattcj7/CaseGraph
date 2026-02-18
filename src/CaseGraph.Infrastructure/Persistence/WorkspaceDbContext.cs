@@ -20,6 +20,12 @@ public sealed class WorkspaceDbContext : DbContext
 
     public DbSet<JobOrderKeyRecord> JobOrderKeys => Set<JobOrderKeyRecord>();
 
+    public DbSet<CaseOrderKeyRecord> CaseOrderKeys => Set<CaseOrderKeyRecord>();
+
+    public DbSet<EvidenceOrderKeyRecord> EvidenceOrderKeys => Set<EvidenceOrderKeyRecord>();
+
+    public DbSet<AuditOrderKeyRecord> AuditOrderKeys => Set<AuditOrderKeyRecord>();
+
     public DbSet<MessageThreadRecord> MessageThreads => Set<MessageThreadRecord>();
 
     public DbSet<MessageEventRecord> MessageEvents => Set<MessageEventRecord>();
@@ -99,6 +105,48 @@ public sealed class WorkspaceDbContext : DbContext
                     CAST(StartedAtUtc AS TEXT) AS StartedAtUtc,
                     CAST(CompletedAtUtc AS TEXT) AS CompletedAtUtc
                 FROM JobRecord
+                """
+            );
+        });
+
+        modelBuilder.Entity<CaseOrderKeyRecord>(entity =>
+        {
+            entity.HasNoKey();
+            entity.ToSqlQuery(
+                """
+                SELECT
+                    CaseId,
+                    CAST(CreatedAtUtc AS TEXT) AS CreatedAtUtc,
+                    CAST(LastOpenedAtUtc AS TEXT) AS LastOpenedAtUtc
+                FROM CaseRecord
+                """
+            );
+        });
+
+        modelBuilder.Entity<EvidenceOrderKeyRecord>(entity =>
+        {
+            entity.HasNoKey();
+            entity.ToSqlQuery(
+                """
+                SELECT
+                    EvidenceItemId,
+                    CaseId,
+                    CAST(AddedAtUtc AS TEXT) AS AddedAtUtc
+                FROM EvidenceItemRecord
+                """
+            );
+        });
+
+        modelBuilder.Entity<AuditOrderKeyRecord>(entity =>
+        {
+            entity.HasNoKey();
+            entity.ToSqlQuery(
+                """
+                SELECT
+                    AuditEventId,
+                    CaseId,
+                    CAST(TimestampUtc AS TEXT) AS TimestampUtc
+                FROM AuditEventRecord
                 """
             );
         });

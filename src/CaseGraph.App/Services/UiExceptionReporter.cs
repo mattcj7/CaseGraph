@@ -26,7 +26,7 @@ internal static class UiExceptionReporter
     {
         var details = ex?.ToString() ?? "Unexpected fatal error.";
         var message =
-            $"{details}{Environment.NewLine}{Environment.NewLine}Correlation ID: {correlationId}";
+            $"{details}{Environment.NewLine}{Environment.NewLine}CorrelationId: {correlationId}";
         MessageBox.Show(
             message,
             title,
@@ -39,13 +39,29 @@ internal static class UiExceptionReporter
     {
         var caseId = TryGetActiveCaseId();
         var caseText = caseId?.ToString("D") ?? "(none)";
-        return $"{context} CorrelationId={correlationId} CaseId={caseText}";
+        var view = TryGetActiveView() ?? "(none)";
+        var action = TryGetActiveAction() ?? "(none)";
+        return $"{context} CorrelationId={correlationId} CaseId={caseText} View={view} Action={action}";
     }
 
     private static Guid? TryGetActiveCaseId()
     {
         return Application.Current?.MainWindow?.DataContext is MainWindowViewModel vm
             ? vm.CurrentCaseInfo?.CaseId
+            : null;
+    }
+
+    private static string? TryGetActiveView()
+    {
+        return Application.Current?.MainWindow?.DataContext is MainWindowViewModel vm
+            ? vm.SelectedNavigationItem?.Title
+            : null;
+    }
+
+    private static string? TryGetActiveAction()
+    {
+        return Application.Current?.MainWindow?.DataContext is MainWindowViewModel vm
+            ? vm.OperationText
             : null;
     }
 }

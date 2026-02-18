@@ -31,7 +31,9 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<IWorkspaceDbInitializer>(provider => provider.GetRequiredService<WorkspaceDbInitializer>());
         services.AddSingleton<IWorkspaceDatabaseInitializer>(provider => provider.GetRequiredService<WorkspaceDbInitializer>());
         services.AddSingleton<IAuditLogService, AuditLogService>();
+        services.AddSingleton<IAuditQueryService, AuditQueryService>();
         services.AddSingleton<ICaseWorkspaceService, CaseWorkspaceService>();
+        services.AddSingleton<ICaseQueryService, CaseQueryService>();
         services.AddSingleton<IEvidenceVaultService, EvidenceVaultService>();
         services.AddSingleton<IMessageSearchService, MessageSearchService>();
         services.AddSingleton<IMessageIngestService, MessageIngestService>();

@@ -11,86 +11,107 @@ This file tracks planned, active, and completed tickets.
 
 ## Active Ticket
 - ID: T0009B
-- Title: Fix SQLite DateTimeOffset ORDER BY crashes + Add SQLite integration tests for Open Case queries + Improve UI exception logging
+- Title: Fix SQLite DateTimeOffset ORDER BY crashes + Log UI exceptions + SQLite integration tests for “Open Case” queries
 
 ## Active Ticket Spec
-```md
-# Ticket: T0009B - Fix SQLite DateTimeOffset ORDER BY crashes + Add SQLite integration tests for Open Case queries + Improve UI exception logging
+
+# Ticket: T0009B - Fix SQLite DateTimeOffset ORDER BY crashes + Log UI exceptions + SQLite integration tests for “Open Case” queries
 
 ## Goal
-1) Fix app crash when opening a case caused by EF Core SQLite translation failing on `OrderBy(DateTimeOffset)`.
-2) Add SQLite-backed integration tests that exercise the “open case” query paths so these issues are caught automatically.
-3) Ensure UI exceptions that show in the error dialog are ALSO written to the rolling log file with a correlation ID.
+1) Eliminate app crashes caused by EF Core SQLite failing to translate `OrderBy(DateTimeOffset)` (common on Open Case / Recent Activity / Latest Job).
+2) Ensure any UI exception shown to the user is ALSO written to the rolling log with a correlation ID.
+3) Add SQLite-backed integration tests that execute the same query paths used when opening a case so these regressions are caught by `dotnet test`.
 
 ## Context / Evidence
-UI error dialog shows:
-- System.NotSupportedException: SQLite does not support expressions of type 'DateTimeOffset' in ORDER BY clauses
-Stack trace points to:
-- MainWindowViewModel.QueryLatestMessagesParseJobAsync (and subsequent Refresh... calls)
-
-Additionally, some runtime exceptions are not visible in app logs; we need reliable logging for UI crashes.
+- Crash dialog previously showed: "SQLite does not support expressions of type 'DateTimeOffset' in ORDER BY clauses"
+- workspace.db stores timestamps as TEXT (CreatedAtUtc/LastOpenedAtUtc/AddedAtUtc/etc.)
+- app log does not currently capture UI exceptions reliably.
 
 ## Scope
 
-### 1) Stop using DateTimeOffset in ORDER BY (SQLite-safe ordering)
-- Update ALL EF queries that order by DateTimeOffset (CreatedAtUtc/StartedAtUtc/CompletedAtUtc) to use a SQLite-supported ordering key.
-- Preferred minimal approach (no migrations):
-  - Replace `OrderByDescending(x => x.CreatedAtUtc)` with ordering by stored column text:
-    - Use `EF.Property<string>(entity, nameof(Entity.CreatedAtUtc))`
-  - For “latest” logic use a COALESCE sort key:
-    - CompletedAtUtc ?? StartedAtUtc ?? CreatedAtUtc
-- Ensure app can open cases and refresh “latest jobs” without throwing.
+### A) Fix ORDER BY on DateTimeOffset (SQLite-safe ordering)
+Update ALL EF queries that order by timestamp properties (DateTimeOffset in model) to avoid DateTimeOffset expressions in ORDER BY.
 
-### 2) Centralize job query logic into an Infrastructure service (testable)
-- Create `IJobQueryService` in Infrastructure (or similar) with methods:
-  - `GetLatestJobForEvidenceAsync(caseId, evidenceItemId, jobType, ct)`
+Allowed patterns (choose one consistently):
+1) **Order by stored TEXT column using EF.Property<string>**
+   Example:
+   - Replace: `.OrderByDescending(x => x.LastOpenedAtUtc)`
+   - With: `.OrderByDescending(x => EF.Property<string>(x, nameof(CaseRecord.LastOpenedAtUtc)))`
+
+2) For “latest” logic, use COALESCE sort key:
+   - CompletedAtUtc ?? StartedAtUtc ?? CreatedAtUtc
+   - Implement via projection:
+     - `SortKey = EF.Property<string>(x, "CompletedAtUtc") ?? EF.Property<string>(x,"StartedAtUtc") ?? EF.Property<string>(x,"CreatedAtUtc")`
+     - Order by SortKey (string)
+
+Apply this anywhere it exists, at minimum:
+- Case list ordering (LastOpenedAtUtc / CreatedAtUtc)
+- Evidence list ordering (AddedAtUtc)
+- Recent activity ordering (AuditEventRecord.TimestampUtc)
+- Recent jobs / latest job ordering (JobRecord timestamps)
+
+### B) Centralize queries in testable services
+Create Infrastructure services to keep ViewModels thin and make testing easy:
+- `ICaseQueryService`:
+  - `GetRecentCasesAsync(...)`
+- `IAuditQueryService`:
+  - `GetRecentAuditAsync(caseId, take, ct)`
+- `IJobQueryService`:
+  - `GetLatestJobForEvidenceAsync(caseId, evidenceId, jobType, ct)`
   - `GetRecentJobsAsync(caseId, take, ct)`
-- Move the SQLite-safe ordering logic here.
-- Update ViewModels to call the service instead of embedding LINQ directly.
 
-### 3) Add SQLite integration tests that would have caught this crash
-In `tests/CaseGraph.Infrastructure.Tests`:
-- Create a temp SQLite workspace DB (file-based or SQLite in-memory with shared cache),
-  apply migrations / EnsureCreated as appropriate.
-- Seed minimal Case + Evidence + JobRecord rows with varying timestamps.
-- Test 1: `GetLatestJobForEvidenceAsync` does NOT throw and returns correct “latest”.
-- Test 2: `GetRecentJobsAsync` does NOT throw and returns jobs in expected order.
+Move the SQLite-safe ordering logic here. Use AsNoTracking + short-lived DbContexts (IDbContextFactory).
 
-These tests must execute the real SQLite provider (NOT EF InMemory).
+### C) Log UI exceptions reliably with correlation IDs
+Wire global exception handlers in App startup:
+- Application.DispatcherUnhandledException
+- TaskScheduler.UnobservedTaskException
+- AppDomain.CurrentDomain.UnhandledException
 
-### 4) Improve UI exception logging (no silent crashes)
-- Ensure any exception shown in the UI error dialog is logged to file with:
-  - Exception.ToString()
-  - CorrelationId (new Guid per exception)
-  - Active CaseId (if available)
-- Ensure WPF global handlers are wired:
-  - `Application.DispatcherUnhandledException`
-  - `TaskScheduler.UnobservedTaskException`
-  - `AppDomain.CurrentDomain.UnhandledException`
-All should log and then show a user-friendly dialog (or reuse existing dialog).
+Requirements:
+- Generate CorrelationId (Guid) per exception and include it in:
+  - log entry
+  - UI dialog text (“CorrelationId: ...”)
+- Log Exception.ToString() + current CaseId (if known) + active view/action if available.
+
+### D) Add SQLite-backed integration tests for open-case query paths
+In `tests/CaseGraph.Infrastructure.Tests` (or a dedicated test project):
+- Use real SQLite provider (Microsoft.Data.Sqlite + UseSqlite)
+- Create a temp DB file (preferred for reliability) or in-memory with kept-open connection
+- Apply migrations or EnsureCreated
+- Seed Case/Evidence/Job/Audit rows with timestamp values
+
+Add tests that:
+- Execute `GetRecentCasesAsync`, `GetRecentAuditAsync`, `GetLatestJobForEvidenceAsync`, `GetRecentJobsAsync`
+- Assert:
+  - no translation exception is thrown
+  - ordering is correct
+These tests must fail if DateTimeOffset ORDER BY is reintroduced.
 
 ## Acceptance Criteria (Testable)
-- [ ] Opening a case no longer crashes due to DateTimeOffset ORDER BY translation.
-- [ ] SQLite integration tests exist and pass; they would fail if DateTimeOffset ORDER BY reappears.
-- [ ] UI exceptions are written to the rolling log with correlation ID.
+- [ ] Opening an existing/old case no longer crashes.
+- [ ] UI exception dialogs always also write to log with CorrelationId.
+- [ ] SQLite integration tests exist and pass; they would fail if DateTimeOffset ORDER BY returns.
 - [ ] `dotnet test` passes.
-- [ ] `dotnet run --project src/CaseGraph.App` opens and can open a case.
 
-## Manual Verification
-1) Launch app, create/open case → no crash.
-2) Import evidence, run Parse Messages → no crash when refreshing “latest parse job”.
-3) Trigger a controlled exception (optional) and confirm it appears in the log file with a correlation ID.
+## How to Verify Manually
+1) `dotnet run --project src/CaseGraph.App`
+2) Open an old case (the one that previously crashed) → must not crash.
+3) Confirm `logs/app-*.log` includes any thrown UI exceptions with CorrelationId.
+4) `dotnet test`
 
 ## Codex Instructions
 - Implement ONLY this ticket scope.
-- Keep queries AsNoTracking and use short-lived DbContexts (IDbContextFactory recommended).
-- Update Docs/TICKETS.md Upcoming + Completed at end of pass.
-- End with summary, files changed, steps to verify, tests run.
-
+- No silent merges; follow offline-first constraints.
+- Keep queries AsNoTracking and contexts short-lived.
+- End with summary + files changed + verify steps + tests run.
 
 
 ## Upcoming Tickets
-- T0010 - Association graph v1 and relationship visualization (pending spec authoring).
+- T0009B - Stabilize Open Case crashes (SQLite DateTimeOffset ORDER BY) + UI exception logging + SQLite integration tests (pending spec authoring)
+- T0010 - Association graph v1 and relationship visualization (pending spec authoring)
+- T0011 - Workflow hardening (AGENTS.md + DEBUGGING.md + validate script + Codex prompt template) (pending spec authoring)
+- T0012 - Smoke tests (WPF XAML load + SQLite translation tests) (pending spec authoring)
 
 ## Completed Tickets (append-only)
 - 2026-02-12 - T0002 - Established WPF solution skeleton, app shell, MVVM, and DI baseline.
@@ -109,3 +130,4 @@ All should log and then show a user-friendly dialog (or reuse existing dialog).
 - 2026-02-15 - T0009A - Fixed missing spacing resource startup crash and hardened no-sheet MessagesIngest terminal guidance/progress behavior.
 - 2026-02-15 - T0009A - Stabilized app launch exception visibility, terminal-safe/monotonic job progress writes, verify-job dedupe, and immutable-vault hash verification regressions.
 - 2026-02-17 - T0009B - Moved latest/recent job reads into a SQLite-safe infrastructure job query service with integration coverage, and added correlation-aware UI exception logging across global handlers.
+- 2026-02-18 - T0009B - Added SQLite-safe case/audit query services for Open Case flows, switched VM reads to those services, and added UseSqlite integration coverage for case/evidence/audit ordering.

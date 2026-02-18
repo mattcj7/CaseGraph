@@ -34,6 +34,6 @@ public static class AppFileLogger
 
     public static void LogException(string context, Exception ex)
     {
-        Log($"{context} {ex}");
+        Log($"{context} {ex.ToString()}");
     }
 }
