@@ -25,6 +25,8 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<INavigationService, NavigationService>();
         services.AddSingleton<IThemeService, ThemeService>();
         services.AddSingleton<IUserInteractionService, UserInteractionService>();
+        services.AddSingleton<IDiagnosticsService, DiagnosticsService>();
+        services.AddSingleton<IWorkspaceMigrationService, WorkspaceMigrationService>();
         services.AddSingleton<IClock, SystemClock>();
         services.AddSingleton<WorkspaceDbRebuilder>();
         services.AddSingleton<WorkspaceDbInitializer>();

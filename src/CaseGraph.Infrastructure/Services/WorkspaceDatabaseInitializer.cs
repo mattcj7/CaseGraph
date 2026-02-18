@@ -28,6 +28,7 @@ public class WorkspaceDbInitializer : IWorkspaceDbInitializer, IWorkspaceDatabas
     private readonly IClock _clock;
     private readonly SemaphoreSlim _semaphore = new(1, 1);
     private bool _initialized;
+    private string? _initializedWorkspaceDbPath;
 
     public WorkspaceDbInitializer(
         IDbContextFactory<WorkspaceDbContext> dbContextFactory,
@@ -49,15 +50,17 @@ public class WorkspaceDbInitializer : IWorkspaceDbInitializer, IWorkspaceDatabas
 
     public async Task InitializeAsync(CancellationToken ct)
     {
-        if (_initialized)
-        {
-            return;
-        }
-
         await _semaphore.WaitAsync(ct);
         try
         {
-            if (_initialized)
+            var currentWorkspaceDbPath = _workspacePathProvider.WorkspaceDbPath;
+            var sameWorkspacePath = string.Equals(
+                _initializedWorkspaceDbPath,
+                currentWorkspaceDbPath,
+                StringComparison.OrdinalIgnoreCase
+            );
+
+            if (_initialized && sameWorkspacePath)
             {
                 return;
             }
@@ -66,16 +69,29 @@ public class WorkspaceDbInitializer : IWorkspaceDbInitializer, IWorkspaceDatabas
             Directory.CreateDirectory(_workspacePathProvider.CasesRoot);
 
             var inspection = await InspectDatabaseAsync(ct);
-            if (inspection.Exists && inspection.IsBroken)
+            if (!inspection.Exists)
+            {
+                await EnsureUpgradedAsync(ct);
+            }
+            else if (inspection.HasMigrationHistory)
+            {
+                // Existing migration-based DBs must be upgraded in-place.
+                await EnsureUpgradedAsync(ct);
+            }
+            else if (inspection.IsBroken)
             {
                 await RepairDatabaseAsync(ct);
             }
             else
             {
                 await EnsureUpgradedAsync(ct);
+            }
 
-                var missingAfterUpgrade = await GetMissingRequiredTablesAsync(ct);
-                if (missingAfterUpgrade.Count > 0)
+            var missingAfterUpgrade = await GetMissingRequiredTablesAsync(ct);
+            if (missingAfterUpgrade.Count > 0)
+            {
+                var postUpgradeInspection = await InspectDatabaseAsync(ct);
+                if (postUpgradeInspection.HasMigrationHistory)
                 {
                     await RepairDatabaseAsync(ct);
                 }
@@ -91,6 +107,7 @@ public class WorkspaceDbInitializer : IWorkspaceDbInitializer, IWorkspaceDatabas
 
             await MarkRunningJobsAsAbandonedAsync(ct);
             _initialized = true;
+            _initializedWorkspaceDbPath = currentWorkspaceDbPath;
         }
         finally
         {

@@ -2,6 +2,7 @@ using CaseGraph.App.Models;
 using CaseGraph.App.Services;
 using CaseGraph.App.Views.Dialogs;
 using CaseGraph.Core.Abstractions;
+using CaseGraph.Core.Diagnostics;
 using CaseGraph.Core.Models;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
@@ -32,6 +33,8 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
     private readonly ITargetRegistryService _targetRegistryService;
     private readonly IWorkspacePathProvider _workspacePathProvider;
     private readonly IUserInteractionService _userInteractionService;
+    private readonly IDiagnosticsService _diagnosticsService;
+    private readonly IWorkspaceMigrationService _workspaceMigrationService;
     private readonly IDisposable _jobUpdateSubscription;
     private readonly SemaphoreSlim _jobCompletionRefreshGate = new(1, 1);
 
@@ -183,6 +186,30 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
     [ObservableProperty]
     private bool isMessageSearchInProgress;
 
+    [ObservableProperty]
+    private string diagnosticsAppVersion = "(loading)";
+
+    [ObservableProperty]
+    private string diagnosticsGitCommit = "(loading)";
+
+    [ObservableProperty]
+    private string diagnosticsWorkspaceRoot = string.Empty;
+
+    [ObservableProperty]
+    private string diagnosticsWorkspaceDbPath = string.Empty;
+
+    [ObservableProperty]
+    private string diagnosticsCasesRoot = string.Empty;
+
+    [ObservableProperty]
+    private string diagnosticsLogsDirectory = string.Empty;
+
+    [ObservableProperty]
+    private string diagnosticsCurrentLogPath = string.Empty;
+
+    [ObservableProperty]
+    private string diagnosticsLastLogLinesText = "(no log lines)";
+
     public bool HasSelectedEvidenceItem => SelectedEvidenceItem is not null;
 
     public string CurrentCaseSummary => CurrentCaseInfo is null
@@ -280,6 +307,12 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
 
     public IAsyncRelayCommand CancelOperationCommand { get; }
 
+    public IAsyncRelayCommand RefreshDiagnosticsCommand { get; }
+
+    public IRelayCommand OpenLogsFolderCommand { get; }
+
+    public IRelayCommand CopyDiagnosticsCommand { get; }
+
     public MainWindowViewModel(
         INavigationService navigationService,
         IThemeService themeService,
@@ -292,7 +325,9 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
         IJobQueryService jobQueryService,
         ITargetRegistryService targetRegistryService,
         IWorkspacePathProvider workspacePathProvider,
-        IUserInteractionService userInteractionService
+        IUserInteractionService userInteractionService,
+        IDiagnosticsService diagnosticsService,
+        IWorkspaceMigrationService workspaceMigrationService
     )
     {
         _navigationService = navigationService;
@@ -307,6 +342,8 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
         _targetRegistryService = targetRegistryService;
         _workspacePathProvider = workspacePathProvider;
         _userInteractionService = userInteractionService;
+        _diagnosticsService = diagnosticsService;
+        _workspaceMigrationService = workspaceMigrationService;
 
         foreach (var item in _navigationService.GetNavigationItems())
         {
@@ -347,6 +384,9 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
         CopyMessageCitationCommand = new RelayCommand(CopyMessageCitation);
         CopyMessageStoredPathCommand = new RelayCommand(CopyMessageStoredPath);
         CancelOperationCommand = new AsyncRelayCommand(CancelCurrentOperationAsync);
+        RefreshDiagnosticsCommand = new AsyncRelayCommand(() => RefreshDiagnosticsAsync(CancellationToken.None));
+        OpenLogsFolderCommand = new RelayCommand(OpenLogsFolder);
+        CopyDiagnosticsCommand = new RelayCommand(CopyDiagnostics);
 
         _jobUpdateSubscription = _jobQueueService.JobUpdates.Subscribe(new JobObserver(OnJobUpdated));
 
@@ -361,6 +401,7 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
         }
 
         _isInitialized = true;
+        await RefreshDiagnosticsAsync(CancellationToken.None);
         await RefreshCasesAsync(CancellationToken.None);
     }
 
@@ -372,6 +413,10 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
         }
 
         CurrentView = _navigationService.CreateView(value.Page);
+        if (value.Page == NavigationPage.Diagnostics)
+        {
+            _ = RefreshDiagnosticsAsync(CancellationToken.None);
+        }
     }
 
     partial void OnSelectedEvidenceItemChanged(EvidenceItem? value)
@@ -469,6 +514,7 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
 
         try
         {
+            await EnsureWorkspaceMigratedAsync(operation.Token);
             var createdCase = await _caseWorkspaceService.CreateCaseAsync(caseName, operation.Token);
             await RefreshCasesAsync(operation.Token);
 
@@ -481,6 +527,11 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
         catch (OperationCanceledException)
         {
             OperationText = "Case creation canceled.";
+        }
+        catch (Exception ex)
+        {
+            OperationText = "Case creation failed. See diagnostics.";
+            ShowWorkspaceMigrationFailure(ex);
         }
     }
 
@@ -496,6 +547,7 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
 
         try
         {
+            await EnsureWorkspaceMigratedAsync(operation.Token);
             await OpenCaseInternalAsync(SelectedCase.CaseId, operation.Token);
             OperationProgress = 1.0;
             OperationText = $"Opened case \"{CurrentCaseInfo?.Name}\".";
@@ -504,10 +556,17 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
         {
             OperationText = "Open case canceled.";
         }
+        catch (Exception ex)
+        {
+            OperationText = "Open case failed. See diagnostics.";
+            ShowWorkspaceMigrationFailure(ex);
+        }
     }
 
     private async Task RefreshCasesAsync(CancellationToken ct)
     {
+        await EnsureWorkspaceMigratedAsync(ct);
+
         var selectedCaseId = SelectedCase?.CaseId;
         var currentCaseId = CurrentCaseInfo?.CaseId;
         var cases = await _caseQueryService.GetRecentCasesAsync(ct);
@@ -521,6 +580,27 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
         SelectedCase = cases.FirstOrDefault(c => c.CaseId == selectedCaseId)
             ?? cases.FirstOrDefault(c => c.CaseId == currentCaseId)
             ?? cases.FirstOrDefault();
+    }
+
+    private async Task EnsureWorkspaceMigratedAsync(CancellationToken ct)
+    {
+        await _workspaceMigrationService.EnsureMigratedAsync(ct);
+    }
+
+    private void ShowWorkspaceMigrationFailure(Exception ex)
+    {
+        var snapshot = _diagnosticsService.GetSnapshot();
+        var report = UiExceptionReporter.LogFatalException(
+            "Workspace migration/open failed.",
+            ex,
+            _diagnosticsService
+        );
+        UiExceptionReporter.ShowCrashDialog(
+            "CaseGraph Workspace Error",
+            $"Workspace migration failed while opening or refreshing this workspace.{Environment.NewLine}Workspace DB: {snapshot.WorkspaceDbPath}",
+            report,
+            _diagnosticsService
+        );
     }
 
     private async Task ImportFilesAsync()
@@ -1257,6 +1337,59 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
         }
     }
 
+    private async Task RefreshDiagnosticsAsync(CancellationToken ct)
+    {
+        try
+        {
+            var snapshot = _diagnosticsService.GetSnapshot();
+            DiagnosticsAppVersion = snapshot.AppVersion;
+            DiagnosticsGitCommit = snapshot.GitCommit;
+            DiagnosticsWorkspaceRoot = snapshot.WorkspaceRoot;
+            DiagnosticsWorkspaceDbPath = snapshot.WorkspaceDbPath;
+            DiagnosticsCasesRoot = snapshot.CasesRoot;
+            DiagnosticsLogsDirectory = snapshot.LogsDirectory;
+            DiagnosticsCurrentLogPath = snapshot.CurrentLogPath;
+
+            var lines = await _diagnosticsService.ReadLastLogLinesAsync(50, ct);
+            DiagnosticsLastLogLinesText = lines.Count == 0
+                ? "(no log lines)"
+                : string.Join(Environment.NewLine, lines);
+        }
+        catch (Exception ex)
+        {
+            UiExceptionReporter.LogFatalException(
+                "Refresh diagnostics failed.",
+                ex,
+                _diagnosticsService
+            );
+            DiagnosticsLastLogLinesText = "(diagnostics unavailable)";
+        }
+    }
+
+    private void OpenLogsFolder()
+    {
+        try
+        {
+            _diagnosticsService.OpenLogsFolder();
+        }
+        catch (Exception ex)
+        {
+            AppFileLogger.LogException("Open logs folder failed.", ex);
+            OperationText = "Unable to open logs folder.";
+        }
+    }
+
+    private void CopyDiagnostics()
+    {
+        var report = _diagnosticsService.BuildDiagnosticsText(
+            "Diagnostics copy requested from UI.",
+            Guid.NewGuid().ToString("N"),
+            ex: null
+        );
+        _diagnosticsService.CopyDiagnostics(report);
+        OperationText = "Diagnostics copied to clipboard.";
+    }
+
     private void CopyStoredPath()
     {
         if (SelectedEvidenceItem is null)
@@ -1491,7 +1624,24 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
             return;
         }
 
-        _ = Application.Current.Dispatcher.InvokeAsync(() => ApplyJobUpdate(job));
+        _ = Application.Current.Dispatcher.InvokeAsync(() =>
+        {
+            try
+            {
+                ApplyJobUpdate(job);
+            }
+            catch (Exception ex)
+            {
+                var report = UiExceptionReporter.LogFatalException(
+                    "Failed applying job update to UI state.",
+                    ex,
+                    _diagnosticsService
+                );
+                AppFileLogger.Log(
+                    $"[JobQueue] UI job update containment CorrelationId={report.CorrelationId} jobId={job.JobId:D}"
+                );
+            }
+        });
     }
 
     private void ApplyJobUpdate(JobInfo job)

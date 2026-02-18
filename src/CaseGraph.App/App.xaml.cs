@@ -1,12 +1,11 @@
-using CaseGraph.Core.Abstractions;
-using CaseGraph.Core.Diagnostics;
 using CaseGraph.App.DependencyInjection;
 using CaseGraph.App.Services;
+using CaseGraph.Core.Abstractions;
+using CaseGraph.Core.Diagnostics;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
-using System;
 using System.IO;
-using System.Threading.Tasks;
+using System.Linq;
 using System.Windows;
 using System.Windows.Threading;
 using Wpf.Ui.Appearance;
@@ -15,12 +14,22 @@ namespace CaseGraph.App;
 
 public partial class App : Application
 {
+    private const string SelfTestArgument = "--self-test";
+
     private IHost? _host;
     private bool _fatalShutdownRequested;
+    private bool _selfTestMode;
 
-    protected override void OnStartup(StartupEventArgs e)
+    protected override async void OnStartup(StartupEventArgs e)
     {
         base.OnStartup(e);
+
+        _selfTestMode = e.Args.Any(
+            arg => string.Equals(arg, SelfTestArgument, StringComparison.OrdinalIgnoreCase)
+        );
+        var hostArgs = e.Args
+            .Where(arg => !string.Equals(arg, SelfTestArgument, StringComparison.OrdinalIgnoreCase))
+            .ToArray();
 
         var workspaceRoot = Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
@@ -36,19 +45,27 @@ public partial class App : Application
         try
         {
             AppFileLogger.Log("Building host.");
-            _host = Host.CreateDefaultBuilder(e.Args)
+            _host = Host.CreateDefaultBuilder(hostArgs)
                 .ConfigureServices((_, services) => services.AddCaseGraphAppServices())
                 .Build();
 
-            AppFileLogger.Log("Running workspace DB initializer.");
-            _host.Services
-                .GetRequiredService<IWorkspaceDbInitializer>()
-                .InitializeAsync(CancellationToken.None)
-                .GetAwaiter()
-                .GetResult();
+            var migrationSucceeded = await EnsureWorkspaceMigratedOrShowErrorAsync(
+                "Startup workspace migration failed."
+            );
+            if (!migrationSucceeded)
+            {
+                return;
+            }
+
+            if (_selfTestMode)
+            {
+                var selfTestExitCode = await RunSelfTestAsync();
+                await ShutdownAsync(selfTestExitCode);
+                return;
+            }
 
             AppFileLogger.Log("Starting host.");
-            _host.Start();
+            await _host.StartAsync(CancellationToken.None);
 
             ApplicationThemeManager.Apply(ApplicationTheme.Light);
 
@@ -59,20 +76,116 @@ public partial class App : Application
         }
         catch (Exception ex)
         {
-            var correlationId = UiExceptionReporter.LogException("Startup failure.", ex);
-            ShowFatalErrorAndShutdown("CaseGraph Startup Error", ex, correlationId);
+            await HandleFatalExceptionAsync(
+                "CaseGraph Startup Error",
+                "Startup failure.",
+                ex
+            );
         }
     }
 
     protected override async void OnExit(ExitEventArgs e)
     {
+        UnregisterGlobalExceptionHandlers();
+
         if (_host is not null)
         {
-            await _host.StopAsync(TimeSpan.FromSeconds(5));
+            try
+            {
+                await _host.StopAsync(TimeSpan.FromSeconds(5));
+            }
+            catch (Exception stopException)
+            {
+                AppFileLogger.LogException("Host stop failure during app exit.", stopException);
+            }
+
             _host.Dispose();
+            _host = null;
         }
 
         base.OnExit(e);
+    }
+
+    internal Task HandleFatalExceptionAsync(string title, string context, Exception ex)
+    {
+        return HandleFatalReportAsync(
+            title,
+            "The application encountered a fatal error and must close.",
+            UiExceptionReporter.LogFatalException(context, ex, ResolveDiagnosticsService())
+        );
+    }
+
+    private async Task<bool> EnsureWorkspaceMigratedOrShowErrorAsync(string context)
+    {
+        if (_host is null)
+        {
+            throw new InvalidOperationException("Host was not built before migration check.");
+        }
+
+        try
+        {
+            var migrationService = _host.Services.GetRequiredService<IWorkspaceMigrationService>();
+            await migrationService.EnsureMigratedAsync(CancellationToken.None);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            var report = UiExceptionReporter.LogFatalException(
+                context,
+                ex,
+                ResolveDiagnosticsService()
+            );
+
+            AppFileLogger.Flush();
+            if (!_selfTestMode)
+            {
+                var snapshot = ResolveDiagnosticsService()?.GetSnapshot();
+                var dbPath = snapshot?.WorkspaceDbPath ?? "(unknown)";
+                UiExceptionReporter.ShowCrashDialog(
+                    "CaseGraph Workspace Error",
+                    $"Workspace database migration failed.{Environment.NewLine}Workspace DB: {dbPath}",
+                    report,
+                    ResolveDiagnosticsService()
+                );
+            }
+
+            await ShutdownAsync(-1);
+            return false;
+        }
+    }
+
+    private async Task<int> RunSelfTestAsync()
+    {
+        if (_host is null)
+        {
+            AppFileLogger.Log("[SelfTest] Host unavailable.");
+            return 1;
+        }
+
+        try
+        {
+            AppFileLogger.Log("[SelfTest] Starting host.");
+            await _host.StartAsync(CancellationToken.None);
+
+            var caseQueryService = _host.Services.GetRequiredService<ICaseQueryService>();
+            var cases = await caseQueryService.GetRecentCasesAsync(CancellationToken.None);
+            AppFileLogger.Log($"[SelfTest] Case query succeeded. CaseCount={cases.Count}");
+            AppFileLogger.Log("[SelfTest] Success.");
+            return 0;
+        }
+        catch (Exception ex)
+        {
+            var report = UiExceptionReporter.LogFatalException(
+                "Self-test execution failed.",
+                ex,
+                ResolveDiagnosticsService()
+            );
+            AppFileLogger.Log(
+                $"[SelfTest] Failure CorrelationId={report.CorrelationId} LogPath={report.LogPath}"
+            );
+            AppFileLogger.Flush();
+            return 1;
+        }
     }
 
     private void RegisterGlobalExceptionHandlers()
@@ -87,41 +200,69 @@ public partial class App : Application
         TaskScheduler.UnobservedTaskException += OnUnobservedTaskException;
     }
 
-    private void OnDispatcherUnhandledException(
+    private void UnregisterGlobalExceptionHandlers()
+    {
+        DispatcherUnhandledException -= OnDispatcherUnhandledException;
+        AppDomain.CurrentDomain.UnhandledException -= OnAppDomainUnhandledException;
+        TaskScheduler.UnobservedTaskException -= OnUnobservedTaskException;
+    }
+
+    private async void OnDispatcherUnhandledException(
         object sender,
         DispatcherUnhandledExceptionEventArgs e
     )
     {
-        var correlationId = UiExceptionReporter.LogException("Unhandled UI exception.", e.Exception);
         e.Handled = true;
-        ShowFatalErrorAndShutdown("CaseGraph UI Error", e.Exception, correlationId);
+        await HandleFatalExceptionAsync(
+            "CaseGraph UI Error",
+            "Unhandled UI-thread exception.",
+            e.Exception
+        );
     }
 
     private void OnAppDomainUnhandledException(object? sender, UnhandledExceptionEventArgs e)
     {
         if (e.ExceptionObject is Exception ex)
         {
-            var correlationId = UiExceptionReporter.LogException("Unhandled AppDomain exception.", ex);
-            ShowFatalErrorAndShutdown("CaseGraph Fatal Error", ex, correlationId);
+            HandleFatalExceptionAsync(
+                "CaseGraph Fatal Error",
+                "Unhandled AppDomain exception.",
+                ex
+            )
+                .GetAwaiter()
+                .GetResult();
+            return;
         }
-        else
-        {
-            var correlationId = UiExceptionReporter.LogExceptionObject(
-                "Unhandled AppDomain exception (non-Exception object).",
-                e.ExceptionObject
-            );
-            ShowFatalErrorAndShutdown("CaseGraph Fatal Error", null, correlationId);
-        }
+
+        var report = UiExceptionReporter.LogFatalExceptionObject(
+            "Unhandled AppDomain exception (non-Exception object).",
+            e.ExceptionObject,
+            ResolveDiagnosticsService()
+        );
+        HandleFatalReportAsync(
+            "CaseGraph Fatal Error",
+            "The application encountered a fatal non-Exception error and must close.",
+            report
+        )
+            .GetAwaiter()
+            .GetResult();
     }
 
-    private void OnUnobservedTaskException(object? sender, UnobservedTaskExceptionEventArgs e)
+    private async void OnUnobservedTaskException(object? sender, UnobservedTaskExceptionEventArgs e)
     {
-        var correlationId = UiExceptionReporter.LogException("Unobserved task exception.", e.Exception);
         e.SetObserved();
-        ShowFatalErrorAndShutdown("CaseGraph Background Task Error", e.Exception, correlationId);
+        await HandleFatalExceptionAsync(
+            "CaseGraph Background Task Error",
+            "Unobserved background task exception.",
+            e.Exception
+        );
     }
 
-    private void ShowFatalErrorAndShutdown(string title, Exception? ex, string correlationId)
+    private async Task HandleFatalReportAsync(
+        string title,
+        string whatHappened,
+        FatalErrorReport report
+    )
     {
         if (_fatalShutdownRequested)
         {
@@ -129,27 +270,43 @@ public partial class App : Application
         }
 
         _fatalShutdownRequested = true;
+        AppFileLogger.Flush();
 
         try
         {
-            UiExceptionReporter.ShowErrorDialog(title, ex, correlationId);
+            if (!_selfTestMode)
+            {
+                UiExceptionReporter.ShowCrashDialog(
+                    title,
+                    whatHappened,
+                    report,
+                    ResolveDiagnosticsService()
+                );
+            }
         }
-        catch
+        catch (Exception dialogEx)
         {
+            AppFileLogger.LogException("Crash dialog display failed.", dialogEx);
         }
 
-        Environment.ExitCode = -1;
+        await ShutdownAsync(-1);
+    }
+
+    private async Task ShutdownAsync(int exitCode)
+    {
+        Environment.ExitCode = exitCode;
+        UnregisterGlobalExceptionHandlers();
 
         if (_host is not null)
         {
             try
             {
-                _host.StopAsync(TimeSpan.FromSeconds(5)).GetAwaiter().GetResult();
+                await _host.StopAsync(TimeSpan.FromSeconds(5));
             }
             catch (Exception stopException)
             {
                 AppFileLogger.LogException(
-                    "Host stop failure during fatal shutdown handling.",
+                    "Host stop failure during shutdown.",
                     stopException
                 );
             }
@@ -158,6 +315,11 @@ public partial class App : Application
             _host = null;
         }
 
-        Shutdown(-1);
+        Shutdown(exitCode);
+    }
+
+    private IDiagnosticsService? ResolveDiagnosticsService()
+    {
+        return _host?.Services.GetService<IDiagnosticsService>();
     }
 }

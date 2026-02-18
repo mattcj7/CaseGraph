@@ -21,6 +21,7 @@ public sealed class NavigationService : INavigationService
             [NavigationPage.Associations] = ("Associations", "Association graph placeholder for relationship analysis."),
             [NavigationPage.Reports] = ("Reports", "Report and export orchestration placeholder."),
             [NavigationPage.ReviewQueue] = ("Review Queue", "Background job history for ingest and verification tasks."),
+            [NavigationPage.Diagnostics] = ("Diagnostics", "Workspace health, logs, and runtime diagnostics."),
             [NavigationPage.Settings] = ("Settings", "Application settings placeholder and environment controls.")
         };
 
@@ -51,6 +52,11 @@ public sealed class NavigationService : INavigationService
         if (page == NavigationPage.ReviewQueue)
         {
             return new ReviewQueueView();
+        }
+
+        if (page == NavigationPage.Diagnostics)
+        {
+            return new DiagnosticsView();
         }
 
         if (page == NavigationPage.PeopleTargets)

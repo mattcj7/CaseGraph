@@ -4,12 +4,19 @@ namespace CaseGraph.Infrastructure.Services;
 
 public sealed class DefaultWorkspacePathProvider : IWorkspacePathProvider
 {
+    private const string WorkspaceRootOverrideEnvironmentVariable = "CASEGRAPH_WORKSPACE_ROOT";
+
     public DefaultWorkspacePathProvider()
     {
-        WorkspaceRoot = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-            "CaseGraphOffline"
+        var overrideRoot = Environment.GetEnvironmentVariable(
+            WorkspaceRootOverrideEnvironmentVariable
         );
+        WorkspaceRoot = string.IsNullOrWhiteSpace(overrideRoot)
+            ? Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                "CaseGraphOffline"
+            )
+            : overrideRoot.Trim();
 
         WorkspaceDbPath = Path.Combine(WorkspaceRoot, "workspace.db");
         CasesRoot = Path.Combine(WorkspaceRoot, "cases");

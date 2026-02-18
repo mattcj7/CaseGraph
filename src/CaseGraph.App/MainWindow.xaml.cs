@@ -25,12 +25,27 @@ public partial class MainWindow : FluentWindow
         }
         catch (Exception ex)
         {
-            var correlationId = UiExceptionReporter.LogException(
-                "MainWindow initialization failed.",
-                ex
-            );
-            UiExceptionReporter.ShowErrorDialog("CaseGraph Main Window Error", ex, correlationId);
-            Application.Current.Shutdown(-1);
+            if (Application.Current is App app)
+            {
+                await app.HandleFatalExceptionAsync(
+                    "CaseGraph Main Window Error",
+                    "Main window initialization failed.",
+                    ex
+                );
+            }
+            else
+            {
+                var report = UiExceptionReporter.LogFatalException(
+                    "MainWindow initialization failed.",
+                    ex
+                );
+                UiExceptionReporter.ShowCrashDialog(
+                    "CaseGraph Main Window Error",
+                    "Main window initialization failed.",
+                    report
+                );
+                Application.Current.Shutdown(-1);
+            }
         }
     }
 

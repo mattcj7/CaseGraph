@@ -1,4 +1,5 @@
 using CaseGraph.Core.Models;
+using CaseGraph.Core.Diagnostics;
 
 namespace CaseGraph.Infrastructure.Services;
 
@@ -29,7 +30,17 @@ internal sealed class JobInfoObservable : IObservable<JobInfo>
 
         foreach (var observer in observers)
         {
-            observer.OnNext(info);
+            try
+            {
+                observer.OnNext(info);
+            }
+            catch (Exception ex)
+            {
+                AppFileLogger.LogException(
+                    "[JobQueue] Observer OnNext failure contained.",
+                    ex
+                );
+            }
         }
     }
 

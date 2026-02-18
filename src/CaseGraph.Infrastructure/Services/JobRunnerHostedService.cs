@@ -21,9 +21,25 @@ public sealed class JobRunnerHostedService : BackgroundService
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         AppFileLogger.Log("[JobRunner] Hosted service starting.");
-        await _workspaceDbInitializer.InitializeAsync(stoppingToken);
-        await _jobQueueService.PrimeQueueAsync(stoppingToken);
-        AppFileLogger.Log("[JobRunner] Queue primed.");
+        try
+        {
+            await _workspaceDbInitializer.InitializeAsync(stoppingToken);
+            await _jobQueueService.PrimeQueueAsync(stoppingToken);
+            AppFileLogger.Log("[JobRunner] Queue primed.");
+        }
+        catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+        {
+            AppFileLogger.Log("[JobRunner] Startup canceled by host shutdown.");
+            return;
+        }
+        catch (Exception ex)
+        {
+            AppFileLogger.LogException(
+                "[JobRunner] Startup failure contained; runner will not process jobs this session.",
+                ex
+            );
+            return;
+        }
 
         while (!stoppingToken.IsCancellationRequested)
         {

@@ -10,95 +10,115 @@ This file tracks planned, active, and completed tickets.
   - **Completed Tickets** (append-only)
 
 ## Active Ticket
-- ID: T0009B
-- Title: Fix SQLite DateTimeOffset ORDER BY crashes + Log UI exceptions + SQLite integration tests for “Open Case” queries
 
-## Active Ticket Spec
-
-# Ticket: T0009B - Fix SQLite DateTimeOffset ORDER BY crashes + Log UI exceptions + SQLite integration tests for “Open Case” queries
+# Ticket: T0009C - Workspace open/create hardening (EF migrations + crash logging + smoke tests)
 
 ## Goal
-1) Eliminate app crashes caused by EF Core SQLite failing to translate `OrderBy(DateTimeOffset)` (common on Open Case / Recent Activity / Latest Job).
-2) Ensure any UI exception shown to the user is ALSO written to the rolling log with a correlation ID.
-3) Add SQLite-backed integration tests that execute the same query paths used when opening a case so these regressions are caught by `dotnet test`.
+Stop crashes when:
+- Opening an old case workspace DB
+- Creating a new case
+- Starting a job (e.g., MessagesIngest) after opening/creating a case
 
-## Context / Evidence
-- Crash dialog previously showed: "SQLite does not support expressions of type 'DateTimeOffset' in ORDER BY clauses"
-- workspace.db stores timestamps as TEXT (CreatedAtUtc/LastOpenedAtUtc/AddedAtUtc/etc.)
-- app log does not currently capture UI exceptions reliably.
+Also ensure every crash produces a usable log + stack trace, and add smoke tests that would catch these regressions.
 
-## Scope
+## Context / Diagnosis
+We have old workspace DBs that only contain the initial migration and are missing later tables (Targets/Identifiers).
+Current app code appears to open/switch workspaces without applying migrations, and some UI-thread exceptions are not being captured by the logger (app exits with no helpful stack trace in the app log).
 
-### A) Fix ORDER BY on DateTimeOffset (SQLite-safe ordering)
-Update ALL EF queries that order by timestamp properties (DateTimeOffset in model) to avoid DateTimeOffset expressions in ORDER BY.
+## Requirements
 
-Allowed patterns (choose one consistently):
-1) **Order by stored TEXT column using EF.Property<string>**
-   Example:
-   - Replace: `.OrderByDescending(x => x.LastOpenedAtUtc)`
-   - With: `.OrderByDescending(x => EF.Property<string>(x, nameof(CaseRecord.LastOpenedAtUtc)))`
+### A) Always migrate on workspace open/switch
+- Replace any `EnsureCreated()` usage for existing DBs with `Database.Migrate()`.
+- Ensure migration runs:
+  1) at app startup (default workspace root DB)
+  2) whenever user opens/switches to an existing workspace DB path
+- If migration fails:
+  - Do NOT crash
+  - Show a friendly error dialog with:
+    - summary (what failed)
+    - the DB path
+    - the log path
+    - a “Copy diagnostics” button
+  - Log full exception details
 
-2) For “latest” logic, use COALESCE sort key:
-   - CompletedAtUtc ?? StartedAtUtc ?? CreatedAtUtc
-   - Implement via projection:
-     - `SortKey = EF.Property<string>(x, "CompletedAtUtc") ?? EF.Property<string>(x,"StartedAtUtc") ?? EF.Property<string>(x,"CreatedAtUtc")`
-     - Order by SortKey (string)
+### B) Crash-proof exception capture (WPF + background tasks)
+Add global handlers in `CaseGraph.App` startup:
+- `Application.DispatcherUnhandledException`
+- `AppDomain.CurrentDomain.UnhandledException`
+- `TaskScheduler.UnobservedTaskException`
 
-Apply this anywhere it exists, at minimum:
-- Case list ordering (LastOpenedAtUtc / CreatedAtUtc)
-- Evidence list ordering (AddedAtUtc)
-- Recent activity ordering (AuditEventRecord.TimestampUtc)
-- Recent jobs / latest job ordering (JobRecord timestamps)
+Behavior:
+- Log full exception + stack trace as FATAL
+- Flush logs (best-effort)
+- Show a crash dialog with:
+  - “What happened”
+  - “Where the logs are”
+  - “Copy diagnostics”
+- Then shutdown cleanly (or allow continue only if safe—default to shutdown)
 
-### B) Centralize queries in testable services
-Create Infrastructure services to keep ViewModels thin and make testing easy:
-- `ICaseQueryService`:
-  - `GetRecentCasesAsync(...)`
-- `IAuditQueryService`:
-  - `GetRecentAuditAsync(caseId, take, ct)`
-- `IJobQueryService`:
-  - `GetLatestJobForEvidenceAsync(caseId, evidenceId, jobType, ct)`
-  - `GetRecentJobsAsync(caseId, take, ct)`
+### C) Add a Diagnostics surface in the UI
+Add a simple “Diagnostics” view (or modal) reachable from the main window:
+- Shows:
+  - App version / git commit (if available)
+  - Workspace root + active workspace DB path
+  - Last 50 log lines (read-only)
+  - Button: “Open logs folder”
+  - Button: “Copy diagnostics”
 
-Move the SQLite-safe ordering logic here. Use AsNoTracking + short-lived DbContexts (IDbContextFactory).
+### D) Smoke tests to catch these crashes
+Add integration-ish tests in `CaseGraph.Infrastructure.Tests` (or appropriate test project):
 
-### C) Log UI exceptions reliably with correlation IDs
-Wire global exception handlers in App startup:
-- Application.DispatcherUnhandledException
-- TaskScheduler.UnobservedTaskException
-- AppDomain.CurrentDomain.UnhandledException
-
-Requirements:
-- Generate CorrelationId (Guid) per exception and include it in:
-  - log entry
-  - UI dialog text (“CorrelationId: ...”)
-- Log Exception.ToString() + current CaseId (if known) + active view/action if available.
-
-### D) Add SQLite-backed integration tests for open-case query paths
-In `tests/CaseGraph.Infrastructure.Tests` (or a dedicated test project):
-- Use real SQLite provider (Microsoft.Data.Sqlite + UseSqlite)
-- Create a temp DB file (preferred for reliability) or in-memory with kept-open connection
-- Apply migrations or EnsureCreated
-- Seed Case/Evidence/Job/Audit rows with timestamp values
-
-Add tests that:
-- Execute `GetRecentCasesAsync`, `GetRecentAuditAsync`, `GetLatestJobForEvidenceAsync`, `GetRecentJobsAsync`
+1) `Workspace_Migrate_OldDb_UpgradesToLatest`
+- Arrange: copy an “old schema” DB fixture into a temp folder
+- Act: run initializer / open workspace
 - Assert:
-  - no translation exception is thrown
-  - ordering is correct
-These tests must fail if DateTimeOffset ORDER BY is reintroduced.
+  - `__EFMigrationsHistory` contains latest migration id
+  - expected tables exist (`TargetRecord`, `IdentifierRecord`, etc.)
+  - no exceptions thrown
 
-## Acceptance Criteria (Testable)
-- [ ] Opening an existing/old case no longer crashes.
-- [ ] UI exception dialogs always also write to log with CorrelationId.
-- [ ] SQLite integration tests exist and pass; they would fail if DateTimeOffset ORDER BY returns.
-- [ ] `dotnet test` passes.
+2) `Workspace_Open_OldDb_DoesNotThrow_WhenLoadingCase`
+- Arrange: old DB fixture contains at least one CaseRecord
+- Act: open workspace and load basic case summary query
+- Assert: no throw
 
-## How to Verify Manually
-1) `dotnet run --project src/CaseGraph.App`
-2) Open an old case (the one that previously crashed) → must not crash.
-3) Confirm `logs/app-*.log` includes any thrown UI exceptions with CorrelationId.
-4) `dotnet test`
+3) `App_SelfTest_ReturnsSuccess`
+Add a CLI flag to the app project:
+- `CaseGraph.App --self-test`
+which:
+  - builds host
+  - opens workspace
+  - migrates
+  - runs a trivial query
+  - exits 0 on success, non-zero on failure
+Then test it from a test using `ProcessStartInfo`.
+
+### E) Guardrails: jobs should never crash the app
+- Confirm JobRunner exceptions are contained and only affect job status.
+- Any job failure must:
+  - mark job failed
+  - store error text
+  - log exception
+  - NOT bring down the UI process
+
+### F) Documentation / Workflow
+- Update `Docs/TICKETS.md`:
+  - Keep **Upcoming Tickets** and **Completed Tickets** accurate.
+  - When T0009C is done, move it to Completed with date + 1-line summary.
+- Add an ADR entry in `Docs/ADR.md`:
+  - “ADR: Workspace DB migration strategy”
+  - State that we use EF Migrations and run `Database.Migrate()` on open.
+
+## Acceptance Criteria
+- Opening the provided old-case DB no longer crashes; it migrates and loads.
+- Creating a new case no longer crashes.
+- Any crash produces a clear log entry with stack trace and shows a crash dialog with log path.
+- Tests added and passing:
+  - old DB migrates to latest
+  - open old case doesn’t throw
+  - self-test passes
+- Docs updated (Tickets + ADR).
+
+
 
 ## Codex Instructions
 - Implement ONLY this ticket scope.
@@ -108,8 +128,7 @@ These tests must fail if DateTimeOffset ORDER BY is reintroduced.
 
 
 ## Upcoming Tickets
-- T0009B - Stabilize Open Case crashes (SQLite DateTimeOffset ORDER BY) + UI exception logging + SQLite integration tests (pending spec authoring)
-- T0010 - Association graph v1 and relationship visualization (pending spec authoring)
+- T0010 - Association graph v1 and relationship visualization (pending spec authoring).
 - T0011 - Workflow hardening (AGENTS.md + DEBUGGING.md + validate script + Codex prompt template) (pending spec authoring)
 - T0012 - Smoke tests (WPF XAML load + SQLite translation tests) (pending spec authoring)
 
@@ -131,3 +150,4 @@ These tests must fail if DateTimeOffset ORDER BY is reintroduced.
 - 2026-02-15 - T0009A - Stabilized app launch exception visibility, terminal-safe/monotonic job progress writes, verify-job dedupe, and immutable-vault hash verification regressions.
 - 2026-02-17 - T0009B - Moved latest/recent job reads into a SQLite-safe infrastructure job query service with integration coverage, and added correlation-aware UI exception logging across global handlers.
 - 2026-02-18 - T0009B - Added SQLite-safe case/audit query services for Open Case flows, switched VM reads to those services, and added UseSqlite integration coverage for case/evidence/audit ordering.
+- 2026-02-18 - T0009C - Hardened workspace open/create with migration-on-open, fatal crash diagnostics UX, diagnostics page, self-test CLI, and old-DB smoke coverage.

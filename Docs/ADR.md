@@ -248,3 +248,23 @@ Append-only log of key decisions and changes. Add an entry when we:
   - New deterministic tests cover normalization, conflict behavior, and derived-link provenance.
 - Alternatives considered:
   - Implicit auto-merge on identifier collisions (rejected due to defensibility and false-link risk).
+
+### ADR-20260218-14: Workspace DB migration-on-open with fatal diagnostics containment
+- Date: 2026-02-18
+- Ticket: T0009C
+- Commit: <fill in after commit>
+- Decision:
+  - Standardize workspace schema upgrades on app startup and case open/create flows by using EF Core migrations (`Database.MigrateAsync`) through a shared workspace migration service.
+  - Add app-level fatal exception handling across `DispatcherUnhandledException`, `AppDomain.CurrentDomain.UnhandledException`, and `TaskScheduler.UnobservedTaskException` with FATAL log entries, crash dialog diagnostics, and clean shutdown.
+  - Add a diagnostics UI surface showing workspace/log paths, version metadata, and last log lines with copy/open actions.
+  - Add smoke coverage for old DB fixtures, old-case open behavior, and `CaseGraph.App --self-test` process execution.
+- Rationale:
+  - Legacy workspaces can miss newer schema tables and must be upgraded in-place before Open Case reads.
+  - Fatal failures need actionable operator diagnostics (correlation ID, stack trace, log location) instead of silent exits.
+  - Regression protection requires real SQLite fixture upgrades and process-level startup checks.
+- Consequences:
+  - Existing workspaces are migrated instead of relying on `EnsureCreated`, reducing old-db open crashes.
+  - Unexpected UI/background exceptions now produce deterministic fatal logs and user-facing crash diagnostics before shutdown.
+  - Diagnostics visibility and self-test automation improve operational triage and release confidence.
+- Alternatives considered:
+  - Continue ad-hoc table checks or `EnsureCreated`-first initialization (rejected due to migration drift risk).

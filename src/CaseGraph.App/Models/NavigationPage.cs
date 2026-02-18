@@ -11,5 +11,6 @@ public enum NavigationPage
     Associations,
     Reports,
     ReviewQueue,
+    Diagnostics,
     Settings
 }
