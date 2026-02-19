@@ -11,10 +11,15 @@ namespace CaseGraph.App.Services;
 public sealed class DiagnosticsService : IDiagnosticsService
 {
     private readonly IWorkspacePathProvider _workspacePathProvider;
+    private readonly DebugBundleBuilder _debugBundleBuilder;
 
-    public DiagnosticsService(IWorkspacePathProvider workspacePathProvider)
+    public DiagnosticsService(
+        IWorkspacePathProvider workspacePathProvider,
+        DebugBundleBuilder debugBundleBuilder
+    )
     {
         _workspacePathProvider = workspacePathProvider;
+        _debugBundleBuilder = debugBundleBuilder;
     }
 
     public DiagnosticsSnapshot GetSnapshot()
@@ -111,6 +116,57 @@ public sealed class DiagnosticsService : IDiagnosticsService
                 UseShellExecute = true
             }
         );
+    }
+
+    public async Task<string> ExportDebugBundleAsync(string outputZipPath, CancellationToken ct)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(outputZipPath);
+
+        var snapshot = GetSnapshot();
+        var logTail = await ReadLastLogLinesAsync(2000, ct);
+        var configurationFiles = ResolveConfigurationFiles(snapshot.WorkspaceRoot);
+
+        var request = new DebugBundleBuildRequest(
+            OutputZipPath: outputZipPath,
+            LogsDirectory: snapshot.LogsDirectory,
+            WorkspaceRoot: snapshot.WorkspaceRoot,
+            WorkspaceDbPath: snapshot.WorkspaceDbPath,
+            AppVersion: snapshot.AppVersion,
+            GitCommit: snapshot.GitCommit,
+            LastLogLines: logTail,
+            ConfigurationFiles: configurationFiles
+        );
+
+        var result = await _debugBundleBuilder.BuildAsync(request, ct);
+        AppFileLogger.LogEvent(
+            eventName: "DebugBundleExported",
+            level: "INFO",
+            message: "Debug bundle exported.",
+            fields: new Dictionary<string, object?>
+            {
+                ["bundlePath"] = result.BundlePath,
+                ["includedEntryCount"] = result.IncludedEntries.Count
+            }
+        );
+
+        return result.BundlePath;
+    }
+
+    private static IReadOnlyList<string> ResolveConfigurationFiles(string workspaceRoot)
+    {
+        var candidates = new[]
+        {
+            Path.Combine(AppContext.BaseDirectory, "appsettings.json"),
+            Path.Combine(AppContext.BaseDirectory, "appsettings.Development.json"),
+            Path.Combine(AppContext.BaseDirectory, "CaseGraph.App.runtimeconfig.json"),
+            Path.Combine(workspaceRoot, "workspace.settings.json"),
+            Path.Combine(workspaceRoot, "settings.json")
+        };
+
+        return candidates
+            .Where(File.Exists)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
     }
 
     private static (string Version, string GitCommit) GetVersionMetadata()

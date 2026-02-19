@@ -23,6 +23,8 @@
                     <ColumnDefinition Width="Auto" />
                     <ColumnDefinition Width="8" />
                     <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="8" />
+                    <ColumnDefinition Width="Auto" />
                 </Grid.ColumnDefinitions>
 
                 <TextBlock Grid.Column="0"
@@ -43,6 +45,11 @@
                 <Button Grid.Column="6"
                         Content="Copy Diagnostics"
                         Command="{Binding CopyDiagnosticsCommand}"
+                        Style="{StaticResource TopBarButtonStyle}" />
+
+                <Button Grid.Column="8"
+                        Content="Export Debug Bundle"
+                        Command="{Binding ExportDebugBundleCommand}"
                         Style="{StaticResource TopBarButtonStyle}" />
             </Grid>
         </Border>

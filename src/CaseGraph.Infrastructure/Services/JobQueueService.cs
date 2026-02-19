@@ -118,8 +118,11 @@ public sealed class JobQueueService : IJobQueueService
 
                 if (existing is not null)
                 {
-                    AppFileLogger.Log(
-                        $"[JobQueue] Deduped verify enqueue; using existing jobId={existing.JobId:D} case={request.CaseId:D} evidence={request.EvidenceItemId:D}"
+                    LogJobEvent(
+                        existing,
+                        eventName: "JobEnqueueDeduplicated",
+                        level: "INFO",
+                        message: "Reused existing active verify job."
                     );
                     return existing.JobId;
                 }
@@ -131,9 +134,7 @@ public sealed class JobQueueService : IJobQueueService
 
         var queuedInfo = MapJobInfo(jobRecord);
         _jobUpdates.Publish(queuedInfo);
-        AppFileLogger.Log(
-            $"[JobQueue] Enqueued jobId={jobRecord.JobId:D} type={jobRecord.JobType} case={jobRecord.CaseId?.ToString("D") ?? "(none)"} evidence={jobRecord.EvidenceItemId?.ToString("D") ?? "(none)"} correlation={jobRecord.CorrelationId}"
-        );
+        LogJobEvent(jobRecord, "JobQueued", "INFO", "Job queued.");
         await WriteLifecycleAuditAsync(
             queuedInfo,
             "JobQueued",
@@ -156,6 +157,14 @@ public sealed class JobQueueService : IJobQueueService
             return;
         }
 
+        using var jobScope = AppFileLogger.BeginJobScope(
+            jobRecord.JobId,
+            jobRecord.JobType,
+            jobRecord.CorrelationId,
+            jobRecord.CaseId,
+            jobRecord.EvidenceItemId
+        );
+
         if (jobRecord.Status == JobStatus.Queued.ToString())
         {
             var now = _clock.UtcNow.ToUniversalTime();
@@ -169,8 +178,15 @@ public sealed class JobQueueService : IJobQueueService
 
             var canceledInfo = MapJobInfo(jobRecord);
             _jobUpdates.Publish(canceledInfo);
-            AppFileLogger.Log(
-                $"[JobQueue] Cancel requested jobId={jobRecord.JobId:D} state=Queued action=MarkedCanceled"
+            AppFileLogger.LogEvent(
+                eventName: "JobCancelRequested",
+                level: "INFO",
+                message: "Cancel request marked queued job as canceled.",
+                fields: new Dictionary<string, object?>
+                {
+                    ["state"] = JobStatus.Queued.ToString(),
+                    ["action"] = "MarkedCanceled"
+                }
             );
             await WriteLifecycleAuditAsync(
                 canceledInfo,
@@ -183,16 +199,30 @@ public sealed class JobQueueService : IJobQueueService
 
         if (IsTerminalStatus(jobRecord.Status))
         {
-            AppFileLogger.Log(
-                $"[JobQueue] Cancel requested jobId={jobRecord.JobId:D} state={jobRecord.Status} action=AlreadyTerminal"
+            AppFileLogger.LogEvent(
+                eventName: "JobCancelRequested",
+                level: "INFO",
+                message: "Cancel request ignored because job is already terminal.",
+                fields: new Dictionary<string, object?>
+                {
+                    ["state"] = jobRecord.Status,
+                    ["action"] = "AlreadyTerminal"
+                }
             );
             return;
         }
 
         if (jobRecord.Status != JobStatus.Running.ToString())
         {
-            AppFileLogger.Log(
-                $"[JobQueue] Cancel requested jobId={jobRecord.JobId:D} state={jobRecord.Status} action=Ignored"
+            AppFileLogger.LogEvent(
+                eventName: "JobCancelRequested",
+                level: "WARN",
+                message: "Cancel request ignored because job is not running.",
+                fields: new Dictionary<string, object?>
+                {
+                    ["state"] = jobRecord.Status,
+                    ["action"] = "Ignored"
+                }
             );
             return;
         }
@@ -205,15 +235,29 @@ public sealed class JobQueueService : IJobQueueService
         {
             runningJobCts.Cancel();
             _pendingRunningCancels.TryRemove(jobId, out _);
-            AppFileLogger.Log(
-                $"[JobQueue] Cancel requested jobId={jobRecord.JobId:D} state=Running action=CtsCanceled"
+            AppFileLogger.LogEvent(
+                eventName: "JobCancelRequested",
+                level: "INFO",
+                message: "Cancel request signaled running job token.",
+                fields: new Dictionary<string, object?>
+                {
+                    ["state"] = JobStatus.Running.ToString(),
+                    ["action"] = "CtsCanceled"
+                }
             );
         }
         else
         {
             _pendingRunningCancels[jobId] = 0;
-            AppFileLogger.Log(
-                $"[JobQueue] Cancel requested jobId={jobRecord.JobId:D} state=Running action=PendingUntilCtsAvailable"
+            AppFileLogger.LogEvent(
+                eventName: "JobCancelRequested",
+                level: "INFO",
+                message: "Cancel request queued until running token is available.",
+                fields: new Dictionary<string, object?>
+                {
+                    ["state"] = JobStatus.Running.ToString(),
+                    ["action"] = "PendingUntilCtsAvailable"
+                }
             );
         }
     }
@@ -287,9 +331,7 @@ public sealed class JobQueueService : IJobQueueService
 
             var runningInfo = MapJobInfo(jobRecord);
             _jobUpdates.Publish(runningInfo);
-            AppFileLogger.Log(
-                $"[JobQueue] Started jobId={runningInfo.JobId:D} type={runningInfo.JobType} correlation={runningInfo.CorrelationId}"
-            );
+            LogJobEvent(runningInfo, "JobStarted", "INFO", "Job execution started.");
             await WriteLifecycleAuditAsync(
                 runningInfo,
                 "JobStarted",
@@ -356,8 +398,15 @@ public sealed class JobQueueService : IJobQueueService
                     throw new NotSupportedException($"Unsupported job type \"{jobToExecute.JobType}\".");
             }
 
-            AppFileLogger.Log(
-                $"[JobQueue] Completed jobId={jobToExecute.JobId:D} type={jobToExecute.JobType} elapsedMs={(DateTimeOffset.UtcNow - executionStartedAt).TotalMilliseconds:0}"
+            LogJobEvent(
+                jobToExecute,
+                eventName: "JobCompleted",
+                level: "INFO",
+                message: "Job execution completed.",
+                fields: new Dictionary<string, object?>
+                {
+                    ["elapsedMs"] = (long)(DateTimeOffset.UtcNow - executionStartedAt).TotalMilliseconds
+                }
             );
         }
         catch (OperationCanceledException) when (linkedCts.IsCancellationRequested)
@@ -365,14 +414,24 @@ public sealed class JobQueueService : IJobQueueService
             terminalStatus = JobStatus.Canceled;
             terminalStatusMessage = "Canceled";
             terminalErrorMessage = null;
-            AppFileLogger.Log($"[JobQueue] Canceled jobId={jobId:D}");
+            if (jobToExecute is not null)
+            {
+                LogJobEvent(jobToExecute, "JobCanceled", "INFO", "Job execution canceled.");
+            }
         }
         catch (Exception ex)
         {
             terminalStatus = JobStatus.Failed;
             terminalStatusMessage = $"Failed: {SummarizeExceptionMessage(ex)}";
             terminalErrorMessage = ex.ToString();
-            AppFileLogger.LogException($"[JobQueue] Failed jobId={jobId:D}", ex);
+            if (jobToExecute is not null)
+            {
+                LogJobEvent(jobToExecute, "JobFailed", "ERROR", "Job execution failed.", ex);
+            }
+            else
+            {
+                AppFileLogger.LogException($"Job execution failed before job payload load. jobId={jobId:D}", ex);
+            }
         }
         finally
         {
@@ -546,8 +605,15 @@ public sealed class JobQueueService : IJobQueueService
             ct
         );
 
-        AppFileLogger.Log(
-            $"[MessagesIngest] Job start jobId={jobRecord.JobId:D} correlation={jobRecord.CorrelationId} case={payload.CaseId:D} evidence={payload.EvidenceItemId:D} ext={evidence.FileExtension} file={evidence.OriginalFileName}"
+        LogJobEvent(
+            jobRecord,
+            eventName: "MessagesIngestStarted",
+            level: "INFO",
+            message: "Messages ingest started.",
+            fields: new Dictionary<string, object?>
+            {
+                ["fileExtension"] = evidence.FileExtension
+            }
         );
 
         var ingestStopwatch = System.Diagnostics.Stopwatch.StartNew();
@@ -571,8 +637,15 @@ public sealed class JobQueueService : IJobQueueService
             {
                 lastLoggedPercent = percent;
                 lastLoggedAt = now;
-                AppFileLogger.Log(
-                    $"[MessagesIngest] Progress jobId={jobRecord.JobId:D} correlation={jobRecord.CorrelationId} {statusMessage} ({percent}%)"
+                LogJobEvent(
+                    jobRecord,
+                    eventName: "MessagesIngestProgress",
+                    level: "INFO",
+                    message: statusMessage,
+                    fields: new Dictionary<string, object?>
+                    {
+                        ["progressPercent"] = percent
+                    }
                 );
             }
         });
@@ -592,8 +665,17 @@ public sealed class JobQueueService : IJobQueueService
             ct
         );
 
-        AppFileLogger.Log(
-            $"[MessagesIngest] Job complete jobId={jobRecord.JobId:D} correlation={jobRecord.CorrelationId} parsed={ingestResult.MessagesExtracted} threads={ingestResult.ThreadsCreated} elapsedMs={ingestStopwatch.ElapsedMilliseconds} status=\"{ComposeMessagesIngestSuccessSummary(ingestResult)}\""
+        LogJobEvent(
+            jobRecord,
+            eventName: "MessagesIngestCompleted",
+            level: "INFO",
+            message: ComposeMessagesIngestSuccessSummary(ingestResult),
+            fields: new Dictionary<string, object?>
+            {
+                ["messagesExtracted"] = ingestResult.MessagesExtracted,
+                ["threadsCreated"] = ingestResult.ThreadsCreated,
+                ["elapsedMs"] = ingestStopwatch.ElapsedMilliseconds
+            }
         );
 
         return ingestResult;
@@ -945,6 +1027,44 @@ public sealed class JobQueueService : IJobQueueService
         }
 
         return message.Trim();
+    }
+
+    private static void LogJobEvent(
+        JobRecord jobRecord,
+        string eventName,
+        string level,
+        string message,
+        Exception? ex = null,
+        IReadOnlyDictionary<string, object?>? fields = null
+    )
+    {
+        using var jobScope = AppFileLogger.BeginJobScope(
+            jobRecord.JobId,
+            jobRecord.JobType,
+            jobRecord.CorrelationId,
+            jobRecord.CaseId,
+            jobRecord.EvidenceItemId
+        );
+        AppFileLogger.LogEvent(eventName, level, message, ex: ex, fields: fields);
+    }
+
+    private static void LogJobEvent(
+        JobInfo jobInfo,
+        string eventName,
+        string level,
+        string message,
+        Exception? ex = null,
+        IReadOnlyDictionary<string, object?>? fields = null
+    )
+    {
+        using var jobScope = AppFileLogger.BeginJobScope(
+            jobInfo.JobId,
+            jobInfo.JobType,
+            jobInfo.CorrelationId,
+            jobInfo.CaseId,
+            jobInfo.EvidenceItemId
+        );
+        AppFileLogger.LogEvent(eventName, level, message, ex: ex, fields: fields);
     }
 
     private sealed class EvidenceImportPayload

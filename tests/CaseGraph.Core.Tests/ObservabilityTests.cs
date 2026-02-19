@@ -1,0 +1,241 @@
+using CaseGraph.Core.Diagnostics;
+using System.IO.Compression;
+using System.Text.Json;
+
+namespace CaseGraph.Core.Tests;
+
+[Collection("AppFileLoggerEnvironment")]
+public sealed class ObservabilityTests
+{
+    [Fact]
+    public async Task SafeAsyncActionRunner_OnException_LogsFailureAndDoesNotThrow()
+    {
+        var logsRoot = CreateTempDirectory();
+        try
+        {
+            using var logOverride = new LogDirectoryOverrideScope(logsRoot);
+            var runner = new SafeAsyncActionRunner();
+            var actionName = $"OpenCase-{Guid.NewGuid():N}";
+
+            var exception = await Record.ExceptionAsync(async () =>
+            {
+                var result = await runner.ExecuteAsync(
+                    actionName,
+                    _ => throw new InvalidOperationException("boom"),
+                    CancellationToken.None
+                );
+
+                Assert.False(result.Succeeded);
+                Assert.False(result.Canceled);
+                Assert.NotNull(result.Exception);
+                Assert.False(string.IsNullOrWhiteSpace(result.CorrelationId));
+            });
+
+            Assert.Null(exception);
+
+            var events = ReadStructuredEvents(AppFileLogger.GetCurrentLogPath())
+                .Where(e => TryGetString(e, "actionName") == actionName)
+                .ToList();
+
+            Assert.Contains(events, e => TryGetString(e, "eventName") == "UiActionStarted");
+            var failedEvent = events.Single(e => TryGetString(e, "eventName") == "UiActionFailed");
+            Assert.False(string.IsNullOrWhiteSpace(TryGetString(failedEvent, "correlationId")));
+            Assert.Contains("InvalidOperationException", TryGetString(failedEvent, "exception"));
+        }
+        finally
+        {
+            TryDeleteDirectory(logsRoot);
+        }
+    }
+
+    [Fact]
+    public void ActionScope_InjectsCorrelationIdIntoStructuredEvents()
+    {
+        var logsRoot = CreateTempDirectory();
+        try
+        {
+            using var logOverride = new LogDirectoryOverrideScope(logsRoot);
+            var correlationId = Guid.NewGuid().ToString("N");
+            var actionName = $"CreateCase-{Guid.NewGuid():N}";
+            var marker = Guid.NewGuid().ToString("N");
+
+            using (AppFileLogger.BeginActionScope(actionName, correlationId))
+            {
+                AppFileLogger.LogEvent(
+                    eventName: "UnitTestActionScope",
+                    level: "INFO",
+                    message: marker
+                );
+            }
+
+            var matchingEvent = ReadStructuredEvents(AppFileLogger.GetCurrentLogPath())
+                .Single(e =>
+                    TryGetString(e, "eventName") == "UnitTestActionScope"
+                    && TryGetString(e, "message") == marker
+                );
+
+            Assert.Equal(correlationId, TryGetString(matchingEvent, "correlationId"));
+            Assert.Equal(actionName, TryGetString(matchingEvent, "actionName"));
+        }
+        finally
+        {
+            TryDeleteDirectory(logsRoot);
+        }
+    }
+
+    [Fact]
+    public async Task DebugBundleBuilder_IncludesRequiredEntries()
+    {
+        var tempRoot = CreateTempDirectory();
+        var workspaceRoot = Path.Combine(tempRoot, "workspace");
+        var logsRoot = Path.Combine(tempRoot, "logs");
+        Directory.CreateDirectory(workspaceRoot);
+        Directory.CreateDirectory(logsRoot);
+
+        var workspaceDbPath = Path.Combine(workspaceRoot, "workspace.db");
+        var outputZipPath = Path.Combine(tempRoot, "bundle.zip");
+        var configPath = Path.Combine(tempRoot, "settings.json");
+        await File.WriteAllTextAsync(Path.Combine(logsRoot, "app-20260219.log"), "{\"event\":\"x\"}");
+        await File.WriteAllTextAsync(workspaceDbPath, "db");
+        await File.WriteAllTextAsync($"{workspaceDbPath}-wal", "wal");
+        await File.WriteAllTextAsync($"{workspaceDbPath}-shm", "shm");
+        await File.WriteAllTextAsync(configPath, "{}");
+
+        try
+        {
+            var builder = new DebugBundleBuilder();
+            await builder.BuildAsync(
+                new DebugBundleBuildRequest(
+                    OutputZipPath: outputZipPath,
+                    LogsDirectory: logsRoot,
+                    WorkspaceRoot: workspaceRoot,
+                    WorkspaceDbPath: workspaceDbPath,
+                    AppVersion: "1.2.3",
+                    GitCommit: "deadbeef",
+                    LastLogLines: ["line-1", "line-2"],
+                    ConfigurationFiles: [configPath]
+                ),
+                CancellationToken.None
+            );
+
+            Assert.True(File.Exists(outputZipPath));
+
+            using var archive = ZipFile.OpenRead(outputZipPath);
+            var entries = archive.Entries.Select(entry => entry.FullName).ToHashSet(StringComparer.Ordinal);
+            Assert.Contains("workspace/workspace.db", entries);
+            Assert.Contains("workspace/workspace.db-wal", entries);
+            Assert.Contains("workspace/workspace.db-shm", entries);
+            Assert.Contains("diagnostics.json", entries);
+            Assert.Contains("config/settings.json", entries);
+            Assert.Contains(entries, entry => entry.StartsWith("logs/", StringComparison.Ordinal));
+        }
+        finally
+        {
+            TryDeleteDirectory(tempRoot);
+        }
+    }
+
+    private static string? TryGetString(JsonElement element, string propertyName)
+    {
+        if (!element.TryGetProperty(propertyName, out var value))
+        {
+            return null;
+        }
+
+        return value.ValueKind == JsonValueKind.Null
+            ? null
+            : value.ToString();
+    }
+
+    private static IReadOnlyList<JsonElement> ReadStructuredEvents(string logPath)
+    {
+        if (!File.Exists(logPath))
+        {
+            return Array.Empty<JsonElement>();
+        }
+
+        var events = new List<JsonElement>();
+        foreach (var line in File.ReadLines(logPath))
+        {
+            if (string.IsNullOrWhiteSpace(line))
+            {
+                continue;
+            }
+
+            var trimmed = line.Trim();
+            if (!trimmed.StartsWith('{'))
+            {
+                continue;
+            }
+
+            try
+            {
+                using var doc = JsonDocument.Parse(trimmed);
+                events.Add(doc.RootElement.Clone());
+            }
+            catch (JsonException)
+            {
+                // Ignore legacy or malformed lines produced outside this test.
+            }
+        }
+
+        return events;
+    }
+
+    private static string CreateTempDirectory()
+    {
+        var path = Path.Combine(
+            Path.GetTempPath(),
+            "CaseGraph.Core.Tests",
+            Guid.NewGuid().ToString("N")
+        );
+        Directory.CreateDirectory(path);
+        return path;
+    }
+
+    private static void TryDeleteDirectory(string path)
+    {
+        if (!Directory.Exists(path))
+        {
+            return;
+        }
+
+        for (var attempt = 1; attempt <= 5; attempt++)
+        {
+            try
+            {
+                Directory.Delete(path, recursive: true);
+                return;
+            }
+            catch (IOException) when (attempt < 5)
+            {
+                Thread.Sleep(50);
+            }
+            catch (UnauthorizedAccessException) when (attempt < 5)
+            {
+                Thread.Sleep(50);
+            }
+        }
+    }
+
+    private sealed class LogDirectoryOverrideScope : IDisposable
+    {
+        private readonly string? _previous;
+
+        public LogDirectoryOverrideScope(string logsDirectory)
+        {
+            _previous = Environment.GetEnvironmentVariable("CASEGRAPH_LOG_DIRECTORY");
+            Environment.SetEnvironmentVariable("CASEGRAPH_LOG_DIRECTORY", logsDirectory);
+        }
+
+        public void Dispose()
+        {
+            Environment.SetEnvironmentVariable("CASEGRAPH_LOG_DIRECTORY", _previous);
+        }
+    }
+}
+
+[CollectionDefinition("AppFileLoggerEnvironment", DisableParallelization = true)]
+public sealed class AppFileLoggerEnvironmentCollectionDefinition
+{
+}

@@ -1,4 +1,5 @@
 using CaseGraph.Core.Abstractions;
+using CaseGraph.Core.Diagnostics;
 using CaseGraph.Infrastructure.Persistence;
 using CaseGraph.Infrastructure.Persistence.Entities;
 using Microsoft.Data.Sqlite;
@@ -53,6 +54,7 @@ public class WorkspaceDbInitializer : IWorkspaceDbInitializer, IWorkspaceDatabas
         await _semaphore.WaitAsync(ct);
         try
         {
+            using var workspaceScope = AppFileLogger.BeginWorkspaceScope(_workspacePathProvider.WorkspaceRoot);
             var currentWorkspaceDbPath = _workspacePathProvider.WorkspaceDbPath;
             var sameWorkspacePath = string.Equals(
                 _initializedWorkspaceDbPath,
@@ -64,6 +66,16 @@ public class WorkspaceDbInitializer : IWorkspaceDbInitializer, IWorkspaceDatabas
             {
                 return;
             }
+
+            AppFileLogger.LogEvent(
+                eventName: "WorkspaceInitStarted",
+                level: "INFO",
+                message: "Workspace initializer started.",
+                fields: new Dictionary<string, object?>
+                {
+                    ["workspaceDbPath"] = currentWorkspaceDbPath
+                }
+            );
 
             Directory.CreateDirectory(_workspacePathProvider.WorkspaceRoot);
             Directory.CreateDirectory(_workspacePathProvider.CasesRoot);
@@ -105,9 +117,19 @@ public class WorkspaceDbInitializer : IWorkspaceDbInitializer, IWorkspaceDatabas
                 );
             }
 
+            await VerifySchemaHealthAsync(ct);
             await MarkRunningJobsAsAbandonedAsync(ct);
             _initialized = true;
             _initializedWorkspaceDbPath = currentWorkspaceDbPath;
+            AppFileLogger.LogEvent(
+                eventName: "WorkspaceInitCompleted",
+                level: "INFO",
+                message: "Workspace initializer completed.",
+                fields: new Dictionary<string, object?>
+                {
+                    ["workspaceDbPath"] = currentWorkspaceDbPath
+                }
+            );
         }
         finally
         {
@@ -120,6 +142,58 @@ public class WorkspaceDbInitializer : IWorkspaceDbInitializer, IWorkspaceDatabas
         await using var db = await _dbContextFactory.CreateDbContextAsync(ct);
         await db.Database.MigrateAsync(ct);
         await EnsureMessageFtsObjectsAsync(db, ct);
+    }
+
+    private async Task VerifySchemaHealthAsync(CancellationToken ct)
+    {
+        try
+        {
+            await using var db = await _dbContextFactory.CreateDbContextAsync(ct);
+            var appliedMigrations = (await db.Database.GetAppliedMigrationsAsync(ct)).ToArray();
+            var migrationText = appliedMigrations.Length == 0
+                ? "(none)"
+                : string.Join(", ", appliedMigrations);
+            AppFileLogger.LogEvent(
+                eventName: "WorkspaceMigrations",
+                level: "INFO",
+                message: "Workspace migrations loaded.",
+                fields: new Dictionary<string, object?>
+                {
+                    ["migrationCount"] = appliedMigrations.Length,
+                    ["migrations"] = migrationText
+                }
+            );
+
+            var caseCount = await db.Cases.AsNoTracking().CountAsync(ct);
+            AppFileLogger.LogEvent(
+                eventName: "WorkspaceSchemaVerified",
+                level: "INFO",
+                message: "Workspace schema verification query succeeded.",
+                fields: new Dictionary<string, object?>
+                {
+                    ["caseCount"] = caseCount
+                }
+            );
+        }
+        catch (Exception ex)
+        {
+            var correlationId = AppFileLogger.NewCorrelationId();
+            AppFileLogger.LogEvent(
+                eventName: "WorkspaceSchemaVerificationFailed",
+                level: "FATAL",
+                message: "Workspace database verification failed.",
+                ex: ex,
+                fields: new Dictionary<string, object?>
+                {
+                    ["correlationId"] = correlationId,
+                    ["workspaceDbPath"] = _workspacePathProvider.WorkspaceDbPath
+                }
+            );
+            throw new InvalidOperationException(
+                $"Workspace database verification failed. CorrelationId={correlationId}",
+                ex
+            );
+        }
     }
 
     private async Task<DatabaseInspection> InspectDatabaseAsync(CancellationToken ct)
@@ -206,6 +280,11 @@ public class WorkspaceDbInitializer : IWorkspaceDbInitializer, IWorkspaceDatabas
 
     private async Task RepairDatabaseAsync(CancellationToken ct)
     {
+        AppFileLogger.LogEvent(
+            eventName: "WorkspaceRepairStarted",
+            level: "WARN",
+            message: "Workspace database repair started."
+        );
         if (File.Exists(_workspacePathProvider.WorkspaceDbPath))
         {
             await BackupBrokenDatabaseAsync(ct);
@@ -213,6 +292,11 @@ public class WorkspaceDbInitializer : IWorkspaceDbInitializer, IWorkspaceDatabas
 
         await EnsureUpgradedAsync(ct);
         await _workspaceDbRebuilder.RebuildAsync(ct);
+        AppFileLogger.LogEvent(
+            eventName: "WorkspaceRepairCompleted",
+            level: "INFO",
+            message: "Workspace database repair completed."
+        );
     }
 
     private async Task BackupBrokenDatabaseAsync(CancellationToken ct)

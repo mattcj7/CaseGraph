@@ -11,6 +11,44 @@ namespace CaseGraph.Infrastructure.Tests;
 public sealed class WorkspaceDbInitializerTests
 {
     [Fact]
+    public async Task WorkspaceInitializer_WhenDbFileExistsButEmpty_CreatesSchema()
+    {
+        await using var fixture = await WorkspaceFixture.CreateAsync();
+        Directory.CreateDirectory(fixture.PathProvider.WorkspaceRoot);
+        await File.WriteAllBytesAsync(
+            fixture.PathProvider.WorkspaceDbPath,
+            Array.Empty<byte>()
+        );
+
+        var initializer = fixture.Services.GetRequiredService<IWorkspaceDbInitializer>();
+        await initializer.InitializeAsync(CancellationToken.None);
+
+        await using var connection = new SqliteConnection(
+            $"Data Source={fixture.PathProvider.WorkspaceDbPath}"
+        );
+        await connection.OpenAsync();
+
+        Assert.True(await TableExistsAsync(connection, "__EFMigrationsHistory"));
+        Assert.True(await TableExistsAsync(connection, "CaseRecord"));
+    }
+
+    [Fact]
+    public async Task WorkspaceInitializer_ListsMigrationsAndCanQueryCaseRecord()
+    {
+        await using var fixture = await WorkspaceFixture.CreateAsync();
+
+        var initializer = fixture.Services.GetRequiredService<IWorkspaceDbInitializer>();
+        await initializer.InitializeAsync(CancellationToken.None);
+
+        await using var db = await fixture.CreateDbContextAsync();
+        var appliedMigrations = await db.Database.GetAppliedMigrationsAsync();
+        var caseCount = await db.Cases.AsNoTracking().CountAsync();
+
+        Assert.NotEmpty(appliedMigrations);
+        Assert.True(caseCount >= 0);
+    }
+
+    [Fact]
     public async Task InitializeAsync_LegacyDb_BacksUpAndRecreatesWithJobTable()
     {
         await using var fixture = await WorkspaceFixture.CreateAsync();

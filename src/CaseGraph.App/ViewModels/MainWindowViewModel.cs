@@ -35,6 +35,7 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
     private readonly IUserInteractionService _userInteractionService;
     private readonly IDiagnosticsService _diagnosticsService;
     private readonly IWorkspaceMigrationService _workspaceMigrationService;
+    private readonly SafeAsyncActionRunner _safeAsyncActionRunner;
     private readonly IDisposable _jobUpdateSubscription;
     private readonly SemaphoreSlim _jobCompletionRefreshGate = new(1, 1);
 
@@ -104,6 +105,9 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
 
     [ObservableProperty]
     private string operationText = "Ready.";
+
+    [ObservableProperty]
+    private string lastUserAction = "(none)";
 
     [ObservableProperty]
     private double operationProgress;
@@ -313,6 +317,8 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
 
     public IRelayCommand CopyDiagnosticsCommand { get; }
 
+    public IAsyncRelayCommand ExportDebugBundleCommand { get; }
+
     public MainWindowViewModel(
         INavigationService navigationService,
         IThemeService themeService,
@@ -327,7 +333,8 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
         IWorkspacePathProvider workspacePathProvider,
         IUserInteractionService userInteractionService,
         IDiagnosticsService diagnosticsService,
-        IWorkspaceMigrationService workspaceMigrationService
+        IWorkspaceMigrationService workspaceMigrationService,
+        SafeAsyncActionRunner safeAsyncActionRunner
     )
     {
         _navigationService = navigationService;
@@ -344,6 +351,7 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
         _userInteractionService = userInteractionService;
         _diagnosticsService = diagnosticsService;
         _workspaceMigrationService = workspaceMigrationService;
+        _safeAsyncActionRunner = safeAsyncActionRunner;
 
         foreach (var item in _navigationService.GetNavigationItems())
         {
@@ -357,16 +365,19 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
 
         ToggleThemeCommand = new RelayCommand(() => IsDarkTheme = !IsDarkTheme);
         ToggleEvidenceDrawerCommand = new RelayCommand(() => IsEvidenceDrawerOpen = !IsEvidenceDrawerOpen);
-        CreateNewCaseCommand = new AsyncRelayCommand(CreateNewCaseAsync);
-        OpenSelectedCaseCommand = new AsyncRelayCommand(OpenSelectedCaseAsync);
+        CreateNewCaseCommand = CreateSafeAsyncCommand("CreateCase", CreateNewCaseAsync);
+        OpenSelectedCaseCommand = CreateSafeAsyncCommand("OpenCase", OpenSelectedCaseAsync);
         RefreshCasesCommand = new AsyncRelayCommand(() => RefreshCasesAsync(CancellationToken.None));
         ImportFilesCommand = new AsyncRelayCommand(ImportFilesAsync);
         VerifySelectedEvidenceCommand = new AsyncRelayCommand(VerifySelectedEvidenceAsync);
-        ParseMessagesFromEvidenceCommand = new AsyncRelayCommand(ParseMessagesFromSelectedEvidenceAsync);
+        ParseMessagesFromEvidenceCommand = CreateSafeAsyncCommand(
+            "ParseMessages",
+            ParseMessagesFromSelectedEvidenceAsync
+        );
         RefreshLatestMessagesParseJobCommand = new AsyncRelayCommand(RefreshLatestMessagesParseJobManuallyAsync);
         CancelLatestMessagesParseJobCommand = new AsyncRelayCommand(CancelLatestMessagesParseJobAsync);
         RefreshTargetsCommand = new AsyncRelayCommand(() => RefreshTargetsAsync(CancellationToken.None));
-        CreateTargetCommand = new AsyncRelayCommand(CreateTargetAsync);
+        CreateTargetCommand = CreateSafeAsyncCommand("CreateTarget", CreateTargetAsync);
         SaveSelectedTargetCommand = new AsyncRelayCommand(SaveSelectedTargetAsync);
         AddAliasCommand = new AsyncRelayCommand(AddAliasAsync);
         RemoveAliasCommand = new AsyncRelayCommand(RemoveAliasAsync);
@@ -387,6 +398,7 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
         RefreshDiagnosticsCommand = new AsyncRelayCommand(() => RefreshDiagnosticsAsync(CancellationToken.None));
         OpenLogsFolderCommand = new RelayCommand(OpenLogsFolder);
         CopyDiagnosticsCommand = new RelayCommand(CopyDiagnostics);
+        ExportDebugBundleCommand = CreateSafeAsyncCommand("ExportDebugBundle", ExportDebugBundleAsync);
 
         _jobUpdateSubscription = _jobQueueService.JobUpdates.Subscribe(new JobObserver(OnJobUpdated));
 
@@ -528,11 +540,6 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
         {
             OperationText = "Case creation canceled.";
         }
-        catch (Exception ex)
-        {
-            OperationText = "Case creation failed. See diagnostics.";
-            ShowWorkspaceMigrationFailure(ex);
-        }
     }
 
     private async Task OpenSelectedCaseAsync()
@@ -555,11 +562,6 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
         catch (OperationCanceledException)
         {
             OperationText = "Open case canceled.";
-        }
-        catch (Exception ex)
-        {
-            OperationText = "Open case failed. See diagnostics.";
-            ShowWorkspaceMigrationFailure(ex);
         }
     }
 
@@ -584,20 +586,78 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
 
     private async Task EnsureWorkspaceMigratedAsync(CancellationToken ct)
     {
-        await _workspaceMigrationService.EnsureMigratedAsync(ct);
+        try
+        {
+            await _workspaceMigrationService.EnsureMigratedAsync(ct);
+        }
+        catch (Exception ex)
+        {
+            if (Application.Current is App app)
+            {
+                await app.HandleFatalExceptionAsync(
+                    "CaseGraph Workspace Error",
+                    "Workspace database verification failed.",
+                    ex
+                );
+            }
+
+            throw;
+        }
     }
 
-    private void ShowWorkspaceMigrationFailure(Exception ex)
+    private IAsyncRelayCommand CreateSafeAsyncCommand(string actionName, Func<Task> executeAsync)
     {
-        var snapshot = _diagnosticsService.GetSnapshot();
-        var report = UiExceptionReporter.LogFatalException(
-            "Workspace migration/open failed.",
-            ex,
-            _diagnosticsService
+        return new AsyncRelayCommand(() => ExecuteSafeAsync(actionName, executeAsync));
+    }
+
+    private async Task ExecuteSafeAsync(string actionName, Func<Task> executeAsync)
+    {
+        LastUserAction = actionName;
+
+        var caseId = CurrentCaseInfo?.CaseId;
+        var evidenceId = SelectedEvidenceItem?.EvidenceItemId;
+        var result = await _safeAsyncActionRunner.ExecuteAsync(
+            actionName,
+            async _ => await executeAsync(),
+            CancellationToken.None,
+            caseId,
+            evidenceId
         );
+
+        if (result.Succeeded)
+        {
+            return;
+        }
+
+        if (result.Canceled)
+        {
+            if (string.IsNullOrWhiteSpace(OperationText))
+            {
+                OperationText = $"{actionName} canceled.";
+            }
+
+            return;
+        }
+
+        if (Application.Current?.Dispatcher?.HasShutdownStarted == true)
+        {
+            return;
+        }
+
+        var diagnosticsText = _diagnosticsService.BuildDiagnosticsText(
+            $"{actionName} command failed.",
+            result.CorrelationId,
+            result.Exception
+        );
+        var report = new FatalErrorReport(
+            result.CorrelationId,
+            AppFileLogger.GetCurrentLogPath(),
+            diagnosticsText
+        );
+        OperationText = $"{actionName} failed. CorrelationId: {result.CorrelationId}";
         UiExceptionReporter.ShowCrashDialog(
-            "CaseGraph Workspace Error",
-            $"Workspace migration failed while opening or refreshing this workspace.{Environment.NewLine}Workspace DB: {snapshot.WorkspaceDbPath}",
+            "CaseGraph Operation Error",
+            $"The \"{actionName}\" action failed.",
             report,
             _diagnosticsService
         );
@@ -1388,6 +1448,20 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
         );
         _diagnosticsService.CopyDiagnostics(report);
         OperationText = "Diagnostics copied to clipboard.";
+    }
+
+    private async Task ExportDebugBundleAsync()
+    {
+        var defaultFileName = $"casegraph-debug-{DateTimeOffset.UtcNow:yyyyMMdd-HHmmss}.zip";
+        var outputPath = _userInteractionService.PickDebugBundleOutputPath(defaultFileName);
+        if (string.IsNullOrWhiteSpace(outputPath))
+        {
+            OperationText = "Debug bundle export canceled.";
+            return;
+        }
+
+        var bundlePath = await _diagnosticsService.ExportDebugBundleAsync(outputPath, CancellationToken.None);
+        OperationText = $"Debug bundle exported: {bundlePath}";
     }
 
     private void CopyStoredPath()

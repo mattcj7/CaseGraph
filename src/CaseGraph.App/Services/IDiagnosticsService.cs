@@ -11,6 +11,8 @@ public interface IDiagnosticsService
     void CopyDiagnostics(string diagnosticsText);
 
     void OpenLogsFolder();
+
+    Task<string> ExportDebugBundleAsync(string outputZipPath, CancellationToken ct);
 }
 
 public sealed record DiagnosticsSnapshot(

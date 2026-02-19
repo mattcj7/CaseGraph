@@ -14,8 +14,37 @@ internal static class UiExceptionReporter
         IDiagnosticsService? diagnosticsService = null
     )
     {
-        var correlationId = Guid.NewGuid().ToString("N");
-        AppFileLogger.LogFatal(BuildLogContext(context, correlationId), ex);
+        var correlationId = ResolveCorrelationId();
+        AppFileLogger.LogEvent(
+            eventName: "FatalException",
+            level: "FATAL",
+            message: context,
+            ex: ex,
+            fields: BuildStructuredContext(correlationId)
+        );
+        var diagnosticsText = BuildDiagnosticsText(
+            context,
+            correlationId,
+            ex,
+            diagnosticsService
+        );
+        return new FatalErrorReport(correlationId, AppFileLogger.GetCurrentLogPath(), diagnosticsText);
+    }
+
+    public static FatalErrorReport LogHandledException(
+        string context,
+        Exception ex,
+        IDiagnosticsService? diagnosticsService = null
+    )
+    {
+        var correlationId = ResolveCorrelationId();
+        AppFileLogger.LogEvent(
+            eventName: "HandledException",
+            level: "ERROR",
+            message: context,
+            ex: ex,
+            fields: BuildStructuredContext(correlationId)
+        );
         var diagnosticsText = BuildDiagnosticsText(
             context,
             correlationId,
@@ -31,10 +60,15 @@ internal static class UiExceptionReporter
         IDiagnosticsService? diagnosticsService = null
     )
     {
-        var correlationId = Guid.NewGuid().ToString("N");
-        var details =
-            $"{BuildLogContext(context, correlationId)} ExceptionObject={exceptionObject ?? "(null)"}";
-        AppFileLogger.Log($"[FATAL] {details}");
+        var correlationId = ResolveCorrelationId();
+        var fields = BuildStructuredContext(correlationId);
+        fields["exceptionObject"] = exceptionObject?.ToString() ?? "(null)";
+        AppFileLogger.LogEvent(
+            eventName: "FatalExceptionObject",
+            level: "FATAL",
+            message: context,
+            fields: fields
+        );
         var diagnosticsText = BuildDiagnosticsText(
             context,
             correlationId,
@@ -68,13 +102,40 @@ internal static class UiExceptionReporter
         dialog.ShowDialog();
     }
 
-    private static string BuildLogContext(string context, string correlationId)
+    private static string ResolveCorrelationId()
     {
+        var scoped = AppFileLogger.GetScopeValue("correlationId");
+        return string.IsNullOrWhiteSpace(scoped)
+            ? AppFileLogger.NewCorrelationId()
+            : scoped;
+    }
+
+    private static Dictionary<string, object?> BuildStructuredContext(string correlationId)
+    {
+        var context = new Dictionary<string, object?>
+        {
+            ["correlationId"] = correlationId
+        };
+
         var caseId = TryGetActiveCaseId();
-        var caseText = caseId?.ToString("D") ?? "(none)";
-        var view = TryGetActiveView() ?? "(none)";
-        var action = TryGetActiveAction() ?? "(none)";
-        return $"{context} CorrelationId={correlationId} CaseId={caseText} View={view} Action={action}";
+        if (caseId.HasValue)
+        {
+            context["caseId"] = caseId.Value.ToString("D");
+        }
+
+        var view = TryGetActiveView();
+        if (!string.IsNullOrWhiteSpace(view))
+        {
+            context["view"] = view;
+        }
+
+        var action = TryGetActiveAction();
+        if (!string.IsNullOrWhiteSpace(action))
+        {
+            context["actionName"] = action;
+        }
+
+        return context;
     }
 
     private static Guid? TryGetActiveCaseId()
@@ -94,7 +155,7 @@ internal static class UiExceptionReporter
     private static string? TryGetActiveAction()
     {
         return Application.Current?.MainWindow?.DataContext is MainWindowViewModel vm
-            ? vm.OperationText
+            ? string.IsNullOrWhiteSpace(vm.LastUserAction) ? vm.OperationText : vm.LastUserAction
             : null;
     }
 

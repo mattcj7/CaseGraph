@@ -6,5 +6,7 @@ public interface IUserInteractionService
 
     IReadOnlyList<string> PickEvidenceFiles();
 
+    string? PickDebugBundleOutputPath(string defaultFileName);
+
     void CopyToClipboard(string value);
 }

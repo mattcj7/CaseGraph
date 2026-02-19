@@ -1,6 +1,7 @@
 using CaseGraph.App.Services;
 using CaseGraph.App.ViewModels;
 using CaseGraph.Core.Abstractions;
+using CaseGraph.Core.Diagnostics;
 using CaseGraph.Infrastructure.Persistence;
 using CaseGraph.Infrastructure.Services;
 using Microsoft.EntityFrameworkCore;
@@ -25,6 +26,8 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<INavigationService, NavigationService>();
         services.AddSingleton<IThemeService, ThemeService>();
         services.AddSingleton<IUserInteractionService, UserInteractionService>();
+        services.AddSingleton<SafeAsyncActionRunner>();
+        services.AddSingleton<DebugBundleBuilder>();
         services.AddSingleton<IDiagnosticsService, DiagnosticsService>();
         services.AddSingleton<IWorkspaceMigrationService, WorkspaceMigrationService>();
         services.AddSingleton<IClock, SystemClock>();

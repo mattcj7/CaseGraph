@@ -35,6 +35,30 @@ public sealed class UserInteractionService : IUserInteractionService
         return fileDialog.FileNames;
     }
 
+    public string? PickDebugBundleOutputPath(string defaultFileName)
+    {
+        var desktopPath = Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory);
+        if (string.IsNullOrWhiteSpace(desktopPath))
+        {
+            desktopPath = Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments);
+        }
+
+        var fileDialog = new SaveFileDialog
+        {
+            AddExtension = true,
+            CheckPathExists = true,
+            DefaultExt = ".zip",
+            Filter = "ZIP archive (*.zip)|*.zip|All files (*.*)|*.*",
+            FileName = string.IsNullOrWhiteSpace(defaultFileName)
+                ? "casegraph-debug.zip"
+                : defaultFileName,
+            InitialDirectory = desktopPath
+        };
+
+        var result = fileDialog.ShowDialog(Application.Current.MainWindow);
+        return result == true ? fileDialog.FileName : null;
+    }
+
     public void CopyToClipboard(string value)
     {
         if (string.IsNullOrWhiteSpace(value))

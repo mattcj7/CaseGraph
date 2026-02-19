@@ -10,125 +10,114 @@ This file tracks planned, active, and completed tickets.
   - **Completed Tickets** (append-only)
 
 ## Active Ticket
+- ID: T0010
+- Title: Observability v1 + Workflow Hardening (structured logs, correlation IDs, debug bundle, Codex guardrails)
 
-# Ticket: T0009C - Workspace open/create hardening (EF migrations + crash logging + smoke tests)
+## Active Ticket Spec
+```md
+# Ticket: T0010 - Observability v1 + Workflow Hardening
 
 ## Goal
-Stop crashes when:
-- Opening an old case workspace DB
-- Creating a new case
-- Starting a job (e.g., MessagesIngest) after opening/creating a case
+Make crashes and regressions diagnosable and prevent process drift:
+1) Structured logging with correlation IDs across UI actions, jobs, and workspace operations
+2) Guaranteed global exception capture (WPF + background tasks) so “silent crashes” always yield a stack trace in logs
+3) A one-click “Debug Bundle” export (logs + workspace DB + config + last log lines)
+4) Repo guardrails so Codex always updates tickets/ADRs and follows constraints
 
-Also ensure every crash produces a usable log + stack trace, and add smoke tests that would catch these regressions.
+## Scope
 
-## Context / Diagnosis
-We have old workspace DBs that only contain the initial migration and are missing later tables (Targets/Identifiers).
-Current app code appears to open/switch workspaces without applying migrations, and some UI-thread exceptions are not being captured by the logger (app exits with no helpful stack trace in the app log).
+### A) Structured logging (JSON) + scopes
+- Switch logging output to JSON lines (one event per line).
+- Standard fields on every event:
+  - timestampUtc, level, eventName/eventId, correlationId
+  - caseId (if available), evidenceId, jobId, actionName (if applicable)
+- Add BeginScope helpers:
+  - `ActionScope` (OpenCase/CreateCase/ParseMessages/CreateTarget)
+  - `JobScope` (JobId, JobType)
+  - `WorkspaceScope` (workspace path)
+- Keep evidence content out of logs by default (no message bodies, no PII). Log counts/hashes instead.
 
-## Requirements
+### B) Global exception capture (no more missing stack traces)
+Wire in App startup:
+- Application.DispatcherUnhandledException
+- TaskScheduler.UnobservedTaskException
+- AppDomain.CurrentDomain.UnhandledException
 
-### A) Always migrate on workspace open/switch
-- Replace any `EnsureCreated()` usage for existing DBs with `Database.Migrate()`.
-- Ensure migration runs:
-  1) at app startup (default workspace root DB)
-  2) whenever user opens/switches to an existing workspace DB path
-- If migration fails:
-  - Do NOT crash
-  - Show a friendly error dialog with:
-    - summary (what failed)
-    - the DB path
-    - the log path
-    - a “Copy diagnostics” button
-  - Log full exception details
+Requirements:
+- Generate correlationId if missing
+- Log full Exception.ToString() with correlationId
+- Show crash dialog containing correlationId + log folder path
+- Flush logs best-effort and shutdown cleanly (no “ghost process”)
 
-### B) Crash-proof exception capture (WPF + background tasks)
-Add global handlers in `CaseGraph.App` startup:
-- `Application.DispatcherUnhandledException`
-- `AppDomain.CurrentDomain.UnhandledException`
-- `TaskScheduler.UnobservedTaskException`
+### C) Safe async command wrapper (logs success/fail)
+Implement a common `AsyncRelayCommand` (or similar) that:
+- logs start + success + failure (with durationMs)
+- catches exceptions (never lets them escape UI thread)
+- attaches correlationId scope for the whole action
+Convert key UI actions to use it:
+- OpenCase
+- CreateCase
+- ParseMessages
+- CreateTarget (and any other common action)
 
-Behavior:
-- Log full exception + stack trace as FATAL
-- Flush logs (best-effort)
-- Show a crash dialog with:
-  - “What happened”
-  - “Where the logs are”
-  - “Copy diagnostics”
-- Then shutdown cleanly (or allow continue only if safe—default to shutdown)
+### D) Debug Bundle export
+Add a UI action “Export Debug Bundle” that:
+- zips:
+  - logs folder
+  - active workspace.db + wal + shm
+  - app config/settings (if any)
+  - a small `diagnostics.json` file containing:
+    - app version/commit (if available)
+    - OS + dotnet version
+    - active workspace path
+    - last 2000 log lines (or last 1MB)
+- Saves to user-selected location (default Desktop) and shows the file path.
 
-### C) Add a Diagnostics surface in the UI
-Add a simple “Diagnostics” view (or modal) reachable from the main window:
-- Shows:
-  - App version / git commit (if available)
-  - Workspace root + active workspace DB path
-  - Last 50 log lines (read-only)
-  - Button: “Open logs folder”
-  - Button: “Copy diagnostics”
+### E) Workflow hardening artifacts
+Add:
+1) `AGENTS.md` in repo root with Codex rules:
+   - tickets only in Docs/TICKETS.md
+   - update Upcoming/Completed each run
+   - run dotnet test before finishing
+   - ADR update rules
+   - offline-only constraints and provenance/audit rules
+2) `Docs/DEBUGGING.md`:
+   - where logs live
+   - how to export bundle
+   - what to attach when reporting a bug
+3) `tools/validate-repo.ps1`:
+   - fails if root ticket files exist
+   - fails if Docs/TICKETS.md missing
+   - fails if AGENTS.md missing
 
-### D) Smoke tests to catch these crashes
-Add integration-ish tests in `CaseGraph.Infrastructure.Tests` (or appropriate test project):
+### F) Tests
+Add tests that enforce observability behaviors:
+1) A unit test for AsyncRelayCommand:
+   - on exception, it logs failure and does not throw on UI dispatcher
+2) A unit test that correlationId is present in log scope for an action
+3) A lightweight test that Debug Bundle builder includes required files list (mock file system ok)
 
-1) `Workspace_Migrate_OldDb_UpgradesToLatest`
-- Arrange: copy an “old schema” DB fixture into a temp folder
-- Act: run initializer / open workspace
-- Assert:
-  - `__EFMigrationsHistory` contains latest migration id
-  - expected tables exist (`TargetRecord`, `IdentifierRecord`, etc.)
-  - no exceptions thrown
-
-2) `Workspace_Open_OldDb_DoesNotThrow_WhenLoadingCase`
-- Arrange: old DB fixture contains at least one CaseRecord
-- Act: open workspace and load basic case summary query
-- Assert: no throw
-
-3) `App_SelfTest_ReturnsSuccess`
-Add a CLI flag to the app project:
-- `CaseGraph.App --self-test`
-which:
-  - builds host
-  - opens workspace
-  - migrates
-  - runs a trivial query
-  - exits 0 on success, non-zero on failure
-Then test it from a test using `ProcessStartInfo`.
-
-### E) Guardrails: jobs should never crash the app
-- Confirm JobRunner exceptions are contained and only affect job status.
-- Any job failure must:
-  - mark job failed
-  - store error text
-  - log exception
-  - NOT bring down the UI process
-
-### F) Documentation / Workflow
-- Update `Docs/TICKETS.md`:
-  - Keep **Upcoming Tickets** and **Completed Tickets** accurate.
-  - When T0009C is done, move it to Completed with date + 1-line summary.
-- Add an ADR entry in `Docs/ADR.md`:
-  - “ADR: Workspace DB migration strategy”
-  - State that we use EF Migrations and run `Database.Migrate()` on open.
+(Do not add external heavy packages; keep tests fast.)
 
 ## Acceptance Criteria
-- Opening the provided old-case DB no longer crashes; it migrates and loads.
-- Creating a new case no longer crashes.
-- Any crash produces a clear log entry with stack trace and shows a crash dialog with log path.
-- Tests added and passing:
-  - old DB migrates to latest
-  - open old case doesn’t throw
-  - self-test passes
-- Docs updated (Tickets + ADR).
-
-
+- [ ] Any crash shows correlationId and writes stack trace to log.
+- [ ] OpenCase/CreateCase/ParseMessages/CreateTarget log start/end/fail with correlationId + duration.
+- [ ] Debug Bundle export works and includes logs + workspace db (+ wal/shm).
+- [ ] Repo guardrails files exist (AGENTS.md, Docs/DEBUGGING.md, tools/validate-repo.ps1).
+- [ ] dotnet test passes.
+- [ ] Docs/TICKETS.md updated (move T0010 to Completed with date + summary once verified).
 
 ## Codex Instructions
 - Implement ONLY this ticket scope.
-- No silent merges; follow offline-first constraints.
-- Keep queries AsNoTracking and contexts short-lived.
+- Keep logs redacted (no evidence content).
 - End with summary + files changed + verify steps + tests run.
 
 
+
+
+```
+
 ## Upcoming Tickets
-- T0010 - Association graph v1 and relationship visualization (pending spec authoring).
 - T0011 - Workflow hardening (AGENTS.md + DEBUGGING.md + validate script + Codex prompt template) (pending spec authoring)
 - T0012 - Smoke tests (WPF XAML load + SQLite translation tests) (pending spec authoring)
 
@@ -151,3 +140,5 @@ Then test it from a test using `ProcessStartInfo`.
 - 2026-02-17 - T0009B - Moved latest/recent job reads into a SQLite-safe infrastructure job query service with integration coverage, and added correlation-aware UI exception logging across global handlers.
 - 2026-02-18 - T0009B - Added SQLite-safe case/audit query services for Open Case flows, switched VM reads to those services, and added UseSqlite integration coverage for case/evidence/audit ordering.
 - 2026-02-18 - T0009C - Hardened workspace open/create with migration-on-open, fatal crash diagnostics UX, diagnostics page, self-test CLI, and old-DB smoke coverage.
+- 2026-02-19 - T0009D - Added safe async command containment for key flows, workspace initializer migration/query verification logging, and SQLite regression tests for empty-db initialization.
+- 2026-02-19 - T0010 - Added structured JSON logging scopes/correlation, safe async action containment, debug bundle export UX, observability tests, and repository guardrail docs/scripts.
