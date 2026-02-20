@@ -26,6 +26,14 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<INavigationService, NavigationService>();
         services.AddSingleton<IThemeService, ThemeService>();
         services.AddSingleton<IUserInteractionService, UserInteractionService>();
+        services.AddSingleton<IAppRuntimePaths, AppRuntimePaths>();
+        services.AddSingleton<IRegistryValueStore, WindowsCurrentUserRegistryValueStore>();
+        services.AddSingleton<ICrashDumpService, CrashDumpService>();
+        services.AddSingleton<ISessionJournal>(provider =>
+        {
+            var runtimePaths = provider.GetRequiredService<IAppRuntimePaths>();
+            return new SessionJournal(runtimePaths.SessionDirectory, maxLines: 500);
+        });
         services.AddSingleton<SafeAsyncActionRunner>();
         services.AddSingleton<DebugBundleBuilder>();
         services.AddSingleton<IDiagnosticsService, DiagnosticsService>();

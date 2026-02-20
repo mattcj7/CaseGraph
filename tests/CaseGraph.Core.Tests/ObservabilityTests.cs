@@ -1,4 +1,5 @@
 using CaseGraph.Core.Diagnostics;
+using Microsoft.Data.Sqlite;
 using System.IO.Compression;
 using System.Text.Json;
 
@@ -89,16 +90,20 @@ public sealed class ObservabilityTests
         var tempRoot = CreateTempDirectory();
         var workspaceRoot = Path.Combine(tempRoot, "workspace");
         var logsRoot = Path.Combine(tempRoot, "logs");
+        var dumpsRoot = Path.Combine(tempRoot, "dumps");
+        var sessionRoot = Path.Combine(tempRoot, "session");
         Directory.CreateDirectory(workspaceRoot);
         Directory.CreateDirectory(logsRoot);
+        Directory.CreateDirectory(dumpsRoot);
+        Directory.CreateDirectory(sessionRoot);
 
         var workspaceDbPath = Path.Combine(workspaceRoot, "workspace.db");
         var outputZipPath = Path.Combine(tempRoot, "bundle.zip");
         var configPath = Path.Combine(tempRoot, "settings.json");
         await File.WriteAllTextAsync(Path.Combine(logsRoot, "app-20260219.log"), "{\"event\":\"x\"}");
-        await File.WriteAllTextAsync(workspaceDbPath, "db");
-        await File.WriteAllTextAsync($"{workspaceDbPath}-wal", "wal");
-        await File.WriteAllTextAsync($"{workspaceDbPath}-shm", "shm");
+        await File.WriteAllTextAsync(Path.Combine(dumpsRoot, "crash-001.dmp"), "dump");
+        await File.WriteAllTextAsync(Path.Combine(sessionRoot, "session.jsonl"), "{\"event\":\"SessionStarted\"}");
+        await CreateWorkspaceDbAsync(workspaceDbPath);
         await File.WriteAllTextAsync(configPath, "{}");
 
         try
@@ -113,7 +118,9 @@ public sealed class ObservabilityTests
                     AppVersion: "1.2.3",
                     GitCommit: "deadbeef",
                     LastLogLines: ["line-1", "line-2"],
-                    ConfigurationFiles: [configPath]
+                    ConfigurationFiles: [configPath],
+                    DumpsDirectory: dumpsRoot,
+                    SessionDirectory: sessionRoot
                 ),
                 CancellationToken.None
             );
@@ -122,12 +129,62 @@ public sealed class ObservabilityTests
 
             using var archive = ZipFile.OpenRead(outputZipPath);
             var entries = archive.Entries.Select(entry => entry.FullName).ToHashSet(StringComparer.Ordinal);
-            Assert.Contains("workspace/workspace.db", entries);
-            Assert.Contains("workspace/workspace.db-wal", entries);
-            Assert.Contains("workspace/workspace.db-shm", entries);
+            Assert.Contains("workspace.snapshot.db", entries);
             Assert.Contains("diagnostics.json", entries);
             Assert.Contains("config/settings.json", entries);
             Assert.Contains(entries, entry => entry.StartsWith("logs/", StringComparison.Ordinal));
+            Assert.Contains(entries, entry => entry.StartsWith("dumps/", StringComparison.Ordinal));
+            Assert.Contains(entries, entry => entry.StartsWith("session/", StringComparison.Ordinal));
+        }
+        finally
+        {
+            TryDeleteDirectory(tempRoot);
+        }
+    }
+
+    [Fact]
+    public async Task DebugBundleBuilder_WhenWorkspaceDbConnectionOpen_SucceedsAndIncludesSnapshot()
+    {
+        var tempRoot = CreateTempDirectory();
+        var workspaceRoot = Path.Combine(tempRoot, "workspace");
+        var logsRoot = Path.Combine(tempRoot, "logs");
+        Directory.CreateDirectory(workspaceRoot);
+        Directory.CreateDirectory(logsRoot);
+
+        var workspaceDbPath = Path.Combine(workspaceRoot, "workspace.db");
+        var outputZipPath = Path.Combine(tempRoot, "bundle-open-connection.zip");
+        await File.WriteAllTextAsync(Path.Combine(logsRoot, "app-20260219.log"), "{\"event\":\"x\"}");
+        await CreateWorkspaceDbAsync(workspaceDbPath);
+
+        try
+        {
+            await using var openConnection = new SqliteConnection($"Data Source={workspaceDbPath}");
+            await openConnection.OpenAsync();
+            await using (var touch = openConnection.CreateCommand())
+            {
+                touch.CommandText = "SELECT COUNT(*) FROM TestRecord;";
+                await touch.ExecuteScalarAsync();
+            }
+
+            var builder = new DebugBundleBuilder();
+            await builder.BuildAsync(
+                new DebugBundleBuildRequest(
+                    OutputZipPath: outputZipPath,
+                    LogsDirectory: logsRoot,
+                    WorkspaceRoot: workspaceRoot,
+                    WorkspaceDbPath: workspaceDbPath,
+                    AppVersion: "1.2.3",
+                    GitCommit: "deadbeef",
+                    LastLogLines: ["line-1", "line-2"],
+                    ConfigurationFiles: Array.Empty<string>()
+                ),
+                CancellationToken.None
+            );
+
+            using var archive = ZipFile.OpenRead(outputZipPath);
+            var snapshotEntry = archive.GetEntry("workspace.snapshot.db");
+            Assert.NotNull(snapshotEntry);
+            Assert.True(snapshotEntry.Length > 0);
         }
         finally
         {
@@ -200,6 +257,7 @@ public sealed class ObservabilityTests
             return;
         }
 
+        SqliteConnection.ClearAllPools();
         for (var attempt = 1; attempt <= 5; attempt++)
         {
             try
@@ -209,13 +267,40 @@ public sealed class ObservabilityTests
             }
             catch (IOException) when (attempt < 5)
             {
+                SqliteConnection.ClearAllPools();
                 Thread.Sleep(50);
             }
             catch (UnauthorizedAccessException) when (attempt < 5)
             {
+                SqliteConnection.ClearAllPools();
                 Thread.Sleep(50);
             }
+            catch (IOException)
+            {
+                return;
+            }
+            catch (UnauthorizedAccessException)
+            {
+                return;
+            }
         }
+    }
+
+    private static async Task CreateWorkspaceDbAsync(string workspaceDbPath)
+    {
+        await using var connection = new SqliteConnection($"Data Source={workspaceDbPath}");
+        await connection.OpenAsync();
+
+        await using var create = connection.CreateCommand();
+        create.CommandText =
+            """
+            CREATE TABLE IF NOT EXISTS TestRecord (
+                Id INTEGER PRIMARY KEY,
+                Name TEXT NOT NULL
+            );
+            INSERT INTO TestRecord(Name) VALUES ('alpha');
+            """;
+        await create.ExecuteNonQueryAsync();
     }
 
     private sealed class LogDirectoryOverrideScope : IDisposable

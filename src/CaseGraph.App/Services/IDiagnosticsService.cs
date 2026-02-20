@@ -12,6 +12,10 @@ public interface IDiagnosticsService
 
     void OpenLogsFolder();
 
+    void SetCrashDumpsEnabled(bool enabled);
+
+    void OpenDumpsFolder();
+
     Task<string> ExportDebugBundleAsync(string outputZipPath, CancellationToken ct);
 }
 
@@ -22,5 +26,10 @@ public sealed record DiagnosticsSnapshot(
     string WorkspaceDbPath,
     string CasesRoot,
     string LogsDirectory,
-    string CurrentLogPath
+    string CurrentLogPath,
+    bool CrashDumpsEnabled,
+    string DumpsDirectory,
+    string SessionDirectory,
+    string SessionJournalPath,
+    bool PreviousSessionEndedUnexpectedly
 );

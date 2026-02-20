@@ -64,6 +64,19 @@
             <Border Grid.Column="0" Style="{StaticResource PlaceholderHintBorderStyle}">
                 <StackPanel>
                     <TextBlock Text="Environment" Style="{StaticResource SectionTitleTextStyle}" />
+                    <TextBlock Margin="{StaticResource SpaceTop12}"
+                               Text="Previous session ended unexpectedly; export a debug bundle.">
+                        <TextBlock.Style>
+                            <Style TargetType="TextBlock" BasedOn="{StaticResource BodyTextStyle}">
+                                <Setter Property="Visibility" Value="Collapsed" />
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding DiagnosticsPreviousSessionEndedUnexpectedly}" Value="True">
+                                        <Setter Property="Visibility" Value="Visible" />
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </TextBlock.Style>
+                    </TextBlock>
 
                     <TextBlock Margin="{StaticResource SpaceTop12}"
                                Style="{StaticResource SecondaryBodyTextStyle}"
@@ -110,6 +123,48 @@
                                Text="Current Log Path" />
                     <TextBlock Style="{StaticResource BodyTextStyle}"
                                Text="{Binding DiagnosticsCurrentLogPath}"
+                               TextWrapping="Wrap" />
+
+                    <TextBlock Margin="{StaticResource SpaceTop12}"
+                               Style="{StaticResource SecondaryBodyTextStyle}"
+                               Text="Crash Dumps Enabled" />
+                    <TextBlock Style="{StaticResource BodyTextStyle}"
+                               Text="{Binding DiagnosticsCrashDumpsEnabled}" />
+
+                    <TextBlock Margin="{StaticResource SpaceTop12}"
+                               Style="{StaticResource SecondaryBodyTextStyle}"
+                               Text="Dumps Directory" />
+                    <TextBlock Style="{StaticResource BodyTextStyle}"
+                               Text="{Binding DiagnosticsDumpsDirectory}"
+                               TextWrapping="Wrap" />
+
+                    <StackPanel Margin="{StaticResource SpaceTop12}"
+                                Orientation="Horizontal">
+                        <Button Content="Enable Dumps"
+                                Command="{Binding EnableCrashDumpsCommand}"
+                                Style="{StaticResource TopBarButtonStyle}" />
+                        <Button Margin="8,0,0,0"
+                                Content="Disable Dumps"
+                                Command="{Binding DisableCrashDumpsCommand}"
+                                Style="{StaticResource TopBarButtonStyle}" />
+                        <Button Margin="8,0,0,0"
+                                Content="Open Dumps Folder"
+                                Command="{Binding OpenDumpsFolderCommand}"
+                                Style="{StaticResource TopBarButtonStyle}" />
+                    </StackPanel>
+
+                    <TextBlock Margin="{StaticResource SpaceTop12}"
+                               Style="{StaticResource SecondaryBodyTextStyle}"
+                               Text="Session Directory" />
+                    <TextBlock Style="{StaticResource BodyTextStyle}"
+                               Text="{Binding DiagnosticsSessionDirectory}"
+                               TextWrapping="Wrap" />
+
+                    <TextBlock Margin="{StaticResource SpaceTop12}"
+                               Style="{StaticResource SecondaryBodyTextStyle}"
+                               Text="Session Journal" />
+                    <TextBlock Style="{StaticResource BodyTextStyle}"
+                               Text="{Binding DiagnosticsSessionJournalPath}"
                                TextWrapping="Wrap" />
                 </StackPanel>
             </Border>

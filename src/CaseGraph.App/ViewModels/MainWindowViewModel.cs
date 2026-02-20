@@ -36,6 +36,7 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
     private readonly IDiagnosticsService _diagnosticsService;
     private readonly IWorkspaceMigrationService _workspaceMigrationService;
     private readonly SafeAsyncActionRunner _safeAsyncActionRunner;
+    private readonly ISessionJournal _sessionJournal;
     private readonly IDisposable _jobUpdateSubscription;
     private readonly SemaphoreSlim _jobCompletionRefreshGate = new(1, 1);
 
@@ -214,6 +215,21 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
     [ObservableProperty]
     private string diagnosticsLastLogLinesText = "(no log lines)";
 
+    [ObservableProperty]
+    private bool diagnosticsCrashDumpsEnabled;
+
+    [ObservableProperty]
+    private string diagnosticsDumpsDirectory = string.Empty;
+
+    [ObservableProperty]
+    private string diagnosticsSessionDirectory = string.Empty;
+
+    [ObservableProperty]
+    private string diagnosticsSessionJournalPath = string.Empty;
+
+    [ObservableProperty]
+    private bool diagnosticsPreviousSessionEndedUnexpectedly;
+
     public bool HasSelectedEvidenceItem => SelectedEvidenceItem is not null;
 
     public string CurrentCaseSummary => CurrentCaseInfo is null
@@ -317,6 +333,12 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
 
     public IRelayCommand CopyDiagnosticsCommand { get; }
 
+    public IRelayCommand EnableCrashDumpsCommand { get; }
+
+    public IRelayCommand DisableCrashDumpsCommand { get; }
+
+    public IRelayCommand OpenDumpsFolderCommand { get; }
+
     public IAsyncRelayCommand ExportDebugBundleCommand { get; }
 
     public MainWindowViewModel(
@@ -334,7 +356,8 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
         IUserInteractionService userInteractionService,
         IDiagnosticsService diagnosticsService,
         IWorkspaceMigrationService workspaceMigrationService,
-        SafeAsyncActionRunner safeAsyncActionRunner
+        SafeAsyncActionRunner safeAsyncActionRunner,
+        ISessionJournal sessionJournal
     )
     {
         _navigationService = navigationService;
@@ -352,6 +375,7 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
         _diagnosticsService = diagnosticsService;
         _workspaceMigrationService = workspaceMigrationService;
         _safeAsyncActionRunner = safeAsyncActionRunner;
+        _sessionJournal = sessionJournal;
 
         foreach (var item in _navigationService.GetNavigationItems())
         {
@@ -398,6 +422,9 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
         RefreshDiagnosticsCommand = new AsyncRelayCommand(() => RefreshDiagnosticsAsync(CancellationToken.None));
         OpenLogsFolderCommand = new RelayCommand(OpenLogsFolder);
         CopyDiagnosticsCommand = new RelayCommand(CopyDiagnostics);
+        EnableCrashDumpsCommand = new RelayCommand(() => SetCrashDumpsEnabled(true));
+        DisableCrashDumpsCommand = new RelayCommand(() => SetCrashDumpsEnabled(false));
+        OpenDumpsFolderCommand = new RelayCommand(OpenDumpsFolder);
         ExportDebugBundleCommand = CreateSafeAsyncCommand("ExportDebugBundle", ExportDebugBundleAsync);
 
         _jobUpdateSubscription = _jobQueueService.JobUpdates.Subscribe(new JobObserver(OnJobUpdated));
@@ -424,6 +451,15 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
             return;
         }
 
+        _sessionJournal.WriteEvent(
+            "NavigationChanged",
+            new Dictionary<string, object?>
+            {
+                ["page"] = value.Page.ToString(),
+                ["title"] = value.Title
+            }
+        );
+
         CurrentView = _navigationService.CreateView(value.Page);
         if (value.Page == NavigationPage.Diagnostics)
         {
@@ -446,6 +482,15 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
 
     partial void OnCurrentCaseInfoChanged(CaseInfo? value)
     {
+        _sessionJournal.WriteEvent(
+            "CaseChanged",
+            new Dictionary<string, object?>
+            {
+                ["caseId"] = value?.CaseId.ToString("D"),
+                ["caseName"] = value?.Name
+            }
+        );
+
         OnPropertyChanged(nameof(CurrentCaseSummary));
         OnPropertyChanged(nameof(SelectedStoredAbsolutePath));
         UpdateSelectedEvidenceVerifyStatus();
@@ -616,21 +661,51 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
 
         var caseId = CurrentCaseInfo?.CaseId;
         var evidenceId = SelectedEvidenceItem?.EvidenceItemId;
+        var correlationId = AppFileLogger.NewCorrelationId();
+        _sessionJournal.WriteEvent(
+            "UiActionStarted",
+            BuildActionJournalFields(actionName, caseId, evidenceId, status: "Started"),
+            correlationId
+        );
+
         var result = await _safeAsyncActionRunner.ExecuteAsync(
             actionName,
             async _ => await executeAsync(),
             CancellationToken.None,
             caseId,
-            evidenceId
+            evidenceId,
+            correlationId
         );
 
         if (result.Succeeded)
         {
+            _sessionJournal.WriteEvent(
+                "UiActionSucceeded",
+                BuildActionJournalFields(
+                    actionName,
+                    caseId,
+                    evidenceId,
+                    status: "Succeeded",
+                    durationMs: result.DurationMs
+                ),
+                result.CorrelationId
+            );
             return;
         }
 
         if (result.Canceled)
         {
+            _sessionJournal.WriteEvent(
+                "UiActionCanceled",
+                BuildActionJournalFields(
+                    actionName,
+                    caseId,
+                    evidenceId,
+                    status: "Canceled",
+                    durationMs: result.DurationMs
+                ),
+                result.CorrelationId
+            );
             if (string.IsNullOrWhiteSpace(OperationText))
             {
                 OperationText = $"{actionName} canceled.";
@@ -638,6 +713,19 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
 
             return;
         }
+
+        _sessionJournal.WriteEvent(
+            "UiActionFailed",
+            BuildActionJournalFields(
+                actionName,
+                caseId,
+                evidenceId,
+                status: "Failed",
+                durationMs: result.DurationMs,
+                error: result.Exception?.ToString()
+            ),
+            result.CorrelationId
+        );
 
         if (Application.Current?.Dispatcher?.HasShutdownStarted == true)
         {
@@ -655,12 +743,54 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
             diagnosticsText
         );
         OperationText = $"{actionName} failed. CorrelationId: {result.CorrelationId}";
+        var whatHappened = actionName == "ExportDebugBundle"
+            && !string.IsNullOrWhiteSpace(result.Exception?.Message)
+            ? result.Exception!.Message
+            : $"The \"{actionName}\" action failed.";
         UiExceptionReporter.ShowCrashDialog(
             "CaseGraph Operation Error",
-            $"The \"{actionName}\" action failed.",
+            whatHappened,
             report,
             _diagnosticsService
         );
+    }
+
+    private static IReadOnlyDictionary<string, object?> BuildActionJournalFields(
+        string actionName,
+        Guid? caseId,
+        Guid? evidenceId,
+        string status,
+        long? durationMs = null,
+        string? error = null
+    )
+    {
+        var fields = new Dictionary<string, object?>
+        {
+            ["actionName"] = actionName,
+            ["status"] = status
+        };
+
+        if (caseId.HasValue)
+        {
+            fields["caseId"] = caseId.Value.ToString("D");
+        }
+
+        if (evidenceId.HasValue)
+        {
+            fields["evidenceId"] = evidenceId.Value.ToString("D");
+        }
+
+        if (durationMs.HasValue)
+        {
+            fields["durationMs"] = durationMs.Value;
+        }
+
+        if (!string.IsNullOrWhiteSpace(error))
+        {
+            fields["error"] = error;
+        }
+
+        return fields;
     }
 
     private async Task ImportFilesAsync()
@@ -1409,6 +1539,11 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
             DiagnosticsCasesRoot = snapshot.CasesRoot;
             DiagnosticsLogsDirectory = snapshot.LogsDirectory;
             DiagnosticsCurrentLogPath = snapshot.CurrentLogPath;
+            DiagnosticsCrashDumpsEnabled = snapshot.CrashDumpsEnabled;
+            DiagnosticsDumpsDirectory = snapshot.DumpsDirectory;
+            DiagnosticsSessionDirectory = snapshot.SessionDirectory;
+            DiagnosticsSessionJournalPath = snapshot.SessionJournalPath;
+            DiagnosticsPreviousSessionEndedUnexpectedly = snapshot.PreviousSessionEndedUnexpectedly;
 
             var lines = await _diagnosticsService.ReadLastLogLinesAsync(50, ct);
             DiagnosticsLastLogLinesText = lines.Count == 0
@@ -1450,6 +1585,43 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
         OperationText = "Diagnostics copied to clipboard.";
     }
 
+    private void SetCrashDumpsEnabled(bool enabled)
+    {
+        try
+        {
+            _diagnosticsService.SetCrashDumpsEnabled(enabled);
+            _sessionJournal.WriteEvent(
+                "CrashDumpsToggled",
+                new Dictionary<string, object?>
+                {
+                    ["enabled"] = enabled
+                }
+            );
+            OperationText = enabled
+                ? "Crash dumps enabled."
+                : "Crash dumps disabled.";
+            _ = RefreshDiagnosticsAsync(CancellationToken.None);
+        }
+        catch (Exception ex)
+        {
+            AppFileLogger.LogException("Crash dump toggle failed.", ex);
+            OperationText = "Unable to update crash dump settings.";
+        }
+    }
+
+    private void OpenDumpsFolder()
+    {
+        try
+        {
+            _diagnosticsService.OpenDumpsFolder();
+        }
+        catch (Exception ex)
+        {
+            AppFileLogger.LogException("Open dumps folder failed.", ex);
+            OperationText = "Unable to open dumps folder.";
+        }
+    }
+
     private async Task ExportDebugBundleAsync()
     {
         var defaultFileName = $"casegraph-debug-{DateTimeOffset.UtcNow:yyyyMMdd-HHmmss}.zip";
@@ -1460,8 +1632,18 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
             return;
         }
 
-        var bundlePath = await _diagnosticsService.ExportDebugBundleAsync(outputPath, CancellationToken.None);
-        OperationText = $"Debug bundle exported: {bundlePath}";
+        try
+        {
+            var bundlePath = await _diagnosticsService.ExportDebugBundleAsync(outputPath, CancellationToken.None);
+            OperationText = $"Debug bundle exported: {bundlePath}";
+        }
+        catch (Exception ex)
+        {
+            throw new InvalidOperationException(
+                $"Failed to export debug bundle to \"{outputPath}\". Close the app and try again.",
+                ex
+            );
+        }
     }
 
     private void CopyStoredPath()

@@ -17,8 +17,12 @@ public partial class App : Application
     private const string SelfTestArgument = "--self-test";
 
     private IHost? _host;
+    private ISessionJournal? _sessionJournal;
+    private CancellationTokenRegistration _applicationStoppingRegistration;
+    private CancellationTokenRegistration _applicationStoppedRegistration;
     private bool _fatalShutdownRequested;
     private bool _selfTestMode;
+    private bool _cleanExitRecorded;
 
     protected override async void OnStartup(StartupEventArgs e)
     {
@@ -48,6 +52,7 @@ public partial class App : Application
             _host = Host.CreateDefaultBuilder(hostArgs)
                 .ConfigureServices((_, services) => services.AddCaseGraphAppServices())
                 .Build();
+            InitializeSessionJournal(e.Args);
 
             var migrationSucceeded = await EnsureWorkspaceMigratedOrShowErrorAsync(
                 "Startup workspace migration failed."
@@ -66,6 +71,7 @@ public partial class App : Application
 
             AppFileLogger.Log("Starting host.");
             await _host.StartAsync(CancellationToken.None);
+            RegisterHostLifetimeBreadcrumbs();
 
             ApplicationThemeManager.Apply(ApplicationTheme.Light);
 
@@ -73,6 +79,7 @@ public partial class App : Application
             var mainWindow = _host.Services.GetRequiredService<MainWindow>();
             mainWindow.Show();
             AppFileLogger.Log("Startup complete.");
+            _sessionJournal?.RecordStartupComplete();
         }
         catch (Exception ex)
         {
@@ -86,7 +93,9 @@ public partial class App : Application
 
     protected override async void OnExit(ExitEventArgs e)
     {
+        RecordCleanExitIfNeeded("OnExit");
         UnregisterGlobalExceptionHandlers();
+        UnregisterHostLifetimeBreadcrumbs();
 
         if (_host is not null)
         {
@@ -198,6 +207,9 @@ public partial class App : Application
 
         TaskScheduler.UnobservedTaskException -= OnUnobservedTaskException;
         TaskScheduler.UnobservedTaskException += OnUnobservedTaskException;
+
+        AppDomain.CurrentDomain.ProcessExit -= OnProcessExit;
+        AppDomain.CurrentDomain.ProcessExit += OnProcessExit;
     }
 
     private void UnregisterGlobalExceptionHandlers()
@@ -205,6 +217,7 @@ public partial class App : Application
         DispatcherUnhandledException -= OnDispatcherUnhandledException;
         AppDomain.CurrentDomain.UnhandledException -= OnAppDomainUnhandledException;
         TaskScheduler.UnobservedTaskException -= OnUnobservedTaskException;
+        AppDomain.CurrentDomain.ProcessExit -= OnProcessExit;
     }
 
     private async void OnDispatcherUnhandledException(
@@ -270,6 +283,15 @@ public partial class App : Application
         }
 
         _fatalShutdownRequested = true;
+        _sessionJournal?.WriteEvent(
+            "FatalShutdownRequested",
+            new Dictionary<string, object?>
+            {
+                ["title"] = title,
+                ["correlationId"] = report.CorrelationId
+            },
+            report.CorrelationId
+        );
         AppFileLogger.Flush();
 
         try
@@ -295,7 +317,23 @@ public partial class App : Application
     private async Task ShutdownAsync(int exitCode)
     {
         Environment.ExitCode = exitCode;
+        if (exitCode == 0)
+        {
+            RecordCleanExitIfNeeded("ShutdownAsync");
+        }
+        else
+        {
+            _sessionJournal?.WriteEvent(
+                "ShutdownRequested",
+                new Dictionary<string, object?>
+                {
+                    ["exitCode"] = exitCode
+                }
+            );
+        }
+
         UnregisterGlobalExceptionHandlers();
+        UnregisterHostLifetimeBreadcrumbs();
 
         if (_host is not null)
         {
@@ -321,5 +359,79 @@ public partial class App : Application
     private IDiagnosticsService? ResolveDiagnosticsService()
     {
         return _host?.Services.GetService<IDiagnosticsService>();
+    }
+
+    private void InitializeSessionJournal(string[] args)
+    {
+        _sessionJournal = _host?.Services.GetService<ISessionJournal>();
+        if (_sessionJournal is null)
+        {
+            return;
+        }
+
+        var start = _sessionJournal.StartNewSession();
+        _sessionJournal.WriteEvent(
+            "StartupBegin",
+            new Dictionary<string, object?>
+            {
+                ["args"] = string.Join(' ', args),
+                ["selfTest"] = _selfTestMode
+            }
+        );
+
+        if (start.PreviousSessionEndedUnexpectedly)
+        {
+            AppFileLogger.LogEvent(
+                eventName: "PreviousSessionEndedUnexpectedly",
+                level: "WARN",
+                message: "Previous session ended unexpectedly.",
+                fields: new Dictionary<string, object?>
+                {
+                    ["sessionId"] = start.SessionId
+                }
+            );
+        }
+    }
+
+    private void RegisterHostLifetimeBreadcrumbs()
+    {
+        if (_host is null || _sessionJournal is null)
+        {
+            return;
+        }
+
+        var lifetime = _host.Services.GetRequiredService<IHostApplicationLifetime>();
+        _applicationStoppingRegistration = lifetime.ApplicationStopping.Register(() =>
+        {
+            _sessionJournal.WriteEvent("HostApplicationStopping");
+        });
+        _applicationStoppedRegistration = lifetime.ApplicationStopped.Register(() =>
+        {
+            _sessionJournal.WriteEvent("HostApplicationStopped");
+        });
+    }
+
+    private void UnregisterHostLifetimeBreadcrumbs()
+    {
+        _applicationStoppingRegistration.Dispose();
+        _applicationStoppingRegistration = default;
+        _applicationStoppedRegistration.Dispose();
+        _applicationStoppedRegistration = default;
+    }
+
+    private void OnProcessExit(object? sender, EventArgs e)
+    {
+        _sessionJournal?.WriteEvent("ProcessExit");
+    }
+
+    private void RecordCleanExitIfNeeded(string reason)
+    {
+        if (_cleanExitRecorded || _fatalShutdownRequested || Environment.ExitCode != 0)
+        {
+            return;
+        }
+
+        _cleanExitRecorded = true;
+        _sessionJournal?.MarkCleanExit(reason);
     }
 }

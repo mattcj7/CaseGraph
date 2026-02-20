@@ -10,112 +10,87 @@ This file tracks planned, active, and completed tickets.
   - **Completed Tickets** (append-only)
 
 ## Active Ticket
-- ID: T0010
-- Title: Observability v1 + Workflow Hardening (structured logs, correlation IDs, debug bundle, Codex guardrails)
+- ID: T0010B
+- Title: Capture hard crashes (WER LocalDumps + session journal + process-exit breadcrumbs)
 
 ## Active Ticket Spec
-```md
-# Ticket: T0010 - Observability v1 + Workflow Hardening
+
+# Ticket: T0010B - Capture hard crashes (WER LocalDumps + session journal + process-exit breadcrumbs)
 
 ## Goal
-Make crashes and regressions diagnosable and prevent process drift:
-1) Structured logging with correlation IDs across UI actions, jobs, and workspace operations
-2) Guaranteed global exception capture (WPF + background tasks) so “silent crashes” always yield a stack trace in logs
-3) A one-click “Debug Bundle” export (logs + workspace DB + config + last log lines)
-4) Repo guardrails so Codex always updates tickets/ADRs and follows constraints
+When the app crashes (even with no managed exception), we must be able to diagnose it.
+
+Add:
+1) Windows Error Reporting (WER) LocalDumps enablement (HKCU) so native/runtime crashes create a dump
+2) A durable session journal that survives hard termination
+3) Process-exit breadcrumbs so we can distinguish "clean exit" vs "killed/crashed"
+4) Include crash dumps / journal in the Debug Bundle automatically
+
+## Context
+Debug bundle logs show OpenCase succeeded and no managed exception is logged, yet the app terminates.
+Likely a hard crash (native/runtime/stack overflow/failfast) which bypasses managed exception handlers.
 
 ## Scope
 
-### A) Structured logging (JSON) + scopes
-- Switch logging output to JSON lines (one event per line).
-- Standard fields on every event:
-  - timestampUtc, level, eventName/eventId, correlationId
-  - caseId (if available), evidenceId, jobId, actionName (if applicable)
-- Add BeginScope helpers:
-  - `ActionScope` (OpenCase/CreateCase/ParseMessages/CreateTarget)
-  - `JobScope` (JobId, JobType)
-  - `WorkspaceScope` (workspace path)
-- Keep evidence content out of logs by default (no message bodies, no PII). Log counts/hashes instead.
+### A) Enable WER LocalDumps (per-user, no admin)
+Implement a UI toggle: "Enable crash dumps (recommended for debugging)".
+When enabled:
+- Write HKCU registry keys:
+  - HKCU\Software\Microsoft\Windows\Windows Error Reporting\LocalDumps\CaseGraph.App.exe
+    - DumpFolder = %LOCALAPPDATA%\CaseGraphOffline\dumps
+    - DumpType = 2 (full dump) OR 1 (mini) if size is concern
+    - DumpCount = 10
+- Show the dump folder path in the UI
+- Provide "Open dumps folder" button
 
-### B) Global exception capture (no more missing stack traces)
-Wire in App startup:
-- Application.DispatcherUnhandledException
-- TaskScheduler.UnobservedTaskException
-- AppDomain.CurrentDomain.UnhandledException
+Also implement "Disable crash dumps" to remove/revert those keys.
 
-Requirements:
-- Generate correlationId if missing
-- Log full Exception.ToString() with correlationId
-- Show crash dialog containing correlationId + log folder path
-- Flush logs best-effort and shutdown cleanly (no “ghost process”)
+### B) Session journal (survives hard crash)
+Create a small file:
+- %LOCALAPPDATA%\CaseGraphOffline\session\session.jsonl
+Write on:
+- startup begin (new sessionId guid)
+- startup complete
+- every UiActionStarted/UiActionSucceeded/UiActionFailed (already have events, but also mirror to journal)
+- navigation changes (e.g., CurrentView/Page)
+- workspace/case change (caseId)
+- host stopping / app closing (clean exit marker)
 
-### C) Safe async command wrapper (logs success/fail)
-Implement a common `AsyncRelayCommand` (or similar) that:
-- logs start + success + failure (with durationMs)
-- catches exceptions (never lets them escape UI thread)
-- attaches correlationId scope for the whole action
-Convert key UI actions to use it:
-- OpenCase
-- CreateCase
-- ParseMessages
-- CreateTarget (and any other common action)
+This journal is meant to survive even when logs truncate. Keep it bounded (e.g., last 500 lines), rotate if needed.
 
-### D) Debug Bundle export
-Add a UI action “Export Debug Bundle” that:
-- zips:
-  - logs folder
-  - active workspace.db + wal + shm
-  - app config/settings (if any)
-  - a small `diagnostics.json` file containing:
-    - app version/commit (if available)
-    - OS + dotnet version
-    - active workspace path
-    - last 2000 log lines (or last 1MB)
-- Saves to user-selected location (default Desktop) and shows the file path.
+### C) Process-exit breadcrumbs
+Wire and log:
+- IHostApplicationLifetime.ApplicationStopping / ApplicationStopped
+- AppDomain.ProcessExit
+- Session clean-exit marker
 
-### E) Workflow hardening artifacts
-Add:
-1) `AGENTS.md` in repo root with Codex rules:
-   - tickets only in Docs/TICKETS.md
-   - update Upcoming/Completed each run
-   - run dotnet test before finishing
-   - ADR update rules
-   - offline-only constraints and provenance/audit rules
-2) `Docs/DEBUGGING.md`:
-   - where logs live
-   - how to export bundle
-   - what to attach when reporting a bug
-3) `tools/validate-repo.ps1`:
-   - fails if root ticket files exist
-   - fails if Docs/TICKETS.md missing
-   - fails if AGENTS.md missing
+On startup, if previous session did not write clean-exit marker:
+- log WARN: Previous session ended unexpectedly
+- show a small banner in Diagnostics: "Previous session ended unexpectedly; export a debug bundle"
 
-### F) Tests
-Add tests that enforce observability behaviors:
-1) A unit test for AsyncRelayCommand:
-   - on exception, it logs failure and does not throw on UI dispatcher
-2) A unit test that correlationId is present in log scope for an action
-3) A lightweight test that Debug Bundle builder includes required files list (mock file system ok)
+### D) Debug bundle includes dumps + journal
+Update DebugBundleBuilder to include:
+- dumps folder (if exists)
+- session journal file(s)
+- (optional) Windows Application event snippet if easily accessible is out of scope; document manual steps instead.
 
-(Do not add external heavy packages; keep tests fast.)
+### E) Tests
+Add unit/integration tests:
+1) Session journal writes expected entries for start/action/end and rotates/bounds
+2) WER registry writer writes to HKCU expected keys (mock registry wrapper, do not touch real registry in tests)
 
 ## Acceptance Criteria
-- [ ] Any crash shows correlationId and writes stack trace to log.
-- [ ] OpenCase/CreateCase/ParseMessages/CreateTarget log start/end/fail with correlationId + duration.
-- [ ] Debug Bundle export works and includes logs + workspace db (+ wal/shm).
-- [ ] Repo guardrails files exist (AGENTS.md, Docs/DEBUGGING.md, tools/validate-repo.ps1).
-- [ ] dotnet test passes.
-- [ ] Docs/TICKETS.md updated (move T0010 to Completed with date + summary once verified).
+- [ ] User can enable/disable crash dumps from UI without admin
+- [ ] After a hard crash, a .dmp appears under %LOCALAPPDATA%\CaseGraphOffline\dumps
+- [ ] session journal shows last actions even if app log truncates
+- [ ] debug bundle includes dumps + session journal when present
+- [ ] dotnet test passes
+- [ ] Docs/TICKETS.md updated (move T0010B to Completed after verification)
 
-## Codex Instructions
-- Implement ONLY this ticket scope.
-- Keep logs redacted (no evidence content).
-- End with summary + files changed + verify steps + tests run.
+## Notes
+- Dumps may be large; if size becomes a problem, default to mini dumps (DumpType=1) and add a UI option for full.
 
 
-
-
-```
 
 ## Upcoming Tickets
 - T0011 - Workflow hardening (AGENTS.md + DEBUGGING.md + validate script + Codex prompt template) (pending spec authoring)
@@ -142,3 +117,5 @@ Add tests that enforce observability behaviors:
 - 2026-02-18 - T0009C - Hardened workspace open/create with migration-on-open, fatal crash diagnostics UX, diagnostics page, self-test CLI, and old-DB smoke coverage.
 - 2026-02-19 - T0009D - Added safe async command containment for key flows, workspace initializer migration/query verification logging, and SQLite regression tests for empty-db initialization.
 - 2026-02-19 - T0010 - Added structured JSON logging scopes/correlation, safe async action containment, debug bundle export UX, observability tests, and repository guardrail docs/scripts.
+- 2026-02-19 - T0010A - Replaced live workspace.db reads with SQLite snapshot export in debug bundles, added in-use DB coverage, and surfaced export failure guidance.
+- 2026-02-19 - T0010B - Added WER LocalDumps toggle, durable bounded session journal with clean-exit detection breadcrumbs, and debug bundle inclusion for dumps/session artifacts with abstraction-based tests.

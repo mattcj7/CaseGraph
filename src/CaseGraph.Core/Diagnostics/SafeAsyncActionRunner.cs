@@ -9,16 +9,19 @@ public sealed class SafeAsyncActionRunner
         Func<CancellationToken, Task> executeAsync,
         CancellationToken ct,
         Guid? caseId = null,
-        Guid? evidenceId = null
+        Guid? evidenceId = null,
+        string? correlationId = null
     )
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(actionName);
         ArgumentNullException.ThrowIfNull(executeAsync);
 
-        var correlationId = AppFileLogger.NewCorrelationId();
+        var resolvedCorrelationId = string.IsNullOrWhiteSpace(correlationId)
+            ? AppFileLogger.NewCorrelationId()
+            : correlationId.Trim();
         using var actionScope = AppFileLogger.BeginActionScope(
             actionName,
-            correlationId,
+            resolvedCorrelationId,
             caseId,
             evidenceId
         );
@@ -45,7 +48,7 @@ public sealed class SafeAsyncActionRunner
                 }
             );
 
-            return SafeAsyncActionResult.FromSucceeded(correlationId, stopwatch.ElapsedMilliseconds);
+            return SafeAsyncActionResult.FromSucceeded(resolvedCorrelationId, stopwatch.ElapsedMilliseconds);
         }
         catch (OperationCanceledException ex)
         {
@@ -62,7 +65,7 @@ public sealed class SafeAsyncActionRunner
                     }
                 );
 
-                return SafeAsyncActionResult.FromCanceled(correlationId, stopwatch.ElapsedMilliseconds);
+                return SafeAsyncActionResult.FromCanceled(resolvedCorrelationId, stopwatch.ElapsedMilliseconds);
             }
 
             stopwatch.Stop();
@@ -77,7 +80,7 @@ public sealed class SafeAsyncActionRunner
                 }
             );
 
-            return SafeAsyncActionResult.FromFailed(correlationId, stopwatch.ElapsedMilliseconds, ex);
+            return SafeAsyncActionResult.FromFailed(resolvedCorrelationId, stopwatch.ElapsedMilliseconds, ex);
         }
         catch (Exception ex)
         {
@@ -93,7 +96,7 @@ public sealed class SafeAsyncActionRunner
                 }
             );
 
-            return SafeAsyncActionResult.FromFailed(correlationId, stopwatch.ElapsedMilliseconds, ex);
+            return SafeAsyncActionResult.FromFailed(resolvedCorrelationId, stopwatch.ElapsedMilliseconds, ex);
         }
     }
 }
