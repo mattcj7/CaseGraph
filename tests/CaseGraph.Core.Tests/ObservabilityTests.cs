@@ -192,6 +192,73 @@ public sealed class ObservabilityTests
         }
     }
 
+    [Fact]
+    public async Task DebugBundleBuilder_WhenManyDumpsPresent_IncludesNewestFiveOnly()
+    {
+        var tempRoot = CreateTempDirectory();
+        var workspaceRoot = Path.Combine(tempRoot, "workspace");
+        var logsRoot = Path.Combine(tempRoot, "logs");
+        var dumpsRoot = Path.Combine(tempRoot, "dumps");
+        Directory.CreateDirectory(workspaceRoot);
+        Directory.CreateDirectory(logsRoot);
+        Directory.CreateDirectory(dumpsRoot);
+
+        var workspaceDbPath = Path.Combine(workspaceRoot, "workspace.db");
+        var outputZipPath = Path.Combine(tempRoot, "bundle-bounded-dumps.zip");
+        await File.WriteAllTextAsync(Path.Combine(logsRoot, "app-20260220.log"), "{\"event\":\"x\"}");
+        await CreateWorkspaceDbAsync(workspaceDbPath);
+
+        try
+        {
+            var baseTime = DateTime.UtcNow.AddMinutes(-30);
+            for (var i = 1; i <= 7; i++)
+            {
+                var dumpPath = Path.Combine(dumpsRoot, $"crash-{i:000}.dmp");
+                await File.WriteAllTextAsync(dumpPath, $"dump-{i}");
+                File.SetLastWriteTimeUtc(dumpPath, baseTime.AddMinutes(i));
+            }
+
+            var builder = new DebugBundleBuilder();
+            await builder.BuildAsync(
+                new DebugBundleBuildRequest(
+                    OutputZipPath: outputZipPath,
+                    LogsDirectory: logsRoot,
+                    WorkspaceRoot: workspaceRoot,
+                    WorkspaceDbPath: workspaceDbPath,
+                    AppVersion: "1.2.3",
+                    GitCommit: "deadbeef",
+                    LastLogLines: ["line-1", "line-2"],
+                    ConfigurationFiles: Array.Empty<string>(),
+                    DumpsDirectory: dumpsRoot
+                ),
+                CancellationToken.None
+            );
+
+            using var archive = ZipFile.OpenRead(outputZipPath);
+            var dumpEntries = archive.Entries
+                .Select(entry => entry.FullName)
+                .Where(name => name.StartsWith("dumps/", StringComparison.Ordinal))
+                .OrderBy(name => name, StringComparer.Ordinal)
+                .ToList();
+
+            Assert.Equal(5, dumpEntries.Count);
+            Assert.Equal(
+                [
+                    "dumps/crash-003.dmp",
+                    "dumps/crash-004.dmp",
+                    "dumps/crash-005.dmp",
+                    "dumps/crash-006.dmp",
+                    "dumps/crash-007.dmp"
+                ],
+                dumpEntries
+            );
+        }
+        finally
+        {
+            TryDeleteDirectory(tempRoot);
+        }
+    }
+
     private static string? TryGetString(JsonElement element, string propertyName)
     {
         if (!element.TryGetProperty(propertyName, out var value))

@@ -72,7 +72,13 @@ public sealed class DebugBundleBuilder
             AddDirectoryIfExists(zip, request.LogsDirectory, "logs", includedEntries, ct);
             if (!string.IsNullOrWhiteSpace(request.DumpsDirectory))
             {
-                AddDirectoryIfExists(zip, request.DumpsDirectory!, "dumps", includedEntries, ct);
+                AddBoundedDumpsIfExists(
+                    zip,
+                    request.DumpsDirectory!,
+                    maxDumpFiles: request.MaxDumpFiles,
+                    includedEntries,
+                    ct
+                );
             }
 
             if (!string.IsNullOrWhiteSpace(request.SessionDirectory))
@@ -212,6 +218,40 @@ public sealed class DebugBundleBuilder
         includedEntries.Add(entryName);
     }
 
+    private static void AddBoundedDumpsIfExists(
+        ZipArchive zip,
+        string dumpsDirectory,
+        int maxDumpFiles,
+        ICollection<string> includedEntries,
+        CancellationToken ct
+    )
+    {
+        if (!Directory.Exists(dumpsDirectory) || maxDumpFiles <= 0)
+        {
+            return;
+        }
+
+        var dumpFiles = Directory
+            .GetFiles(dumpsDirectory, "*.dmp", SearchOption.TopDirectoryOnly)
+            .Select(path => new FileInfo(path))
+            .OrderByDescending(file => file.LastWriteTimeUtc)
+            .ThenByDescending(file => file.Name, StringComparer.OrdinalIgnoreCase)
+            .Take(maxDumpFiles)
+            .ToList();
+
+        foreach (var file in dumpFiles)
+        {
+            ct.ThrowIfCancellationRequested();
+            AddFileIfExists(
+                zip,
+                file.FullName,
+                $"dumps/{file.Name}",
+                includedEntries,
+                ct
+            );
+        }
+    }
+
     private static async Task CreateWorkspaceSnapshotAsync(
         string sourceDbPath,
         string snapshotPath,
@@ -313,7 +353,8 @@ public sealed record DebugBundleBuildRequest(
     IReadOnlyList<string> LastLogLines,
     IReadOnlyList<string> ConfigurationFiles,
     string? DumpsDirectory = null,
-    string? SessionDirectory = null
+    string? SessionDirectory = null,
+    int MaxDumpFiles = 5
 );
 
 public sealed record DebugBundleBuildResult(

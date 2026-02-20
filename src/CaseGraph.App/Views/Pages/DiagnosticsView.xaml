@@ -138,20 +138,14 @@
                                Text="{Binding DiagnosticsDumpsDirectory}"
                                TextWrapping="Wrap" />
 
-                    <StackPanel Margin="{StaticResource SpaceTop12}"
-                                Orientation="Horizontal">
-                        <Button Content="Enable Dumps"
-                                Command="{Binding EnableCrashDumpsCommand}"
-                                Style="{StaticResource TopBarButtonStyle}" />
-                        <Button Margin="8,0,0,0"
-                                Content="Disable Dumps"
-                                Command="{Binding DisableCrashDumpsCommand}"
-                                Style="{StaticResource TopBarButtonStyle}" />
-                        <Button Margin="8,0,0,0"
-                                Content="Open Dumps Folder"
-                                Command="{Binding OpenDumpsFolderCommand}"
-                                Style="{StaticResource TopBarButtonStyle}" />
-                    </StackPanel>
+                    <CheckBox Margin="{StaticResource SpaceTop12}"
+                              IsChecked="{Binding DiagnosticsCrashDumpsEnabled, Mode=TwoWay}"
+                              Content="Enable crash dumps (recommended for debugging)" />
+
+                    <Button Margin="{StaticResource SpaceTop12}"
+                            Content="Open Dumps Folder"
+                            Command="{Binding OpenDumpsFolderCommand}"
+                            Style="{StaticResource TopBarButtonStyle}" />
 
                     <TextBlock Margin="{StaticResource SpaceTop12}"
                                Style="{StaticResource SecondaryBodyTextStyle}"

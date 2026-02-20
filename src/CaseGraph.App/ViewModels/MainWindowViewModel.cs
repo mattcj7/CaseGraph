@@ -46,6 +46,7 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
     private Guid? _activeJobId;
     private bool _isInitialized;
     private bool _isDisposed;
+    private bool _isRefreshingDiagnosticsSnapshot;
     private int _selectedTargetWhereSeenCount;
 
     public ObservableCollection<NavigationItem> NavigationItems { get; } = new();
@@ -333,10 +334,6 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
 
     public IRelayCommand CopyDiagnosticsCommand { get; }
 
-    public IRelayCommand EnableCrashDumpsCommand { get; }
-
-    public IRelayCommand DisableCrashDumpsCommand { get; }
-
     public IRelayCommand OpenDumpsFolderCommand { get; }
 
     public IAsyncRelayCommand ExportDebugBundleCommand { get; }
@@ -422,8 +419,6 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
         RefreshDiagnosticsCommand = new AsyncRelayCommand(() => RefreshDiagnosticsAsync(CancellationToken.None));
         OpenLogsFolderCommand = new RelayCommand(OpenLogsFolder);
         CopyDiagnosticsCommand = new RelayCommand(CopyDiagnostics);
-        EnableCrashDumpsCommand = new RelayCommand(() => SetCrashDumpsEnabled(true));
-        DisableCrashDumpsCommand = new RelayCommand(() => SetCrashDumpsEnabled(false));
         OpenDumpsFolderCommand = new RelayCommand(OpenDumpsFolder);
         ExportDebugBundleCommand = CreateSafeAsyncCommand("ExportDebugBundle", ExportDebugBundleAsync);
 
@@ -1539,7 +1534,15 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
             DiagnosticsCasesRoot = snapshot.CasesRoot;
             DiagnosticsLogsDirectory = snapshot.LogsDirectory;
             DiagnosticsCurrentLogPath = snapshot.CurrentLogPath;
-            DiagnosticsCrashDumpsEnabled = snapshot.CrashDumpsEnabled;
+            _isRefreshingDiagnosticsSnapshot = true;
+            try
+            {
+                DiagnosticsCrashDumpsEnabled = snapshot.CrashDumpsEnabled;
+            }
+            finally
+            {
+                _isRefreshingDiagnosticsSnapshot = false;
+            }
             DiagnosticsDumpsDirectory = snapshot.DumpsDirectory;
             DiagnosticsSessionDirectory = snapshot.SessionDirectory;
             DiagnosticsSessionJournalPath = snapshot.SessionJournalPath;
@@ -1552,6 +1555,7 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
         }
         catch (Exception ex)
         {
+            _isRefreshingDiagnosticsSnapshot = false;
             UiExceptionReporter.LogFatalException(
                 "Refresh diagnostics failed.",
                 ex,
@@ -1559,6 +1563,16 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
             );
             DiagnosticsLastLogLinesText = "(diagnostics unavailable)";
         }
+    }
+
+    partial void OnDiagnosticsCrashDumpsEnabledChanged(bool value)
+    {
+        if (_isRefreshingDiagnosticsSnapshot)
+        {
+            return;
+        }
+
+        SetCrashDumpsEnabled(value);
     }
 
     private void OpenLogsFolder()

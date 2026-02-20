@@ -55,20 +55,62 @@ public sealed class CrashCaptureTests
 
         try
         {
-            manager.Enable(dumpType: 2, dumpCount: 10);
+            manager.Enable();
             var settings = manager.GetSettings();
 
             Assert.True(settings.Enabled);
             Assert.Equal(dumpDirectory, settings.DumpFolder);
-            Assert.Equal(2, settings.DumpType);
+            Assert.Equal(1, settings.DumpType);
             Assert.Equal(10, settings.DumpCount);
             Assert.True(Directory.Exists(dumpDirectory));
+            Assert.Equal(
+                InMemoryRegistryValueStore.RegistryValueKindHint.ExpandString,
+                registry.GetValueKind(settings.RegistrySubKeyPath, "DumpFolder")
+            );
 
             manager.Disable();
             Assert.False(registry.KeyExists(settings.RegistrySubKeyPath));
         }
         finally
         {
+            TryDeleteDirectory(dumpDirectory);
+        }
+    }
+
+    [Fact]
+    public void WerLocalDumpSettingsManager_Enable_UsesProvidedExpandStringDumpFolder()
+    {
+        var dumpDirectory = Path.Combine(Path.GetTempPath(), "CaseGraph.WerTests", Guid.NewGuid().ToString("N"));
+        const string registryDumpFolder = @"%LOCALAPPDATA%\CaseGraphOffline\dumps";
+        var registry = new InMemoryRegistryValueStore();
+        var manager = new WerLocalDumpSettingsManager(
+            registry,
+            "CaseGraph.App.exe",
+            dumpDirectory,
+            registryDumpFolder
+        );
+
+        try
+        {
+            manager.Enable();
+            var settings = manager.GetSettings();
+
+            Assert.Equal(
+                Environment.ExpandEnvironmentVariables(registryDumpFolder),
+                settings.DumpFolder
+            );
+            Assert.Equal(
+                registryDumpFolder,
+                registry.GetString(settings.RegistrySubKeyPath, "DumpFolder")
+            );
+            Assert.Equal(
+                InMemoryRegistryValueStore.RegistryValueKindHint.ExpandString,
+                registry.GetValueKind(settings.RegistrySubKeyPath, "DumpFolder")
+            );
+        }
+        finally
+        {
+            manager.Disable();
             TryDeleteDirectory(dumpDirectory);
         }
     }
@@ -111,17 +153,22 @@ public sealed class CrashCaptureTests
 
     private sealed class InMemoryRegistryValueStore : IRegistryValueStore
     {
-        private readonly Dictionary<string, Dictionary<string, object>> _store =
+        private readonly Dictionary<string, Dictionary<string, RegistryValue>> _store =
             new(StringComparer.OrdinalIgnoreCase);
 
         public void SetString(string subKeyPath, string valueName, string value)
         {
-            Upsert(subKeyPath, valueName, value);
+            Upsert(subKeyPath, valueName, value, RegistryValueKindHint.String);
+        }
+
+        public void SetExpandString(string subKeyPath, string valueName, string value)
+        {
+            Upsert(subKeyPath, valueName, value, RegistryValueKindHint.ExpandString);
         }
 
         public void SetDword(string subKeyPath, string valueName, int value)
         {
-            Upsert(subKeyPath, valueName, value);
+            Upsert(subKeyPath, valueName, value, RegistryValueKindHint.Dword);
         }
 
         public string? GetString(string subKeyPath, string valueName)
@@ -144,23 +191,43 @@ public sealed class CrashCaptureTests
             _store.Remove(subKeyPath);
         }
 
-        private void Upsert(string subKeyPath, string valueName, object value)
+        public RegistryValueKindHint? GetValueKind(string subKeyPath, string valueName)
+        {
+            if (!_store.TryGetValue(subKeyPath, out var values)
+                || !values.TryGetValue(valueName, out var value))
+            {
+                return null;
+            }
+
+            return value.Kind;
+        }
+
+        private void Upsert(string subKeyPath, string valueName, object value, RegistryValueKindHint kind)
         {
             if (!_store.TryGetValue(subKeyPath, out var values))
             {
-                values = new Dictionary<string, object>(StringComparer.OrdinalIgnoreCase);
+                values = new Dictionary<string, RegistryValue>(StringComparer.OrdinalIgnoreCase);
                 _store[subKeyPath] = values;
             }
 
-            values[valueName] = value;
+            values[valueName] = new RegistryValue(value, kind);
         }
 
         private object? TryGet(string subKeyPath, string valueName)
         {
             return _store.TryGetValue(subKeyPath, out var values)
                 && values.TryGetValue(valueName, out var value)
-                ? value
+                ? value.Data
                 : null;
+        }
+
+        private sealed record RegistryValue(object Data, RegistryValueKindHint Kind);
+
+        public enum RegistryValueKindHint
+        {
+            String,
+            ExpandString,
+            Dword
         }
     }
 }

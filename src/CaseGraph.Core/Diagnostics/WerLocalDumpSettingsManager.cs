@@ -4,6 +4,8 @@ public interface IRegistryValueStore
 {
     void SetString(string subKeyPath, string valueName, string value);
 
+    void SetExpandString(string subKeyPath, string valueName, string value);
+
     void SetDword(string subKeyPath, string valueName, int value);
 
     string? GetString(string subKeyPath, string valueName);
@@ -20,20 +22,25 @@ public sealed class WerLocalDumpSettingsManager
     private const string LocalDumpsBasePath = @"Software\Microsoft\Windows\Windows Error Reporting\LocalDumps";
     private readonly IRegistryValueStore _registryValueStore;
     private readonly string _processExecutableName;
-    private readonly string _dumpDirectory;
+    private readonly string _dumpDirectoryPath;
+    private readonly string _dumpFolderRegistryValue;
 
     public WerLocalDumpSettingsManager(
         IRegistryValueStore registryValueStore,
         string processExecutableName,
-        string dumpDirectory
+        string dumpDirectoryPath,
+        string? dumpFolderRegistryValue = null
     )
     {
         _registryValueStore = registryValueStore ?? throw new ArgumentNullException(nameof(registryValueStore));
         ArgumentException.ThrowIfNullOrWhiteSpace(processExecutableName);
-        ArgumentException.ThrowIfNullOrWhiteSpace(dumpDirectory);
+        ArgumentException.ThrowIfNullOrWhiteSpace(dumpDirectoryPath);
 
         _processExecutableName = processExecutableName.Trim();
-        _dumpDirectory = dumpDirectory.Trim();
+        _dumpDirectoryPath = dumpDirectoryPath.Trim();
+        _dumpFolderRegistryValue = string.IsNullOrWhiteSpace(dumpFolderRegistryValue)
+            ? _dumpDirectoryPath
+            : dumpFolderRegistryValue.Trim();
     }
 
     public string RegistrySubKeyPath => $"{LocalDumpsBasePath}\\{_processExecutableName}";
@@ -41,8 +48,10 @@ public sealed class WerLocalDumpSettingsManager
     public WerLocalDumpSettings GetSettings()
     {
         var keyExists = _registryValueStore.KeyExists(RegistrySubKeyPath);
-        var dumpFolder = _registryValueStore.GetString(RegistrySubKeyPath, "DumpFolder") ?? _dumpDirectory;
-        var dumpType = _registryValueStore.GetDword(RegistrySubKeyPath, "DumpType") ?? 2;
+        var dumpFolderRaw = _registryValueStore.GetString(RegistrySubKeyPath, "DumpFolder")
+            ?? _dumpFolderRegistryValue;
+        var dumpFolder = Environment.ExpandEnvironmentVariables(dumpFolderRaw);
+        var dumpType = _registryValueStore.GetDword(RegistrySubKeyPath, "DumpType") ?? 1;
         var dumpCount = _registryValueStore.GetDword(RegistrySubKeyPath, "DumpCount") ?? 10;
 
         return new WerLocalDumpSettings(
@@ -54,10 +63,10 @@ public sealed class WerLocalDumpSettingsManager
         );
     }
 
-    public void Enable(int dumpType = 2, int dumpCount = 10)
+    public void Enable(int dumpType = 1, int dumpCount = 10)
     {
-        Directory.CreateDirectory(_dumpDirectory);
-        _registryValueStore.SetString(RegistrySubKeyPath, "DumpFolder", _dumpDirectory);
+        Directory.CreateDirectory(_dumpDirectoryPath);
+        _registryValueStore.SetExpandString(RegistrySubKeyPath, "DumpFolder", _dumpFolderRegistryValue);
         _registryValueStore.SetDword(RegistrySubKeyPath, "DumpType", dumpType);
         _registryValueStore.SetDword(RegistrySubKeyPath, "DumpCount", dumpCount);
     }

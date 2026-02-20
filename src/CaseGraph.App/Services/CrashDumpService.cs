@@ -1,4 +1,5 @@
 using CaseGraph.Core.Diagnostics;
+using System.IO;
 
 namespace CaseGraph.App.Services;
 
@@ -9,10 +10,12 @@ public sealed class CrashDumpService : ICrashDumpService
 
     public CrashDumpService(IRegistryValueStore registryValueStore, IAppRuntimePaths runtimePaths)
     {
+        var registryDumpFolder = ResolveRegistryDumpFolder(runtimePaths.DumpsDirectory);
         _settingsManager = new WerLocalDumpSettingsManager(
             registryValueStore,
             ProcessExecutableName,
-            runtimePaths.DumpsDirectory
+            runtimePaths.DumpsDirectory,
+            registryDumpFolder
         );
     }
 
@@ -25,10 +28,26 @@ public sealed class CrashDumpService : ICrashDumpService
     {
         if (enabled)
         {
-            _settingsManager.Enable(dumpType: 2, dumpCount: 10);
+            _settingsManager.Enable(dumpType: 1, dumpCount: 10);
             return;
         }
 
         _settingsManager.Disable();
+    }
+
+    private static string ResolveRegistryDumpFolder(string absoluteDumpPath)
+    {
+        var localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+        if (!string.IsNullOrWhiteSpace(localAppData)
+            && absoluteDumpPath.StartsWith(localAppData, StringComparison.OrdinalIgnoreCase))
+        {
+            var relative = absoluteDumpPath.Substring(localAppData.Length)
+                .TrimStart(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+            return string.IsNullOrWhiteSpace(relative)
+                ? "%LOCALAPPDATA%"
+                : $@"%LOCALAPPDATA%\{relative}";
+        }
+
+        return absoluteDumpPath;
     }
 }

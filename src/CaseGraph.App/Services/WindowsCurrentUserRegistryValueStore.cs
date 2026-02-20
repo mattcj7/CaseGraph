@@ -11,6 +11,12 @@ public sealed class WindowsCurrentUserRegistryValueStore : IRegistryValueStore
         key?.SetValue(valueName, value, RegistryValueKind.String);
     }
 
+    public void SetExpandString(string subKeyPath, string valueName, string value)
+    {
+        using var key = Registry.CurrentUser.CreateSubKey(subKeyPath, writable: true);
+        key?.SetValue(valueName, value, RegistryValueKind.ExpandString);
+    }
+
     public void SetDword(string subKeyPath, string valueName, int value)
     {
         using var key = Registry.CurrentUser.CreateSubKey(subKeyPath, writable: true);

@@ -10,87 +10,13 @@ This file tracks planned, active, and completed tickets.
   - **Completed Tickets** (append-only)
 
 ## Active Ticket
-- ID: T0010B
-- Title: Capture hard crashes (WER LocalDumps + session journal + process-exit breadcrumbs)
+- ID: T0011
+- Title: Workflow hardening (pending spec authoring)
 
 ## Active Ticket Spec
-
-# Ticket: T0010B - Capture hard crashes (WER LocalDumps + session journal + process-exit breadcrumbs)
-
-## Goal
-When the app crashes (even with no managed exception), we must be able to diagnose it.
-
-Add:
-1) Windows Error Reporting (WER) LocalDumps enablement (HKCU) so native/runtime crashes create a dump
-2) A durable session journal that survives hard termination
-3) Process-exit breadcrumbs so we can distinguish "clean exit" vs "killed/crashed"
-4) Include crash dumps / journal in the Debug Bundle automatically
-
-## Context
-Debug bundle logs show OpenCase succeeded and no managed exception is logged, yet the app terminates.
-Likely a hard crash (native/runtime/stack overflow/failfast) which bypasses managed exception handlers.
-
-## Scope
-
-### A) Enable WER LocalDumps (per-user, no admin)
-Implement a UI toggle: "Enable crash dumps (recommended for debugging)".
-When enabled:
-- Write HKCU registry keys:
-  - HKCU\Software\Microsoft\Windows\Windows Error Reporting\LocalDumps\CaseGraph.App.exe
-    - DumpFolder = %LOCALAPPDATA%\CaseGraphOffline\dumps
-    - DumpType = 2 (full dump) OR 1 (mini) if size is concern
-    - DumpCount = 10
-- Show the dump folder path in the UI
-- Provide "Open dumps folder" button
-
-Also implement "Disable crash dumps" to remove/revert those keys.
-
-### B) Session journal (survives hard crash)
-Create a small file:
-- %LOCALAPPDATA%\CaseGraphOffline\session\session.jsonl
-Write on:
-- startup begin (new sessionId guid)
-- startup complete
-- every UiActionStarted/UiActionSucceeded/UiActionFailed (already have events, but also mirror to journal)
-- navigation changes (e.g., CurrentView/Page)
-- workspace/case change (caseId)
-- host stopping / app closing (clean exit marker)
-
-This journal is meant to survive even when logs truncate. Keep it bounded (e.g., last 500 lines), rotate if needed.
-
-### C) Process-exit breadcrumbs
-Wire and log:
-- IHostApplicationLifetime.ApplicationStopping / ApplicationStopped
-- AppDomain.ProcessExit
-- Session clean-exit marker
-
-On startup, if previous session did not write clean-exit marker:
-- log WARN: Previous session ended unexpectedly
-- show a small banner in Diagnostics: "Previous session ended unexpectedly; export a debug bundle"
-
-### D) Debug bundle includes dumps + journal
-Update DebugBundleBuilder to include:
-- dumps folder (if exists)
-- session journal file(s)
-- (optional) Windows Application event snippet if easily accessible is out of scope; document manual steps instead.
-
-### E) Tests
-Add unit/integration tests:
-1) Session journal writes expected entries for start/action/end and rotates/bounds
-2) WER registry writer writes to HKCU expected keys (mock registry wrapper, do not touch real registry in tests)
-
-## Acceptance Criteria
-- [ ] User can enable/disable crash dumps from UI without admin
-- [ ] After a hard crash, a .dmp appears under %LOCALAPPDATA%\CaseGraphOffline\dumps
-- [ ] session journal shows last actions even if app log truncates
-- [ ] debug bundle includes dumps + session journal when present
-- [ ] dotnet test passes
-- [ ] Docs/TICKETS.md updated (move T0010B to Completed after verification)
-
-## Notes
-- Dumps may be large; if size becomes a problem, default to mini dumps (DumpType=1) and add a UI option for full.
-
-
+```md
+Pending spec authoring.
+```
 
 ## Upcoming Tickets
 - T0011 - Workflow hardening (AGENTS.md + DEBUGGING.md + validate script + Codex prompt template) (pending spec authoring)
@@ -119,3 +45,4 @@ Add unit/integration tests:
 - 2026-02-19 - T0010 - Added structured JSON logging scopes/correlation, safe async action containment, debug bundle export UX, observability tests, and repository guardrail docs/scripts.
 - 2026-02-19 - T0010A - Replaced live workspace.db reads with SQLite snapshot export in debug bundles, added in-use DB coverage, and surfaced export failure guidance.
 - 2026-02-19 - T0010B - Added WER LocalDumps toggle, durable bounded session journal with clean-exit detection breadcrumbs, and debug bundle inclusion for dumps/session artifacts with abstraction-based tests.
+- 2026-02-20 - T0010C - Added Diagnostics crash-dumps toggle + open dumps folder UX, WER LocalDumps ExpandString folder defaults (mini dumps, count 10), and bounded dump inclusion with registry/debug-bundle tests.
