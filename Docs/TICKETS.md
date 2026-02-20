@@ -11,7 +11,7 @@ This file tracks planned, active, and completed tickets.
 
 ## Active Ticket
 - ID: T0011
-- Title: Workflow hardening (pending spec authoring)
+- Title: Workflow hardening (AGENTS.md + DEBUGGING.md + validate script + Codex prompt template) (pending spec authoring)
 
 ## Active Ticket Spec
 ```md
@@ -19,7 +19,6 @@ Pending spec authoring.
 ```
 
 ## Upcoming Tickets
-- T0011 - Workflow hardening (AGENTS.md + DEBUGGING.md + validate script + Codex prompt template) (pending spec authoring)
 - T0012 - Smoke tests (WPF XAML load + SQLite translation tests) (pending spec authoring)
 
 ## Completed Tickets (append-only)
@@ -46,3 +45,4 @@ Pending spec authoring.
 - 2026-02-19 - T0010A - Replaced live workspace.db reads with SQLite snapshot export in debug bundles, added in-use DB coverage, and surfaced export failure guidance.
 - 2026-02-19 - T0010B - Added WER LocalDumps toggle, durable bounded session journal with clean-exit detection breadcrumbs, and debug bundle inclusion for dumps/session artifacts with abstraction-based tests.
 - 2026-02-20 - T0010C - Added Diagnostics crash-dumps toggle + open dumps folder UX, WER LocalDumps ExpandString folder defaults (mini dumps, count 10), and bounded dump inclusion with registry/debug-bundle tests.
+- 2026-02-20 - T0010D - Added tiered test runner scripts (fast/db/ui/full/smart), routed smart verification from git diff triggers, and codified verification policy/docs.
