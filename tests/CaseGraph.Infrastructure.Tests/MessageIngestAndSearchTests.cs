@@ -311,10 +311,11 @@ public sealed class MessageIngestAndSearchTests
     [Fact]
     public async Task MessagesIngestJob_CreatesRows_AndAuditSummary()
     {
-        await using var fixture = await WorkspaceFixture.CreateAsync(startRunner: true);
+        await using var fixture = await WorkspaceFixture.CreateAsync(startRunner: false);
         var workspace = fixture.Services.GetRequiredService<ICaseWorkspaceService>();
         var vault = fixture.Services.GetRequiredService<IEvidenceVaultService>();
         var queue = fixture.Services.GetRequiredService<IJobQueueService>();
+        var queueRunner = fixture.Services.GetRequiredService<JobQueueService>();
 
         var caseInfo = await workspace.CreateCaseAsync("Messages Job Case", CancellationToken.None);
         var sourceXlsx = fixture.CreateMessagesXlsx("messages-job.xlsx");
@@ -335,18 +336,18 @@ public sealed class MessageIngestAndSearchTests
             CancellationToken.None
         );
 
-        var succeeded = await WaitForJobStatusAsync(
-            fixture,
-            jobId,
-            status => status == "Succeeded",
-            TimeSpan.FromSeconds(12)
-        );
+        await queueRunner.ExecuteAsync(jobId, CancellationToken.None);
+
+        await using var db = await fixture.CreateDbContextAsync();
+        var succeeded = await db.Jobs
+            .AsNoTracking()
+            .FirstAsync(j => j.JobId == jobId);
+
         Assert.Equal("Succeeded", succeeded.Status);
         Assert.Equal(1, succeeded.Progress);
         Assert.NotNull(succeeded.CompletedAtUtc);
         Assert.Equal("Succeeded: Extracted 2 message(s).", succeeded.StatusMessage);
 
-        await using var db = await fixture.CreateDbContextAsync();
         var events = await db.MessageEvents
             .Where(e => e.CaseId == caseInfo.CaseId && e.EvidenceItemId == evidence.EvidenceItemId)
             .ToListAsync();
@@ -355,14 +356,15 @@ public sealed class MessageIngestAndSearchTests
         Assert.All(events, e => Assert.False(string.IsNullOrWhiteSpace(e.SourceLocator)));
         Assert.All(events, e => Assert.False(string.IsNullOrWhiteSpace(e.IngestModuleVersion)));
 
-        var summaryAudit = await WaitForAuditEventAsync(
-            fixture,
-            caseInfo.CaseId,
-            evidence.EvidenceItemId,
-            "MessagesIngested",
-            TimeSpan.FromSeconds(5)
-        );
-        Assert.NotNull(summaryAudit);
+        var summaryAudits = await db.AuditEvents
+            .AsNoTracking()
+            .Where(a =>
+                a.CaseId == caseInfo.CaseId
+                && a.EvidenceItemId == evidence.EvidenceItemId
+                && a.ActionType == "MessagesIngested"
+            )
+            .ToListAsync();
+        Assert.Single(summaryAudits);
     }
 
     [Fact]

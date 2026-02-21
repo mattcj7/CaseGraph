@@ -1,6 +1,7 @@
 param(
     [string]$Configuration = "Debug",
-    [switch]$Full
+    [switch]$Full,
+    [switch]$ForceDb
 )
 
 Set-StrictMode -Version Latest
@@ -53,6 +54,58 @@ function Get-TriggeredFiles {
             return $false
         }
     )
+}
+
+function Get-DiffTextForFile {
+    param(
+        [string]$FilePath
+    )
+
+    $unstaged = & git diff -- $FilePath
+    if ($LASTEXITCODE -ne 0) {
+        throw "git diff -- $FilePath failed with exit code $LASTEXITCODE."
+    }
+
+    $staged = & git diff --staged -- $FilePath
+    if ($LASTEXITCODE -ne 0) {
+        throw "git diff --staged -- $FilePath failed with exit code $LASTEXITCODE."
+    }
+
+    return (($unstaged -join [Environment]::NewLine) + [Environment]::NewLine + ($staged -join [Environment]::NewLine))
+}
+
+function Get-KeywordTriggerMatches {
+    param(
+        [string[]]$Files,
+        [string[]]$Keywords
+    )
+
+    $matches = New-Object System.Collections.Generic.List[object]
+    foreach ($file in $Files) {
+        $diffText = Get-DiffTextForFile -FilePath $file
+        if ([string]::IsNullOrWhiteSpace($diffText)) {
+            continue
+        }
+
+        $fileKeywords = New-Object System.Collections.Generic.List[string]
+        foreach ($keyword in $Keywords) {
+            $pattern = [regex]::Escape($keyword)
+            if ($diffText -imatch $pattern) {
+                if (-not $fileKeywords.Contains($keyword)) {
+                    $fileKeywords.Add($keyword)
+                }
+            }
+        }
+
+        if ($fileKeywords.Count -gt 0) {
+            $matches.Add([PSCustomObject]@{
+                    File = $file
+                    Keywords = @($fileKeywords | Sort-Object -Unique)
+                })
+        }
+    }
+
+    return @($matches)
 }
 
 function Invoke-TierScript {
@@ -112,7 +165,20 @@ try {
         '^src/.+/Jobs/',
         '^src/.+/Ingest/',
         '^src/.+/Parsers/',
-        '/[^/]*(DbContext|WorkspaceDbContext)[^/]*$'
+        '^src/.+/WorkspaceDatabaseInitializer[^/]*$',
+        '^src/.+/WorkspaceMigrationService[^/]*$',
+        '^src/.+/Workspace[^/]*Db[^/]*$',
+        '^src/.+/ServiceCollectionExtensions[^/]*$',
+        '^src/.+/TimeoutWatchdog[^/]*$',
+        '^src/.+/[^/]*DbContext[^/]*$'
+    )
+    $dbKeywordRules = @(
+        'UseSqlite',
+        'SqliteConnectionStringBuilder',
+        'Database.Migrate',
+        '__EFMigrationsHistory',
+        'DefaultTimeout',
+        'busy_timeout'
     )
     $uiRules = @(
         '\.xaml$',
@@ -123,8 +189,33 @@ try {
         '^src/.+/MainWindow'
     )
 
-    $dbTriggers = @(Get-TriggeredFiles -Files $changedFiles -RegexRules $dbRules)
+    $dbPathTriggers = @(
+        Get-TriggeredFiles -Files $changedFiles -RegexRules $dbRules
+        | Sort-Object -Unique
+    )
+    $keywordEligibleFiles = @(
+        $changedFiles | Where-Object { $_ -imatch '^src/' }
+    )
+    $dbKeywordTriggers = @()
+    if ($keywordEligibleFiles.Count -gt 0) {
+        $dbKeywordTriggers = Get-KeywordTriggerMatches -Files $keywordEligibleFiles -Keywords $dbKeywordRules
+    }
+
     $uiTriggers = @(Get-TriggeredFiles -Files $changedFiles -RegexRules $uiRules)
+    $shouldRunDb = $ForceDb -or $dbPathTriggers.Count -gt 0 -or $dbKeywordTriggers.Count -gt 0
+    $dbReasons = @()
+
+    if ($ForceDb) {
+        $dbReasons += "Forced by -ForceDb switch."
+    }
+
+    foreach ($file in $dbPathTriggers) {
+        $dbReasons += "Path trigger: $file"
+    }
+
+    foreach ($keywordTrigger in $dbKeywordTriggers) {
+        $dbReasons += "Keyword trigger in $($keywordTrigger.File): $($keywordTrigger.Keywords -join ', ')"
+    }
 
     $fastReasons = @("FAST tier always runs by policy.")
     if ($changedFiles.Count -eq 0) {
@@ -139,18 +230,24 @@ try {
         Reason = $fastReasons
     }
 
-    if ($dbTriggers.Count -gt 0) {
+    if ($shouldRunDb) {
+        if ($dbReasons.Count -eq 0) {
+            $dbReasons += "DB tier triggered."
+        }
+
         Invoke-TierScript -TierName "DB" -ScriptPath $dbScript -Parameters @{
             Configuration = $Configuration
             NoBuild = $true
             NoRestore = $true
-            Reason = $dbTriggers
+            Reason = $dbReasons
         }
     }
     else {
         Write-Host ""
         Write-Host "--- Skipping DB tier ---"
-        Write-Host "WHY: no persistence/migrations/jobs/ingest/parsers/DbContext trigger files changed."
+        Write-Host "WHY: no DB path or keyword triggers matched."
+        Write-Host "WHY: checked paths for workspace init/sqlite/DbContext/persistence/migrations/jobs/ingest/parsers."
+        Write-Host "WHY: checked diff keywords in src/: $($dbKeywordRules -join ', ')."
     }
 
     if ($uiTriggers.Count -gt 0) {

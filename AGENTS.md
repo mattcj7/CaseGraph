@@ -16,6 +16,12 @@
 - Full suite commands: `pwsh tools/test-smart.ps1 -Full` or `pwsh tools/test-full.ps1`.
 - Keep the selected verification tier(s) green; if not possible, report exact failures and blockers.
 
+## DB Tier Triggers
+- DB tier must run when changes touch workspace init, SQLite configuration, `DbContext`, migrations, ingest pipeline, or query services.
+- Trigger examples include `WorkspaceDatabaseInitializer`, `WorkspaceMigrationService`, `Workspace*Db*`, `ServiceCollectionExtensions` (when configuring `UseSqlite`), `TimeoutWatchdog`, persistence/migrations/jobs/ingest/parsers, and `DbContext` files.
+- DB tier also runs when diffs include SQLite/EF migration keywords such as `UseSqlite`, `SqliteConnectionStringBuilder`, `Database.Migrate`, `__EFMigrationsHistory`, `DefaultTimeout`, or `busy_timeout`.
+- Use `pwsh tools/test-smart.ps1`; do not skip DB tier when these triggers match. Use `-ForceDb` to force DB tier explicitly.
+
 ## Reliability and Diagnostics
 - Prefer structured logging with correlation IDs and scoped context.
 - Ensure global exception paths log full stack traces and correlation IDs.
