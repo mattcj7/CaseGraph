@@ -80,7 +80,7 @@ function Get-KeywordTriggerMatches {
         [string[]]$Keywords
     )
 
-    $matches = New-Object System.Collections.Generic.List[object]
+    $matches = @()
     foreach ($file in $Files) {
         $diffText = Get-DiffTextForFile -FilePath $file
         if ([string]::IsNullOrWhiteSpace($diffText)) {
@@ -98,14 +98,14 @@ function Get-KeywordTriggerMatches {
         }
 
         if ($fileKeywords.Count -gt 0) {
-            $matches.Add([PSCustomObject]@{
-                    File = $file
-                    Keywords = @($fileKeywords | Sort-Object -Unique)
-                })
+            $matches += [PSCustomObject]@{
+                File = $file
+                Keywords = @($fileKeywords | Sort-Object -Unique)
+            }
         }
     }
 
-    return @($matches)
+    return $matches
 }
 
 function Invoke-TierScript {
@@ -198,7 +198,9 @@ try {
     )
     $dbKeywordTriggers = @()
     if ($keywordEligibleFiles.Count -gt 0) {
-        $dbKeywordTriggers = Get-KeywordTriggerMatches -Files $keywordEligibleFiles -Keywords $dbKeywordRules
+        $dbKeywordTriggers = @(
+            Get-KeywordTriggerMatches -Files $keywordEligibleFiles -Keywords $dbKeywordRules
+        )
     }
 
     $uiTriggers = @(Get-TriggeredFiles -Files $changedFiles -RegexRules $uiRules)

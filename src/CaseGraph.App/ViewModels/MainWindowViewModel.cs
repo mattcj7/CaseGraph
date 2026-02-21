@@ -264,6 +264,14 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
 
     public bool HasSelectedTargetIdentifier => SelectedTargetIdentifier is not null;
 
+    public bool CanAddIdentifier => HasSelectedTarget && IsIdentifierInputValid();
+
+    public bool ShowIdentifierValueValidationMessage => HasSelectedTarget && !IsIdentifierInputValid();
+
+    public string IdentifierValueValidationMessage => ShowIdentifierValueValidationMessage
+        ? IdentifierValueGuard.RequiredMessage
+        : string.Empty;
+
     public string SelectedTargetWhereSeenSummary => SelectedTargetSummary is null
         ? "No target selected."
         : $"Linked message events: {_selectedTargetWhereSeenCount:0}";
@@ -405,7 +413,7 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
         SaveSelectedTargetCommand = new AsyncRelayCommand(SaveSelectedTargetAsync);
         AddAliasCommand = new AsyncRelayCommand(AddAliasAsync);
         RemoveAliasCommand = new AsyncRelayCommand(RemoveAliasAsync);
-        AddIdentifierCommand = new AsyncRelayCommand(AddIdentifierAsync);
+        AddIdentifierCommand = CreateSafeAsyncCommand("AddIdentifier", AddIdentifierAsync);
         UpdateIdentifierCommand = new AsyncRelayCommand(UpdateIdentifierAsync);
         RemoveIdentifierCommand = new AsyncRelayCommand(RemoveIdentifierAsync);
         OpenSearchForSelectedTargetCommand = new AsyncRelayCommand(OpenSearchForSelectedTargetAsync);
@@ -533,12 +541,14 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
             SelectedTargetAliases.Clear();
             SelectedTargetIdentifiers.Clear();
             OnPropertyChanged(nameof(SelectedTargetWhereSeenSummary));
+            OnIdentifierInputStateChanged();
             return;
         }
 
         SelectedTargetDisplayName = value.DisplayName;
         SelectedTargetPrimaryAlias = value.PrimaryAlias ?? string.Empty;
         SelectedTargetNotes = value.Notes ?? string.Empty;
+        OnIdentifierInputStateChanged();
         RefreshSelectedTargetDetailsAsync(CancellationToken.None).Forget(
             "RefreshSelectedTargetDetailsOnTargetSelected",
             caseId: _appSessionState.CurrentCaseId,
@@ -571,6 +581,16 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
             "RefreshTargetsOnSearchQueryChanged",
             caseId: _appSessionState.CurrentCaseId
         );
+    }
+
+    partial void OnIdentifierEditorValueRawChanged(string value)
+    {
+        OnIdentifierInputStateChanged();
+    }
+
+    partial void OnIdentifierEditorTypeChanged(TargetIdentifierType value)
+    {
+        OnIdentifierInputStateChanged();
     }
 
     partial void OnIsDarkThemeChanged(bool value)
@@ -1127,6 +1147,13 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
             return;
         }
 
+        if (!TryPrepareIdentifierValue(out var preparedIdentifierValue))
+        {
+            OperationText = IdentifierValueGuard.RequiredMessage;
+            OnIdentifierInputStateChanged();
+            return;
+        }
+
         var targetId = SelectedTargetSummary.TargetId;
         var resolution = IdentifierConflictResolution.Cancel;
         while (true)
@@ -1138,7 +1165,7 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
                         CurrentCaseInfo.CaseId,
                         targetId,
                         IdentifierEditorType,
-                        IdentifierEditorValueRaw,
+                        preparedIdentifierValue,
                         IdentifierEditorNotes,
                         IdentifierEditorIsPrimary,
                         resolution
@@ -1163,7 +1190,41 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
                     return;
                 }
             }
+            catch (ArgumentException ex) when (IsIdentifierValueValidationError(ex))
+            {
+                OperationText = IdentifierValueGuard.RequiredMessage;
+                OnIdentifierInputStateChanged();
+                return;
+            }
         }
+    }
+
+    private bool TryPrepareIdentifierValue(out string preparedIdentifierValue)
+    {
+        return IdentifierValueGuard.TryPrepare(
+            IdentifierEditorType,
+            IdentifierEditorValueRaw,
+            out preparedIdentifierValue
+        );
+    }
+
+    private bool IsIdentifierInputValid()
+    {
+        return TryPrepareIdentifierValue(out _);
+    }
+
+    private void OnIdentifierInputStateChanged()
+    {
+        OnPropertyChanged(nameof(CanAddIdentifier));
+        OnPropertyChanged(nameof(ShowIdentifierValueValidationMessage));
+        OnPropertyChanged(nameof(IdentifierValueValidationMessage));
+    }
+
+    private static bool IsIdentifierValueValidationError(ArgumentException ex)
+    {
+        return string.Equals(ex.ParamName, "valueRaw", StringComparison.Ordinal)
+            || string.Equals(ex.Message, IdentifierValueGuard.RequiredMessage, StringComparison.Ordinal)
+            || ex.Message.StartsWith($"{IdentifierValueGuard.RequiredMessage} ", StringComparison.Ordinal);
     }
 
     private async Task UpdateIdentifierAsync()

@@ -10,6 +10,36 @@ namespace CaseGraph.Infrastructure.Tests;
 
 public sealed class TargetRegistryServiceTests
 {
+    [Theory]
+    [InlineData("   ")]
+    [InlineData("()")]
+    public async Task AddIdentifierAsync_EmptyOrNormalizedEmpty_ThrowsArgumentException(string valueRaw)
+    {
+        await using var fixture = await WorkspaceFixture.CreateAsync();
+        var registry = fixture.Services.GetRequiredService<ITargetRegistryService>();
+
+        var caseInfo = await fixture.CreateCaseAsync("Identifier Validation Case");
+        var target = await registry.CreateTargetAsync(
+            new CreateTargetRequest(caseInfo.CaseId, "Alpha", null, null),
+            CancellationToken.None
+        );
+
+        var ex = await Assert.ThrowsAsync<ArgumentException>(() => registry.AddIdentifierAsync(
+            new AddTargetIdentifierRequest(
+                caseInfo.CaseId,
+                target.TargetId,
+                TargetIdentifierType.Phone,
+                valueRaw,
+                null,
+                IsPrimary: true
+            ),
+            CancellationToken.None
+        ));
+
+        Assert.Equal("valueRaw", ex.ParamName);
+        Assert.StartsWith("Identifier value is required.", ex.Message, StringComparison.Ordinal);
+    }
+
     [Fact]
     public async Task AddIdentifierAsync_DefaultConflictResolution_ThrowsConflict()
     {

@@ -190,10 +190,15 @@
                                       Content="Primary identifier"
                                       IsChecked="{Binding IdentifierEditorIsPrimary, Mode=TwoWay}" />
 
+                            <TextBlock Margin="{StaticResource SpaceTop8}"
+                                       Text="{Binding IdentifierValueValidationMessage}"
+                                       Visibility="{Binding ShowIdentifierValueValidationMessage, Converter={StaticResource BoolToVisibilityConverter}}"
+                                       Style="{StaticResource SecondaryBodyTextStyle}" />
+
                             <StackPanel Margin="{StaticResource SpaceTop8}" Orientation="Horizontal">
                                 <Button Content="Add Identifier"
                                         Command="{Binding AddIdentifierCommand}"
-                                        IsEnabled="{Binding HasSelectedTarget}"
+                                        IsEnabled="{Binding CanAddIdentifier}"
                                         Style="{StaticResource TopBarButtonStyle}" />
                                 <Button Margin="{StaticResource SpaceLeft8}"
                                         Content="Update Identifier"

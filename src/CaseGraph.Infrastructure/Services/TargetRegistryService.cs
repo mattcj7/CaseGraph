@@ -684,7 +684,7 @@ public sealed class TargetRegistryService : ITargetRegistryService
         var normalized = IdentifierNormalizer.Normalize(type, valueRaw);
         if (normalized.Length == 0)
         {
-            throw new InvalidOperationException("Identifier value is required.");
+            throw new ArgumentException("Identifier value is required.", nameof(valueRaw));
         }
 
         var typeText = ToIdentifierTypeText(type);
