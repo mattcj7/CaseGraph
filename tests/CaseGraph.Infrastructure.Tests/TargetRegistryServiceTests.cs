@@ -221,6 +221,7 @@ public sealed class TargetRegistryServiceTests
                 seeded.MessageEventId,
                 MessageParticipantRole.Sender,
                 "+1 (555) 123-0001",
+                TargetIdentifierType.Phone,
                 target.TargetId,
                 null
             ),
@@ -234,7 +235,7 @@ public sealed class TargetRegistryServiceTests
 
         Assert.Equal("Derived", participantLink.SourceType);
         Assert.Equal(seeded.EvidenceItemId, participantLink.SourceEvidenceItemId);
-        Assert.Equal("targets-linker@1", participantLink.IngestModuleVersion);
+        Assert.Equal("UI-Link-v1", participantLink.IngestModuleVersion);
         Assert.Contains(";role=Sender", participantLink.SourceLocator, StringComparison.Ordinal);
         Assert.Equal(target.TargetId, participantLink.TargetId);
 
@@ -243,14 +244,121 @@ public sealed class TargetRegistryServiceTests
             .FirstAsync(item => item.IdentifierId == linkResult.IdentifierId);
         Assert.Equal("Derived", identifier.SourceType);
         Assert.Equal(seeded.EvidenceItemId, identifier.SourceEvidenceItemId);
-        Assert.Equal("targets-linker@1", identifier.IngestModuleVersion);
+        Assert.Equal("UI-Link-v1", identifier.IngestModuleVersion);
 
         var actionTypes = await db.AuditEvents
             .AsNoTracking()
             .Where(audit => audit.CaseId == caseInfo.CaseId)
             .Select(audit => audit.ActionType)
             .ToListAsync();
+        Assert.Contains("LinkIdentifierToTarget", actionTypes);
         Assert.Contains("ParticipantLinked", actionTypes);
+    }
+
+    [Fact]
+    public async Task LinkMessageParticipantAsync_CreateTarget_WritesCreateAudit()
+    {
+        await using var fixture = await WorkspaceFixture.CreateAsync();
+        var registry = fixture.Services.GetRequiredService<ITargetRegistryService>();
+
+        var caseInfo = await fixture.CreateCaseAsync("Participant Create Case");
+        var seeded = await fixture.SeedMessageEventAsync(caseInfo.CaseId, "+15551230099", "+15554445555");
+        var result = await registry.LinkMessageParticipantAsync(
+            new LinkMessageParticipantRequest(
+                caseInfo.CaseId,
+                seeded.MessageEventId,
+                MessageParticipantRole.Sender,
+                "+1 (555) 123-0099",
+                TargetIdentifierType.Phone,
+                TargetId: null,
+                NewTargetDisplayName: "Created from sender"
+            ),
+            CancellationToken.None
+        );
+
+        Assert.True(result.CreatedTarget);
+
+        await using var db = await fixture.CreateDbContextAsync();
+        var actionTypes = await db.AuditEvents
+            .AsNoTracking()
+            .Where(audit => audit.CaseId == caseInfo.CaseId)
+            .Select(audit => audit.ActionType)
+            .ToListAsync();
+        Assert.Contains("CreateTargetFromParticipant", actionTypes);
+        Assert.Contains("LinkIdentifierToTarget", actionTypes);
+    }
+
+    [Fact]
+    public async Task LinkMessageParticipantAsync_ConflictRequiresExplicitResolution()
+    {
+        await using var fixture = await WorkspaceFixture.CreateAsync();
+        var registry = fixture.Services.GetRequiredService<ITargetRegistryService>();
+
+        var caseInfo = await fixture.CreateCaseAsync("Participant Conflict Case");
+        var alpha = await registry.CreateTargetAsync(
+            new CreateTargetRequest(caseInfo.CaseId, "Alpha", null, null),
+            CancellationToken.None
+        );
+        var bravo = await registry.CreateTargetAsync(
+            new CreateTargetRequest(caseInfo.CaseId, "Bravo", null, null),
+            CancellationToken.None
+        );
+        var seeded = await fixture.SeedMessageEventAsync(caseInfo.CaseId, "+15551230001", "+15554445555");
+
+        var initial = await registry.LinkMessageParticipantAsync(
+            new LinkMessageParticipantRequest(
+                caseInfo.CaseId,
+                seeded.MessageEventId,
+                MessageParticipantRole.Sender,
+                "+1 (555) 123-0001",
+                TargetIdentifierType.Phone,
+                alpha.TargetId,
+                null
+            ),
+            CancellationToken.None
+        );
+
+        await Assert.ThrowsAsync<IdentifierConflictException>(() => registry.LinkMessageParticipantAsync(
+            new LinkMessageParticipantRequest(
+                caseInfo.CaseId,
+                seeded.MessageEventId,
+                MessageParticipantRole.Sender,
+                "+15551230001",
+                TargetIdentifierType.Phone,
+                bravo.TargetId,
+                null
+            ),
+            CancellationToken.None
+        ));
+
+        var resolved = await registry.LinkMessageParticipantAsync(
+            new LinkMessageParticipantRequest(
+                caseInfo.CaseId,
+                seeded.MessageEventId,
+                MessageParticipantRole.Sender,
+                "+15551230001",
+                TargetIdentifierType.Phone,
+                bravo.TargetId,
+                null,
+                IdentifierConflictResolution.KeepExistingAndAlsoLinkToRequestedTarget
+            ),
+            CancellationToken.None
+        );
+
+        Assert.Equal(bravo.TargetId, resolved.EffectiveTargetId);
+        Assert.Equal(initial.IdentifierId, resolved.IdentifierId);
+        Assert.False(resolved.MovedIdentifier);
+        Assert.False(resolved.UsedExistingTarget);
+
+        await using var db = await fixture.CreateDbContextAsync();
+        var links = await db.TargetIdentifierLinks
+            .AsNoTracking()
+            .Where(link => link.CaseId == caseInfo.CaseId && link.IdentifierId == initial.IdentifierId)
+            .OrderBy(link => link.TargetId)
+            .ToListAsync();
+        Assert.Equal(2, links.Count);
+        Assert.Contains(links, link => link.TargetId == alpha.TargetId);
+        Assert.Contains(links, link => link.TargetId == bravo.TargetId && !link.IsPrimary);
     }
 
     [Fact]

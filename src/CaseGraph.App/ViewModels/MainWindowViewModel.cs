@@ -1183,7 +1183,7 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
             }
             catch (IdentifierConflictException ex)
             {
-                resolution = PromptConflictResolution(ex.Conflict);
+                resolution = PromptIdentifierEditorConflictResolution(ex.Conflict);
                 if (resolution == IdentifierConflictResolution.Cancel)
                 {
                     OperationText = "Identifier add canceled.";
@@ -1266,7 +1266,7 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
             }
             catch (IdentifierConflictException ex)
             {
-                resolution = PromptConflictResolution(ex.Conflict);
+                resolution = PromptIdentifierEditorConflictResolution(ex.Conflict);
                 if (resolution == IdentifierConflictResolution.Cancel)
                 {
                     OperationText = "Identifier update canceled.";
@@ -1382,64 +1382,41 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
 
         await RefreshTargetsAsync(CancellationToken.None);
 
-        Guid? requestedTargetId = null;
-        string? requestedTargetName = null;
-        if (!createTarget)
-        {
-            var selectedTarget = PromptForTargetSelection();
-            if (selectedTarget is null)
-            {
-                MessageSearchStatusText = "Link canceled.";
-                return;
-            }
-
-            requestedTargetId = selectedTarget.TargetId;
-            requestedTargetName = selectedTarget.DisplayName;
-        }
-
         var linkedCount = 0;
         MessageParticipantLinkResult? lastResult = null;
         foreach (var participant in participants)
         {
-            if (createTarget)
+            var inferredType = TryInferParticipantIdentifierType(participant);
+            var previewType = inferredType ?? TargetIdentifierType.Other;
+            var normalizedPreview = IdentifierNormalizer.Normalize(previewType, participant);
+            if (normalizedPreview.Length == 0)
             {
-                var namePrompt = new TextInputDialog(
-                    title: $"Create Target from {role}",
-                    prompt: $"Enter a target name for {role.ToString().ToLowerInvariant()} value \"{participant}\":",
-                    confirmButtonText: "Create + Link",
-                    initialValue: participant
-                )
-                {
-                    Owner = Application.Current.MainWindow
-                };
-
-                if (namePrompt.ShowDialog() != true || string.IsNullOrWhiteSpace(namePrompt.Value))
-                {
-                    MessageSearchStatusText = linkedCount == 0
-                        ? "Create/link canceled."
-                        : $"Linked {linkedCount} participant(s).";
-                    return;
-                }
-
-                requestedTargetName = namePrompt.Value;
+                normalizedPreview = participant.Trim();
             }
 
-            var confirmationTarget = createTarget
-                ? $"new target \"{requestedTargetName}\""
-                : $"existing target \"{requestedTargetName}\"";
-            var confirmation = MessageBox.Show(
-                Application.Current.MainWindow,
-                $"Link {role.ToString().ToLowerInvariant()} value \"{participant}\" to {confirmationTarget}?",
-                "Confirm Participant Link",
-                MessageBoxButton.YesNo,
-                MessageBoxImage.Question,
-                MessageBoxResult.No
-            );
-            if (confirmation != MessageBoxResult.Yes)
+            var dialog = new ParticipantLinkDialog(
+                title: createTarget ? "Create Target from this..." : "Link to Target...",
+                participantRaw: participant,
+                participantNormalized: normalizedPreview,
+                targets: Targets.ToList(),
+                inferredType: inferredType,
+                initialMode: createTarget
+                    ? ParticipantLinkMode.CreateTarget
+                    : ParticipantLinkMode.LinkToExistingTarget
+            )
             {
-                continue;
+                Owner = Application.Current.MainWindow
+            };
+
+            if (dialog.ShowDialog() != true || dialog.Selection is null)
+            {
+                MessageSearchStatusText = linkedCount == 0
+                    ? "Link canceled."
+                    : $"Linked {linkedCount} participant(s).";
+                return;
             }
 
+            var selection = dialog.Selection;
             var conflictResolution = IdentifierConflictResolution.Cancel;
             while (true)
             {
@@ -1451,8 +1428,9 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
                             SelectedMessageSearchResult.MessageEventId,
                             role,
                             participant,
-                            requestedTargetId,
-                            createTarget ? requestedTargetName : null,
+                            selection.IdentifierType,
+                            selection.TargetId,
+                            selection.NewTargetDisplayName,
                             conflictResolution
                         ),
                         CancellationToken.None
@@ -1462,7 +1440,7 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
                 }
                 catch (IdentifierConflictException ex)
                 {
-                    conflictResolution = PromptConflictResolution(ex.Conflict);
+                    conflictResolution = PromptParticipantLinkConflictResolution(ex.Conflict);
                     if (conflictResolution == IdentifierConflictResolution.Cancel)
                     {
                         break;
@@ -1485,32 +1463,9 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
             : $"Linked {linkedCount} participant(s).";
     }
 
-    private TargetSummary? PromptForTargetSelection()
-    {
-        if (Targets.Count == 0)
-        {
-            MessageSearchStatusText = "No targets exist yet. Create one first.";
-            return null;
-        }
-
-        var dialog = new TargetPickerDialog(
-            "Select Target",
-            "Choose an existing target to link this participant.",
-            Targets.ToList()
-        )
-        {
-            Owner = Application.Current.MainWindow
-        };
-
-        if (dialog.ShowDialog() != true || !dialog.SelectedTargetId.HasValue)
-        {
-            return null;
-        }
-
-        return Targets.FirstOrDefault(target => target.TargetId == dialog.SelectedTargetId.Value);
-    }
-
-    private IdentifierConflictResolution PromptConflictResolution(IdentifierConflictInfo conflict)
+    private IdentifierConflictResolution PromptIdentifierEditorConflictResolution(
+        IdentifierConflictInfo conflict
+    )
     {
         var choice = MessageBox.Show(
             Application.Current.MainWindow,
@@ -1533,6 +1488,43 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
             MessageBoxResult.No => IdentifierConflictResolution.UseExistingTarget,
             _ => IdentifierConflictResolution.Cancel
         };
+    }
+
+    private IdentifierConflictResolution PromptParticipantLinkConflictResolution(
+        IdentifierConflictInfo conflict
+    )
+    {
+        var choice = MessageBox.Show(
+            Application.Current.MainWindow,
+            $"Identifier conflict:\n\n" +
+            $"Type: {conflict.Type}\n" +
+            $"Value: {conflict.ValueRaw}\n" +
+            $"Already linked to: {conflict.ExistingTargetDisplayName}\n\n" +
+            "Yes = Reassign identifier to selected target\n" +
+            "No = Keep existing link and also add this identifier to selected target\n" +
+            "Cancel = Stop",
+            "Identifier Conflict",
+            MessageBoxButton.YesNoCancel,
+            MessageBoxImage.Warning,
+            MessageBoxResult.Cancel
+        );
+
+        return choice switch
+        {
+            MessageBoxResult.Yes => IdentifierConflictResolution.MoveIdentifierToRequestedTarget,
+            MessageBoxResult.No => IdentifierConflictResolution.KeepExistingAndAlsoLinkToRequestedTarget,
+            _ => IdentifierConflictResolution.Cancel
+        };
+    }
+
+    private static TargetIdentifierType? TryInferParticipantIdentifierType(string participantRaw)
+    {
+        var inferred = IdentifierNormalizer.InferType(participantRaw);
+        return inferred is TargetIdentifierType.Phone
+            or TargetIdentifierType.Email
+            or TargetIdentifierType.SocialHandle
+            ? inferred
+            : null;
     }
 
     private static IReadOnlyList<string> ExtractParticipants(

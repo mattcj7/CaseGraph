@@ -4,5 +4,6 @@ public enum IdentifierConflictResolution
 {
     Cancel = 0,
     MoveIdentifierToRequestedTarget = 1,
-    UseExistingTarget = 2
+    UseExistingTarget = 2,
+    KeepExistingAndAlsoLinkToRequestedTarget = 3
 }

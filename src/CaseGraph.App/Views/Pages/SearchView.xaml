@@ -109,6 +109,15 @@
                         <TextBlock Style="{StaticResource BodyTextStyle}"
                                    Text="{Binding SelectedMessageSearchResult.Sender, TargetNullValue=(none)}"
                                    TextWrapping="Wrap" />
+                        <WrapPanel Margin="{StaticResource SpaceTop8}">
+                            <Button Content="Link to Target..."
+                                    Command="{Binding LinkSenderToExistingTargetCommand}"
+                                    Style="{StaticResource TopBarButtonStyle}" />
+                            <Button Margin="{StaticResource SpaceLeft8}"
+                                    Content="Create Target from this..."
+                                    Command="{Binding CreateTargetFromSenderCommand}"
+                                    Style="{StaticResource TopBarButtonStyle}" />
+                        </WrapPanel>
 
                         <TextBlock Margin="{StaticResource SpaceTop12}"
                                    Style="{StaticResource SecondaryBodyTextStyle}"
@@ -116,6 +125,15 @@
                         <TextBlock Style="{StaticResource BodyTextStyle}"
                                    Text="{Binding SelectedMessageSearchResult.Recipients, TargetNullValue=(none)}"
                                    TextWrapping="Wrap" />
+                        <WrapPanel Margin="{StaticResource SpaceTop8}">
+                            <Button Content="Link to Target..."
+                                    Command="{Binding LinkRecipientsToExistingTargetCommand}"
+                                    Style="{StaticResource TopBarButtonStyle}" />
+                            <Button Margin="{StaticResource SpaceLeft8}"
+                                    Content="Create Target from this..."
+                                    Command="{Binding CreateTargetFromRecipientsCommand}"
+                                    Style="{StaticResource TopBarButtonStyle}" />
+                        </WrapPanel>
 
                         <TextBlock Margin="{StaticResource SpaceTop12}"
                                    Style="{StaticResource SecondaryBodyTextStyle}"
@@ -138,29 +156,6 @@
                                 Command="{Binding CopyMessageStoredPathCommand}"
                                 Style="{StaticResource TopBarButtonStyle}" />
 
-                        <TextBlock Margin="{StaticResource SpaceTop16}"
-                                   Style="{StaticResource SecondaryBodyTextStyle}"
-                                   Text="People/Target Actions" />
-
-                        <Button Margin="{StaticResource SpaceTop8}"
-                                Content="Create Target from Sender"
-                                Command="{Binding CreateTargetFromSenderCommand}"
-                                Style="{StaticResource TopBarButtonStyle}" />
-
-                        <Button Margin="{StaticResource SpaceTop8}"
-                                Content="Link Sender to Existing Target"
-                                Command="{Binding LinkSenderToExistingTargetCommand}"
-                                Style="{StaticResource TopBarButtonStyle}" />
-
-                        <Button Margin="{StaticResource SpaceTop8}"
-                                Content="Create Target from Recipients"
-                                Command="{Binding CreateTargetFromRecipientsCommand}"
-                                Style="{StaticResource TopBarButtonStyle}" />
-
-                        <Button Margin="{StaticResource SpaceTop8}"
-                                Content="Link Recipients to Existing Target"
-                                Command="{Binding LinkRecipientsToExistingTargetCommand}"
-                                Style="{StaticResource TopBarButtonStyle}" />
                     </StackPanel>
                 </ScrollViewer>
             </Border>

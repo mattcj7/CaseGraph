@@ -5,6 +5,7 @@ public sealed record LinkMessageParticipantRequest(
     Guid MessageEventId,
     MessageParticipantRole Role,
     string ParticipantRaw,
+    TargetIdentifierType? RequestedIdentifierType,
     Guid? TargetId,
     string? NewTargetDisplayName,
     IdentifierConflictResolution ConflictResolution = IdentifierConflictResolution.Cancel

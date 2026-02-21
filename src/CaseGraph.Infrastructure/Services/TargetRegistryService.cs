@@ -12,7 +12,7 @@ public sealed class TargetRegistryService : ITargetRegistryService
     private const string ManualSourceType = "Manual";
     private const string ManualModuleVersion = "manual-ui@1";
     private const string DerivedSourceType = "Derived";
-    private const string DerivedModuleVersion = "targets-linker@1";
+    private const string ParticipantLinkModuleVersion = "UI-Link-v1";
 
     private readonly IDbContextFactory<WorkspaceDbContext> _dbContextFactory;
     private readonly IWorkspaceDatabaseInitializer _databaseInitializer;
@@ -459,7 +459,13 @@ public sealed class TargetRegistryService : ITargetRegistryService
             throw new InvalidOperationException("Message event not found.");
         }
 
-        var type = IdentifierNormalizer.InferType(participantRaw);
+        var type = ResolveParticipantIdentifierType(request.RequestedIdentifierType, participantRaw);
+        if (!IdentifierValueGuard.TryPrepare(type, participantRaw, out var preparedParticipantRaw))
+        {
+            throw new ArgumentException(IdentifierValueGuard.RequiredMessage, nameof(request.ParticipantRaw));
+        }
+
+        participantRaw = preparedParticipantRaw;
         var normalized = IdentifierNormalizer.Normalize(type, participantRaw);
         if (normalized.Length == 0)
         {
@@ -485,8 +491,10 @@ public sealed class TargetRegistryService : ITargetRegistryService
                 );
         }
 
+        var linkSourceLocator = $"{messageEvent.SourceLocator};role={request.Role}";
         var createdTarget = false;
         var targetId = request.TargetId;
+        TargetRecord? target = null;
         if (!targetId.HasValue)
         {
             if (existingIdentifierLink is not null)
@@ -510,15 +518,16 @@ public sealed class TargetRegistryService : ITargetRegistryService
                     request.NewTargetDisplayName ?? participantRaw,
                     primaryAlias: null,
                     notes: $"Created from {request.Role} link action.",
-                    sourceLocator: "manual:search/create-target-from-participant",
+                    sourceLocator: linkSourceLocator,
                     ct
                 );
                 targetId = newTarget.TargetId;
                 createdTarget = true;
+                target = newTarget;
             }
         }
 
-        var target = await db.Targets.FirstOrDefaultAsync(
+        target ??= await db.Targets.FirstOrDefaultAsync(
             t => t.CaseId == request.CaseId && t.TargetId == targetId.Value,
             ct
         );
@@ -538,8 +547,8 @@ public sealed class TargetRegistryService : ITargetRegistryService
             isPrimary: false,
             sourceType: DerivedSourceType,
             sourceEvidenceItemId: messageEvent.EvidenceItemId,
-            sourceLocator: $"{messageEvent.SourceLocator};role={request.Role}",
-            ingestModuleVersion: DerivedModuleVersion,
+            sourceLocator: linkSourceLocator,
+            ingestModuleVersion: ParticipantLinkModuleVersion,
             conflictResolution: request.ConflictResolution,
             isUpdateOperation: false,
             ct
@@ -572,8 +581,8 @@ public sealed class TargetRegistryService : ITargetRegistryService
                 CreatedAtUtc = _clock.UtcNow.ToUniversalTime(),
                 SourceType = DerivedSourceType,
                 SourceEvidenceItemId = messageEvent.EvidenceItemId,
-                SourceLocator = $"{messageEvent.SourceLocator};role={request.Role}",
-                IngestModuleVersion = DerivedModuleVersion
+                SourceLocator = linkSourceLocator,
+                IngestModuleVersion = ParticipantLinkModuleVersion
             };
             db.MessageParticipantLinks.Add(participantLink);
             participantLinkId = participantLink.ParticipantLinkId;
@@ -581,11 +590,53 @@ public sealed class TargetRegistryService : ITargetRegistryService
         else
         {
             existingParticipantLink.TargetId = effectiveTargetId;
-            existingParticipantLink.SourceLocator = $"{messageEvent.SourceLocator};role={request.Role}";
+            existingParticipantLink.SourceLocator = linkSourceLocator;
             participantLinkId = existingParticipantLink.ParticipantLinkId;
         }
 
         await db.SaveChangesAsync(ct);
+
+        if (createdTarget)
+        {
+            await WriteAuditAsync(
+                actionType: "CreateTargetFromParticipant",
+                caseId: request.CaseId,
+                evidenceItemId: messageEvent.EvidenceItemId,
+                summary: "Target created from message participant.",
+                payload: new
+                {
+                    request.MessageEventId,
+                    target.TargetId,
+                    target.DisplayName,
+                    request.Role,
+                    participantRaw,
+                    messageEvent.EvidenceItemId,
+                    SourceLocator = linkSourceLocator
+                },
+                ct
+            );
+        }
+
+        await WriteAuditAsync(
+            actionType: "LinkIdentifierToTarget",
+            caseId: request.CaseId,
+            evidenceItemId: messageEvent.EvidenceItemId,
+            summary: "Identifier linked to target from message participant.",
+            payload: new
+            {
+                request.MessageEventId,
+                request.Role,
+                Type = type.ToString(),
+                participantRaw,
+                NormalizedValue = normalized,
+                IdentifierId = identifierMutation.Identifier.IdentifierId,
+                TargetId = effectiveTargetId,
+                messageEvent.EvidenceItemId,
+                SourceLocator = linkSourceLocator,
+                IngestModuleVersion = ParticipantLinkModuleVersion
+            },
+            ct
+        );
 
         await WriteAuditAsync(
             actionType: "ParticipantLinked",
@@ -672,7 +723,9 @@ public sealed class TargetRegistryService : ITargetRegistryService
         CancellationToken ct
     )
     {
-        var target = await db.Targets.FirstOrDefaultAsync(
+        var target = db.Targets.Local.FirstOrDefault(
+            t => t.CaseId == caseId && t.TargetId == targetId
+        ) ?? await db.Targets.FirstOrDefaultAsync(
             t => t.CaseId == caseId && t.TargetId == targetId,
             ct
         );
@@ -731,61 +784,87 @@ public sealed class TargetRegistryService : ITargetRegistryService
             }
         }
 
-        var currentLink = await db.TargetIdentifierLinks
+        var existingLinks = await db.TargetIdentifierLinks
             .Include(l => l.Target)
-            .FirstOrDefaultAsync(
-                l => l.CaseId == caseId && l.IdentifierId == identifier.IdentifierId,
-                ct
-            );
+            .Where(l => l.CaseId == caseId && l.IdentifierId == identifier.IdentifierId)
+            .ToListAsync(ct);
 
+        var currentLink = existingLinks.FirstOrDefault(link => link.TargetId == targetId);
+        var conflictingLinks = existingLinks
+            .Where(link => link.TargetId != targetId)
+            .ToList();
         var movedIdentifier = false;
         var usedExistingTarget = false;
         var effectiveTargetId = targetId;
-        Guid? previousTargetId = null;
+        var previousTargetIds = new List<Guid>();
 
-        if (currentLink is null)
+        TargetIdentifierLinkRecord BuildLink(bool primary)
         {
-            db.TargetIdentifierLinks.Add(new TargetIdentifierLinkRecord
+            return new TargetIdentifierLinkRecord
             {
                 LinkId = Guid.NewGuid(),
                 CaseId = caseId,
                 TargetId = targetId,
                 IdentifierId = identifier.IdentifierId,
-                IsPrimary = isPrimary,
+                IsPrimary = primary,
                 CreatedAtUtc = now,
                 SourceType = sourceType,
                 SourceEvidenceItemId = sourceEvidenceItemId,
                 SourceLocator = sourceLocator,
                 IngestModuleVersion = ingestModuleVersion
-            });
+            };
         }
-        else if (currentLink.TargetId == targetId)
-        {
-            currentLink.IsPrimary = isPrimary;
-        }
-        else
-        {
-            if (conflictResolution == IdentifierConflictResolution.Cancel)
-            {
-                throw BuildIdentifierConflict(caseId, identifier, currentLink);
-            }
 
-            if (conflictResolution == IdentifierConflictResolution.UseExistingTarget)
+        if (currentLink is null)
+        {
+            if (conflictingLinks.Count == 0)
             {
-                usedExistingTarget = true;
-                effectiveTargetId = currentLink.TargetId;
+                db.TargetIdentifierLinks.Add(BuildLink(isPrimary));
             }
             else
             {
-                previousTargetId = currentLink.TargetId;
-                currentLink.TargetId = targetId;
-                currentLink.IsPrimary = isPrimary;
-                currentLink.SourceType = sourceType;
-                currentLink.SourceEvidenceItemId = sourceEvidenceItemId;
-                currentLink.SourceLocator = sourceLocator;
-                currentLink.IngestModuleVersion = ingestModuleVersion;
+                switch (conflictResolution)
+                {
+                    case IdentifierConflictResolution.Cancel:
+                        throw BuildIdentifierConflict(caseId, identifier, conflictingLinks[0]);
+                    case IdentifierConflictResolution.UseExistingTarget:
+                        usedExistingTarget = true;
+                        effectiveTargetId = conflictingLinks[0].TargetId;
+                        break;
+                    case IdentifierConflictResolution.KeepExistingAndAlsoLinkToRequestedTarget:
+                        db.TargetIdentifierLinks.Add(BuildLink(primary: false));
+                        break;
+                    case IdentifierConflictResolution.MoveIdentifierToRequestedTarget:
+                        foreach (var conflictingLink in conflictingLinks)
+                        {
+                            previousTargetIds.Add(conflictingLink.TargetId);
+                            db.TargetIdentifierLinks.Remove(conflictingLink);
+                        }
+
+                        db.TargetIdentifierLinks.Add(BuildLink(isPrimary));
+                        movedIdentifier = true;
+                        effectiveTargetId = targetId;
+                        break;
+                    default:
+                        throw new InvalidOperationException(
+                            $"Unsupported conflict resolution '{conflictResolution}'."
+                        );
+                }
+            }
+        }
+        else
+        {
+            currentLink.IsPrimary = isPrimary;
+            if (conflictingLinks.Count > 0
+                && conflictResolution == IdentifierConflictResolution.MoveIdentifierToRequestedTarget)
+            {
+                foreach (var conflictingLink in conflictingLinks)
+                {
+                    previousTargetIds.Add(conflictingLink.TargetId);
+                    db.TargetIdentifierLinks.Remove(conflictingLink);
+                }
+
                 movedIdentifier = true;
-                effectiveTargetId = targetId;
             }
         }
 
@@ -859,7 +938,7 @@ public sealed class TargetRegistryService : ITargetRegistryService
                 summary: "Identifier moved away from previous target.",
                 payload: new
                 {
-                    PreviousTargetId = previousTargetId,
+                    PreviousTargetIds = previousTargetIds,
                     identifier.IdentifierId
                 },
                 ct
@@ -1031,6 +1110,30 @@ public sealed class TargetRegistryService : ITargetRegistryService
                 JsonPayload = JsonSerializer.Serialize(payload)
             },
             ct
+        );
+    }
+
+    private static TargetIdentifierType ResolveParticipantIdentifierType(
+        TargetIdentifierType? requestedType,
+        string participantRaw
+    )
+    {
+        if (requestedType.HasValue)
+        {
+            return requestedType.Value;
+        }
+
+        var inferred = IdentifierNormalizer.InferType(participantRaw);
+        if (inferred is TargetIdentifierType.Phone
+            or TargetIdentifierType.Email
+            or TargetIdentifierType.SocialHandle)
+        {
+            return inferred;
+        }
+
+        throw new ArgumentException(
+            "Identifier type could not be inferred. Provide RequestedIdentifierType.",
+            nameof(participantRaw)
         );
     }
 
