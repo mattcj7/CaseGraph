@@ -55,12 +55,16 @@ public sealed class TargetRegistryService : ITargetRegistryService
             );
         }
 
-        var targets = await query
-            .OrderBy(t => t.DisplayName)
-            .ThenBy(t => t.CreatedAtUtc)
-            .ToListAsync(ct);
+        var targets = await query.ToListAsync(ct);
 
         return targets
+            .OrderByDescending(target =>
+                target.UpdatedAtUtc == default
+                    ? target.CreatedAtUtc
+                    : target.UpdatedAtUtc
+            )
+            .ThenBy(target => target.DisplayName, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(target => target.TargetId)
             .Select(MapSummary)
             .ToList();
     }

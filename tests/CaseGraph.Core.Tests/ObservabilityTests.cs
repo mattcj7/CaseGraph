@@ -50,6 +50,91 @@ public sealed class ObservabilityTests
     }
 
     [Fact]
+    public async Task UiExceptionReporterContextBuild_FromBackgroundThread_DoesNotThrow()
+    {
+        var state = new AppSessionState
+        {
+            CurrentCaseId = Guid.NewGuid(),
+            CurrentEvidenceId = Guid.NewGuid()
+        };
+        var correlationId = Guid.NewGuid().ToString("N");
+
+        var context = await Task.Run(() =>
+            UiExceptionReportContextBuilder.Build(correlationId, state)
+        );
+
+        Assert.Equal(correlationId, context["correlationId"]?.ToString());
+        Assert.Equal(state.CurrentCaseId?.ToString("D"), context["caseId"]?.ToString());
+        Assert.Equal(state.CurrentEvidenceId?.ToString("D"), context["evidenceId"]?.ToString());
+    }
+
+    [Fact]
+    public void UnobservedTaskExceptionHandler_DoesNotThrow_AndMarksObserved()
+    {
+        var logsRoot = CreateTempDirectory();
+        try
+        {
+            using var logOverride = new LogDirectoryOverrideScope(logsRoot);
+            var aggregate = new AggregateException(new InvalidOperationException("boom-unobserved"));
+            var args = new UnobservedTaskExceptionEventArgs(aggregate);
+
+            var exception = Record.Exception(() =>
+            {
+                UnobservedTaskExceptionContainment.Handle(
+                    args,
+                    "Unit test unobserved exception.",
+                    scheduleNotification: _ => throw new InvalidOperationException("notify-failed")
+                );
+            });
+
+            Assert.Null(exception);
+            Assert.True(args.Observed);
+
+            var events = ReadStructuredEvents(AppFileLogger.GetCurrentLogPath());
+            Assert.Contains(
+                events,
+                e => TryGetString(e, "eventName") == "UnobservedTaskException"
+                    && (TryGetString(e, "exception")?.Contains("boom-unobserved", StringComparison.Ordinal) ?? false)
+            );
+            Assert.Contains(
+                events,
+                e => TryGetString(e, "eventName") == "UnobservedTaskExceptionNotificationFailed"
+            );
+        }
+        finally
+        {
+            TryDeleteDirectory(logsRoot);
+        }
+    }
+
+    [Fact]
+    public void ForgetHelper_LogsExceptions()
+    {
+        var logsRoot = CreateTempDirectory();
+        try
+        {
+            using var logOverride = new LogDirectoryOverrideScope(logsRoot);
+            var correlationId = Guid.NewGuid().ToString("N");
+            Task.FromException(new InvalidOperationException("forget-boom"))
+                .Forget("UnitTestForget", correlationId);
+
+            var events = ReadStructuredEvents(AppFileLogger.GetCurrentLogPath());
+            var failure = events.FirstOrDefault(
+                e => TryGetString(e, "eventName") == "FireAndForgetTaskFailed"
+                    && TryGetString(e, "correlationId") == correlationId
+            );
+
+            Assert.True(failure.ValueKind != JsonValueKind.Undefined);
+            Assert.Contains("forget-boom", TryGetString(failure, "exception") ?? string.Empty);
+            Assert.Equal("UnitTestForget", TryGetString(failure, "actionName"));
+        }
+        finally
+        {
+            TryDeleteDirectory(logsRoot);
+        }
+    }
+
+    [Fact]
     public void ActionScope_InjectsCorrelationIdIntoStructuredEvents()
     {
         var logsRoot = CreateTempDirectory();

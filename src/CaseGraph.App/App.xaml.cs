@@ -6,6 +6,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using System.IO;
 using System.Linq;
+using System.Threading;
 using System.Windows;
 using System.Windows.Threading;
 using Wpf.Ui.Appearance;
@@ -23,6 +24,8 @@ public partial class App : Application
     private bool _fatalShutdownRequested;
     private bool _selfTestMode;
     private bool _cleanExitRecorded;
+    private Mutex? _singleInstanceMutex;
+    private bool _singleInstanceMutexHeld;
 
     protected override async void OnStartup(StartupEventArgs e)
     {
@@ -44,6 +47,24 @@ public partial class App : Application
         AppFileLogger.Log($"Startup begin. Args: {string.Join(' ', e.Args)}");
         AppFileLogger.Log($"Workspace root: {workspaceRoot}");
         AppFileLogger.Log($"Workspace DB path: {workspaceDbPath}");
+
+        if (!TryAcquireSingleInstanceGuard())
+        {
+            AppFileLogger.LogEvent(
+                eventName: "SingleInstanceGuardRejected",
+                level: "WARN",
+                message: "Another instance is already running."
+            );
+            MessageBox.Show(
+                "Another instance is already running.",
+                "CaseGraph",
+                MessageBoxButton.OK,
+                MessageBoxImage.Information
+            );
+            Shutdown(-1);
+            return;
+        }
+
         RegisterGlobalExceptionHandlers();
 
         try
@@ -96,6 +117,7 @@ public partial class App : Application
         RecordCleanExitIfNeeded("OnExit");
         UnregisterGlobalExceptionHandlers();
         UnregisterHostLifetimeBreadcrumbs();
+        ReleaseSingleInstanceGuard();
 
         if (_host is not null)
         {
@@ -120,7 +142,12 @@ public partial class App : Application
         return HandleFatalReportAsync(
             title,
             "The application encountered a fatal error and must close.",
-            UiExceptionReporter.LogFatalException(context, ex, ResolveDiagnosticsService())
+            UiExceptionReporter.LogFatalException(
+                context,
+                ex,
+                ResolveDiagnosticsService(),
+                ResolveAppSessionState()
+            )
         );
     }
 
@@ -137,12 +164,50 @@ public partial class App : Application
             await migrationService.EnsureMigratedAsync(CancellationToken.None);
             return true;
         }
+        catch (TimeoutException ex)
+        {
+            var snapshot = ResolveDiagnosticsService()?.GetSnapshot();
+            var dbPath = snapshot?.WorkspaceDbPath ?? "(unknown)";
+            var logsDirectory = snapshot?.LogsDirectory ?? AppFileLogger.GetLogDirectory();
+
+            AppFileLogger.LogEvent(
+                eventName: "WorkspaceInitializationWatchdogTimeout",
+                level: "ERROR",
+                message: "Workspace initialization timed out; workspace.db may be locked by another process or another CaseGraph instance.",
+                ex: ex,
+                fields: new Dictionary<string, object?>
+                {
+                    ["workspaceDbPath"] = dbPath,
+                    ["logsDirectory"] = logsDirectory
+                }
+            );
+            AppFileLogger.Flush();
+
+            if (!_selfTestMode)
+            {
+                MessageBox.Show(
+                    "Workspace initialization timed out and the app must close."
+                    + Environment.NewLine
+                    + Environment.NewLine
+                    + $"Workspace DB: {dbPath}"
+                    + Environment.NewLine
+                    + $"Logs: {logsDirectory}",
+                    "CaseGraph Workspace Timeout",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Error
+                );
+            }
+
+            await ShutdownAsync(-1);
+            return false;
+        }
         catch (Exception ex)
         {
             var report = UiExceptionReporter.LogFatalException(
                 context,
                 ex,
-                ResolveDiagnosticsService()
+                ResolveDiagnosticsService(),
+                ResolveAppSessionState()
             );
 
             AppFileLogger.Flush();
@@ -187,7 +252,8 @@ public partial class App : Application
             var report = UiExceptionReporter.LogFatalException(
                 "Self-test execution failed.",
                 ex,
-                ResolveDiagnosticsService()
+                ResolveDiagnosticsService(),
+                ResolveAppSessionState()
             );
             AppFileLogger.Log(
                 $"[SelfTest] Failure CorrelationId={report.CorrelationId} LogPath={report.LogPath}"
@@ -226,49 +292,120 @@ public partial class App : Application
     )
     {
         e.Handled = true;
-        await HandleFatalExceptionAsync(
-            "CaseGraph UI Error",
-            "Unhandled UI-thread exception.",
-            e.Exception
-        );
+        try
+        {
+            AppFileLogger.LogEvent(
+                eventName: "DispatcherUnhandledExceptionCaptured",
+                level: "FATAL",
+                message: "Unhandled UI-thread exception captured.",
+                ex: e.Exception
+            );
+            await HandleFatalExceptionAsync(
+                "CaseGraph UI Error",
+                "Unhandled UI-thread exception.",
+                e.Exception
+            );
+        }
+        catch (Exception handlerEx)
+        {
+            AppFileLogger.LogEvent(
+                eventName: "DispatcherUnhandledExceptionHandlerFailed",
+                level: "WARN",
+                message: "DispatcherUnhandledException handler failed.",
+                ex: handlerEx,
+                fields: new Dictionary<string, object?>
+                {
+                    ["originalException"] = e.Exception.ToString()
+                }
+            );
+        }
     }
 
     private void OnAppDomainUnhandledException(object? sender, UnhandledExceptionEventArgs e)
     {
-        if (e.ExceptionObject is Exception ex)
+        try
         {
-            HandleFatalExceptionAsync(
+            if (e.ExceptionObject is Exception ex)
+            {
+                AppFileLogger.LogEvent(
+                    eventName: "AppDomainUnhandledExceptionCaptured",
+                    level: "FATAL",
+                    message: "Unhandled AppDomain exception captured.",
+                    ex: ex
+                );
+
+                HandleFatalExceptionAsync(
+                    "CaseGraph Fatal Error",
+                    "Unhandled AppDomain exception.",
+                    ex
+                )
+                    .GetAwaiter()
+                    .GetResult();
+                return;
+            }
+
+            AppFileLogger.LogEvent(
+                eventName: "AppDomainUnhandledNonExceptionCaptured",
+                level: "FATAL",
+                message: "Unhandled AppDomain exception object captured.",
+                fields: new Dictionary<string, object?>
+                {
+                    ["exceptionObject"] = e.ExceptionObject?.ToString() ?? "(null)"
+                }
+            );
+
+            var report = UiExceptionReporter.LogFatalExceptionObject(
+                "Unhandled AppDomain exception (non-Exception object).",
+                e.ExceptionObject,
+                ResolveDiagnosticsService(),
+                ResolveAppSessionState()
+            );
+            HandleFatalReportAsync(
                 "CaseGraph Fatal Error",
-                "Unhandled AppDomain exception.",
-                ex
+                "The application encountered a fatal non-Exception error and must close.",
+                report
             )
                 .GetAwaiter()
                 .GetResult();
-            return;
         }
-
-        var report = UiExceptionReporter.LogFatalExceptionObject(
-            "Unhandled AppDomain exception (non-Exception object).",
-            e.ExceptionObject,
-            ResolveDiagnosticsService()
-        );
-        HandleFatalReportAsync(
-            "CaseGraph Fatal Error",
-            "The application encountered a fatal non-Exception error and must close.",
-            report
-        )
-            .GetAwaiter()
-            .GetResult();
+        catch (Exception handlerEx)
+        {
+            AppFileLogger.LogEvent(
+                eventName: "AppDomainUnhandledExceptionHandlerFailed",
+                level: "WARN",
+                message: "AppDomain unhandled exception handler failed.",
+                ex: handlerEx,
+                fields: new Dictionary<string, object?>
+                {
+                    ["originalExceptionObject"] = e.ExceptionObject?.ToString() ?? "(null)"
+                }
+            );
+        }
     }
 
-    private async void OnUnobservedTaskException(object? sender, UnobservedTaskExceptionEventArgs e)
+    private void OnUnobservedTaskException(object? sender, UnobservedTaskExceptionEventArgs e)
     {
-        e.SetObserved();
-        await HandleFatalExceptionAsync(
-            "CaseGraph Background Task Error",
-            "Unobserved background task exception.",
-            e.Exception
-        );
+        try
+        {
+            UnobservedTaskExceptionContainment.Handle(
+                e,
+                "Unobserved background task exception captured.",
+                scheduleNotification: ScheduleUnobservedTaskExceptionNotification
+            );
+        }
+        catch (Exception handlerEx)
+        {
+            AppFileLogger.LogEvent(
+                eventName: "UnobservedTaskExceptionHandlerFailed",
+                level: "WARN",
+                message: "Unobserved task exception handler failed.",
+                ex: handlerEx,
+                fields: new Dictionary<string, object?>
+                {
+                    ["originalException"] = e.Exception?.ToString()
+                }
+            );
+        }
     }
 
     private async Task HandleFatalReportAsync(
@@ -334,6 +471,7 @@ public partial class App : Application
 
         UnregisterGlobalExceptionHandlers();
         UnregisterHostLifetimeBreadcrumbs();
+        ReleaseSingleInstanceGuard();
 
         if (_host is not null)
         {
@@ -356,9 +494,67 @@ public partial class App : Application
         Shutdown(exitCode);
     }
 
+    private bool TryAcquireSingleInstanceGuard()
+    {
+        var mutexName = $"Local\\CaseGraphOffline_{Environment.UserName}";
+        var mutex = new Mutex(initiallyOwned: false, mutexName);
+        var acquired = false;
+
+        try
+        {
+            acquired = mutex.WaitOne(0, false);
+        }
+        catch (AbandonedMutexException)
+        {
+            acquired = true;
+        }
+
+        if (!acquired)
+        {
+            mutex.Dispose();
+            return false;
+        }
+
+        _singleInstanceMutex = mutex;
+        _singleInstanceMutexHeld = true;
+        return true;
+    }
+
+    private void ReleaseSingleInstanceGuard()
+    {
+        var mutex = _singleInstanceMutex;
+        _singleInstanceMutex = null;
+
+        if (mutex is null)
+        {
+            return;
+        }
+
+        try
+        {
+            if (_singleInstanceMutexHeld)
+            {
+                mutex.ReleaseMutex();
+            }
+        }
+        catch (ApplicationException)
+        {
+        }
+        finally
+        {
+            _singleInstanceMutexHeld = false;
+            mutex.Dispose();
+        }
+    }
+
     private IDiagnosticsService? ResolveDiagnosticsService()
     {
         return _host?.Services.GetService<IDiagnosticsService>();
+    }
+
+    private IAppSessionState? ResolveAppSessionState()
+    {
+        return _host?.Services.GetService<IAppSessionState>();
     }
 
     private void InitializeSessionJournal(string[] args)
@@ -422,6 +618,28 @@ public partial class App : Application
     private void OnProcessExit(object? sender, EventArgs e)
     {
         _sessionJournal?.WriteEvent("ProcessExit");
+    }
+
+    private void ScheduleUnobservedTaskExceptionNotification(AggregateException ex)
+    {
+        var dispatcher = Current?.Dispatcher;
+        if (dispatcher is null || dispatcher.HasShutdownStarted || dispatcher.HasShutdownFinished)
+        {
+            return;
+        }
+
+        _ = dispatcher.BeginInvoke(
+            DispatcherPriority.Background,
+            new Action(() =>
+            {
+                AppFileLogger.LogEvent(
+                    eventName: "UnobservedTaskExceptionUiNotification",
+                    level: "WARN",
+                    message: "Background task exception observed and contained.",
+                    ex: ex
+                );
+            })
+        );
     }
 
     private void RecordCleanExitIfNeeded(string reason)

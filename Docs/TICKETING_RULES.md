@@ -42,3 +42,8 @@ Use `Docs/TICKET_TEMPLATE.md` verbatim.
   - `Completed Tickets` (append-only)
 - No root `TICKET.md`
 - No root `TICKETS.md`
+
+### Ticket state rule (NON-NEGOTIABLE):
+- Do NOT move a ticket to Completed unless you can verify it via automated tests OR I explicitly confirm manual UI verification.
+- If manual verification is required, leave the ticket Active and add a “Manual Verify” checklist at the end.
+

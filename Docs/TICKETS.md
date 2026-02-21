@@ -10,16 +10,16 @@ This file tracks planned, active, and completed tickets.
   - **Completed Tickets** (append-only)
 
 ## Active Ticket
-- ID: T0011
-- Title: Workflow hardening (AGENTS.md + DEBUGGING.md + validate script + Codex prompt template) (pending spec authoring)
+- ID: (none)
+- Title: (awaiting next ticket)
 
 ## Active Ticket Spec
 ```md
-Pending spec authoring.
+No active ticket selected.
 ```
 
 ## Upcoming Tickets
-- T0012 - Smoke tests (WPF XAML load + SQLite translation tests) (pending spec authoring)
+- (none currently queued)
 
 ## Completed Tickets (append-only)
 - 2026-02-12 - T0002 - Established WPF solution skeleton, app shell, MVVM, and DI baseline.
@@ -46,3 +46,7 @@ Pending spec authoring.
 - 2026-02-19 - T0010B - Added WER LocalDumps toggle, durable bounded session journal with clean-exit detection breadcrumbs, and debug bundle inclusion for dumps/session artifacts with abstraction-based tests.
 - 2026-02-20 - T0010C - Added Diagnostics crash-dumps toggle + open dumps folder UX, WER LocalDumps ExpandString folder defaults (mini dumps, count 10), and bounded dump inclusion with registry/debug-bundle tests.
 - 2026-02-20 - T0010D - Added tiered test runner scripts (fast/db/ui/full/smart), routed smart verification from git diff triggers, and codified verification policy/docs.
+- 2026-02-20 - T0011 - Confirmed Diagnostics crash-dump toggle/folder UX, HKCU WER LocalDumps defaults, bounded dump bundle export, and abstraction-based registry coverage.
+- 2026-02-20 - T0012 - Removed cross-thread UI access from crash context capture via session state, contained unobserved task exceptions, and added forget/context/unobserved regression tests.
+- 2026-02-20 - T0012A - Fixed SQLite-unsafe DateTimeOffset ordering in target list queries by applying in-memory sort post-materialization and added SQLite coverage for no-throw + expected ordering.
+- 2026-02-21 - T0012C - Added startup hang guards (busy timeout, watchdog timeout, single-instance mutex), expanded workspace init step logging, and validated target ordering/timeout behavior with tests.

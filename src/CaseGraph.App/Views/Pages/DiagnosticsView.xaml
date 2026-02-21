@@ -62,105 +62,108 @@
             </Grid.ColumnDefinitions>
 
             <Border Grid.Column="0" Style="{StaticResource PlaceholderHintBorderStyle}">
-                <StackPanel>
-                    <TextBlock Text="Environment" Style="{StaticResource SectionTitleTextStyle}" />
-                    <TextBlock Margin="{StaticResource SpaceTop12}"
-                               Text="Previous session ended unexpectedly; export a debug bundle.">
-                        <TextBlock.Style>
-                            <Style TargetType="TextBlock" BasedOn="{StaticResource BodyTextStyle}">
-                                <Setter Property="Visibility" Value="Collapsed" />
-                                <Style.Triggers>
-                                    <DataTrigger Binding="{Binding DiagnosticsPreviousSessionEndedUnexpectedly}" Value="True">
-                                        <Setter Property="Visibility" Value="Visible" />
-                                    </DataTrigger>
-                                </Style.Triggers>
-                            </Style>
-                        </TextBlock.Style>
-                    </TextBlock>
+                <ScrollViewer VerticalScrollBarVisibility="Auto"
+                              HorizontalScrollBarVisibility="Disabled">
+                    <StackPanel>
+                        <TextBlock Text="Environment" Style="{StaticResource SectionTitleTextStyle}" />
+                        <TextBlock Margin="{StaticResource SpaceTop12}"
+                                   Text="Previous session ended unexpectedly; export a debug bundle.">
+                            <TextBlock.Style>
+                                <Style TargetType="TextBlock" BasedOn="{StaticResource BodyTextStyle}">
+                                    <Setter Property="Visibility" Value="Collapsed" />
+                                    <Style.Triggers>
+                                        <DataTrigger Binding="{Binding DiagnosticsPreviousSessionEndedUnexpectedly}" Value="True">
+                                            <Setter Property="Visibility" Value="Visible" />
+                                        </DataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </TextBlock.Style>
+                        </TextBlock>
 
-                    <TextBlock Margin="{StaticResource SpaceTop12}"
-                               Style="{StaticResource SecondaryBodyTextStyle}"
-                               Text="App Version" />
-                    <TextBlock Style="{StaticResource BodyTextStyle}"
-                               Text="{Binding DiagnosticsAppVersion}" />
+                        <TextBlock Margin="{StaticResource SpaceTop12}"
+                                   Style="{StaticResource SecondaryBodyTextStyle}"
+                                   Text="Crash Dumps Enabled" />
+                        <TextBlock Style="{StaticResource BodyTextStyle}"
+                                   Text="{Binding DiagnosticsCrashDumpsEnabled}" />
 
-                    <TextBlock Margin="{StaticResource SpaceTop12}"
-                               Style="{StaticResource SecondaryBodyTextStyle}"
-                               Text="Git Commit" />
-                    <TextBlock Style="{StaticResource BodyTextStyle}"
-                               Text="{Binding DiagnosticsGitCommit}" />
+                        <CheckBox Margin="{StaticResource SpaceTop12}"
+                                  IsChecked="{Binding DiagnosticsCrashDumpsEnabled, Mode=TwoWay}"
+                                  Content="Enable crash dumps (recommended for debugging)" />
 
-                    <TextBlock Margin="{StaticResource SpaceTop12}"
-                               Style="{StaticResource SecondaryBodyTextStyle}"
-                               Text="Workspace Root" />
-                    <TextBlock Style="{StaticResource BodyTextStyle}"
-                               Text="{Binding DiagnosticsWorkspaceRoot}"
-                               TextWrapping="Wrap" />
+                        <Button Margin="{StaticResource SpaceTop12}"
+                                Content="Open Dumps Folder"
+                                Command="{Binding OpenDumpsFolderCommand}"
+                                Style="{StaticResource TopBarButtonStyle}" />
 
-                    <TextBlock Margin="{StaticResource SpaceTop12}"
-                               Style="{StaticResource SecondaryBodyTextStyle}"
-                               Text="Workspace DB" />
-                    <TextBlock Style="{StaticResource BodyTextStyle}"
-                               Text="{Binding DiagnosticsWorkspaceDbPath}"
-                               TextWrapping="Wrap" />
+                        <TextBlock Margin="{StaticResource SpaceTop12}"
+                                   Style="{StaticResource SecondaryBodyTextStyle}"
+                                   Text="Dumps Directory" />
+                        <TextBlock Style="{StaticResource BodyTextStyle}"
+                                   Text="{Binding DiagnosticsDumpsDirectory}"
+                                   TextWrapping="Wrap" />
 
-                    <TextBlock Margin="{StaticResource SpaceTop12}"
-                               Style="{StaticResource SecondaryBodyTextStyle}"
-                               Text="Cases Root" />
-                    <TextBlock Style="{StaticResource BodyTextStyle}"
-                               Text="{Binding DiagnosticsCasesRoot}"
-                               TextWrapping="Wrap" />
+                        <TextBlock Margin="{StaticResource SpaceTop12}"
+                                   Style="{StaticResource SecondaryBodyTextStyle}"
+                                   Text="App Version" />
+                        <TextBlock Style="{StaticResource BodyTextStyle}"
+                                   Text="{Binding DiagnosticsAppVersion}" />
 
-                    <TextBlock Margin="{StaticResource SpaceTop12}"
-                               Style="{StaticResource SecondaryBodyTextStyle}"
-                               Text="Logs Directory" />
-                    <TextBlock Style="{StaticResource BodyTextStyle}"
-                               Text="{Binding DiagnosticsLogsDirectory}"
-                               TextWrapping="Wrap" />
+                        <TextBlock Margin="{StaticResource SpaceTop12}"
+                                   Style="{StaticResource SecondaryBodyTextStyle}"
+                                   Text="Git Commit" />
+                        <TextBlock Style="{StaticResource BodyTextStyle}"
+                                   Text="{Binding DiagnosticsGitCommit}" />
 
-                    <TextBlock Margin="{StaticResource SpaceTop12}"
-                               Style="{StaticResource SecondaryBodyTextStyle}"
-                               Text="Current Log Path" />
-                    <TextBlock Style="{StaticResource BodyTextStyle}"
-                               Text="{Binding DiagnosticsCurrentLogPath}"
-                               TextWrapping="Wrap" />
+                        <TextBlock Margin="{StaticResource SpaceTop12}"
+                                   Style="{StaticResource SecondaryBodyTextStyle}"
+                                   Text="Workspace Root" />
+                        <TextBlock Style="{StaticResource BodyTextStyle}"
+                                   Text="{Binding DiagnosticsWorkspaceRoot}"
+                                   TextWrapping="Wrap" />
 
-                    <TextBlock Margin="{StaticResource SpaceTop12}"
-                               Style="{StaticResource SecondaryBodyTextStyle}"
-                               Text="Crash Dumps Enabled" />
-                    <TextBlock Style="{StaticResource BodyTextStyle}"
-                               Text="{Binding DiagnosticsCrashDumpsEnabled}" />
+                        <TextBlock Margin="{StaticResource SpaceTop12}"
+                                   Style="{StaticResource SecondaryBodyTextStyle}"
+                                   Text="Workspace DB" />
+                        <TextBlock Style="{StaticResource BodyTextStyle}"
+                                   Text="{Binding DiagnosticsWorkspaceDbPath}"
+                                   TextWrapping="Wrap" />
 
-                    <TextBlock Margin="{StaticResource SpaceTop12}"
-                               Style="{StaticResource SecondaryBodyTextStyle}"
-                               Text="Dumps Directory" />
-                    <TextBlock Style="{StaticResource BodyTextStyle}"
-                               Text="{Binding DiagnosticsDumpsDirectory}"
-                               TextWrapping="Wrap" />
+                        <TextBlock Margin="{StaticResource SpaceTop12}"
+                                   Style="{StaticResource SecondaryBodyTextStyle}"
+                                   Text="Cases Root" />
+                        <TextBlock Style="{StaticResource BodyTextStyle}"
+                                   Text="{Binding DiagnosticsCasesRoot}"
+                                   TextWrapping="Wrap" />
 
-                    <CheckBox Margin="{StaticResource SpaceTop12}"
-                              IsChecked="{Binding DiagnosticsCrashDumpsEnabled, Mode=TwoWay}"
-                              Content="Enable crash dumps (recommended for debugging)" />
+                        <TextBlock Margin="{StaticResource SpaceTop12}"
+                                   Style="{StaticResource SecondaryBodyTextStyle}"
+                                   Text="Logs Directory" />
+                        <TextBlock Style="{StaticResource BodyTextStyle}"
+                                   Text="{Binding DiagnosticsLogsDirectory}"
+                                   TextWrapping="Wrap" />
 
-                    <Button Margin="{StaticResource SpaceTop12}"
-                            Content="Open Dumps Folder"
-                            Command="{Binding OpenDumpsFolderCommand}"
-                            Style="{StaticResource TopBarButtonStyle}" />
+                        <TextBlock Margin="{StaticResource SpaceTop12}"
+                                   Style="{StaticResource SecondaryBodyTextStyle}"
+                                   Text="Current Log Path" />
+                        <TextBlock Style="{StaticResource BodyTextStyle}"
+                                   Text="{Binding DiagnosticsCurrentLogPath}"
+                                   TextWrapping="Wrap" />
 
-                    <TextBlock Margin="{StaticResource SpaceTop12}"
-                               Style="{StaticResource SecondaryBodyTextStyle}"
-                               Text="Session Directory" />
-                    <TextBlock Style="{StaticResource BodyTextStyle}"
-                               Text="{Binding DiagnosticsSessionDirectory}"
-                               TextWrapping="Wrap" />
+                        <TextBlock Margin="{StaticResource SpaceTop12}"
+                                   Style="{StaticResource SecondaryBodyTextStyle}"
+                                   Text="Session Directory" />
+                        <TextBlock Style="{StaticResource BodyTextStyle}"
+                                   Text="{Binding DiagnosticsSessionDirectory}"
+                                   TextWrapping="Wrap" />
 
-                    <TextBlock Margin="{StaticResource SpaceTop12}"
-                               Style="{StaticResource SecondaryBodyTextStyle}"
-                               Text="Session Journal" />
-                    <TextBlock Style="{StaticResource BodyTextStyle}"
-                               Text="{Binding DiagnosticsSessionJournalPath}"
-                               TextWrapping="Wrap" />
-                </StackPanel>
+                        <TextBlock Margin="{StaticResource SpaceTop12}"
+                                   Style="{StaticResource SecondaryBodyTextStyle}"
+                                   Text="Session Journal" />
+                        <TextBlock Style="{StaticResource BodyTextStyle}"
+                                   Text="{Binding DiagnosticsSessionJournalPath}"
+                                   TextWrapping="Wrap" />
+                    </StackPanel>
+                </ScrollViewer>
             </Border>
 
             <Border Grid.Column="2" Style="{StaticResource PlaceholderHintBorderStyle}">
@@ -169,7 +172,6 @@
                     <TextBox Margin="{StaticResource SpaceTop12}"
                              Text="{Binding DiagnosticsLastLogLinesText}"
                              IsReadOnly="True"
-                             MinHeight="420"
                              VerticalScrollBarVisibility="Auto"
                              HorizontalScrollBarVisibility="Auto"
                              TextWrapping="NoWrap"

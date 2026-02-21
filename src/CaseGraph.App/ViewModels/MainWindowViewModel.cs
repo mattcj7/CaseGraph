@@ -37,6 +37,7 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
     private readonly IWorkspaceMigrationService _workspaceMigrationService;
     private readonly SafeAsyncActionRunner _safeAsyncActionRunner;
     private readonly ISessionJournal _sessionJournal;
+    private readonly IAppSessionState _appSessionState;
     private readonly IDisposable _jobUpdateSubscription;
     private readonly SemaphoreSlim _jobCompletionRefreshGate = new(1, 1);
 
@@ -354,7 +355,8 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
         IDiagnosticsService diagnosticsService,
         IWorkspaceMigrationService workspaceMigrationService,
         SafeAsyncActionRunner safeAsyncActionRunner,
-        ISessionJournal sessionJournal
+        ISessionJournal sessionJournal,
+        IAppSessionState appSessionState
     )
     {
         _navigationService = navigationService;
@@ -373,6 +375,7 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
         _workspaceMigrationService = workspaceMigrationService;
         _safeAsyncActionRunner = safeAsyncActionRunner;
         _sessionJournal = sessionJournal;
+        _appSessionState = appSessionState;
 
         foreach (var item in _navigationService.GetNavigationItems())
         {
@@ -458,12 +461,17 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
         CurrentView = _navigationService.CreateView(value.Page);
         if (value.Page == NavigationPage.Diagnostics)
         {
-            _ = RefreshDiagnosticsAsync(CancellationToken.None);
+            RefreshDiagnosticsAsync(CancellationToken.None).Forget(
+                "RefreshDiagnosticsOnNavigate",
+                caseId: _appSessionState.CurrentCaseId,
+                evidenceId: _appSessionState.CurrentEvidenceId
+            );
         }
     }
 
     partial void OnSelectedEvidenceItemChanged(EvidenceItem? value)
     {
+        _appSessionState.CurrentEvidenceId = value?.EvidenceItemId;
         OnPropertyChanged(nameof(HasSelectedEvidenceItem));
         OnPropertyChanged(nameof(SelectedStoredAbsolutePath));
         UpdateSelectedEvidenceVerifyStatus();
@@ -477,6 +485,12 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
 
     partial void OnCurrentCaseInfoChanged(CaseInfo? value)
     {
+        _appSessionState.CurrentCaseId = value?.CaseId;
+        if (value is null)
+        {
+            _appSessionState.CurrentEvidenceId = null;
+        }
+
         _sessionJournal.WriteEvent(
             "CaseChanged",
             new Dictionary<string, object?>
@@ -490,7 +504,10 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
         OnPropertyChanged(nameof(SelectedStoredAbsolutePath));
         UpdateSelectedEvidenceVerifyStatus();
         ResetLatestMessagesParseJobTracking();
-        _ = RefreshTargetsAsync(CancellationToken.None);
+        RefreshTargetsAsync(CancellationToken.None).Forget(
+            "RefreshTargetsOnCaseChanged",
+            caseId: value?.CaseId
+        );
     }
 
     partial void OnLatestMessagesParseJobChanged(JobInfo? value)
@@ -522,7 +539,11 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
         SelectedTargetDisplayName = value.DisplayName;
         SelectedTargetPrimaryAlias = value.PrimaryAlias ?? string.Empty;
         SelectedTargetNotes = value.Notes ?? string.Empty;
-        _ = RefreshSelectedTargetDetailsAsync(CancellationToken.None);
+        RefreshSelectedTargetDetailsAsync(CancellationToken.None).Forget(
+            "RefreshSelectedTargetDetailsOnTargetSelected",
+            caseId: _appSessionState.CurrentCaseId,
+            evidenceId: _appSessionState.CurrentEvidenceId
+        );
     }
 
     partial void OnSelectedTargetAliasChanged(TargetAliasInfo? value)
@@ -546,7 +567,10 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
 
     partial void OnTargetSearchQueryChanged(string value)
     {
-        _ = RefreshTargetsAsync(CancellationToken.None);
+        RefreshTargetsAsync(CancellationToken.None).Forget(
+            "RefreshTargetsOnSearchQueryChanged",
+            caseId: _appSessionState.CurrentCaseId
+        );
     }
 
     partial void OnIsDarkThemeChanged(bool value)
@@ -1559,7 +1583,8 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
             UiExceptionReporter.LogFatalException(
                 "Refresh diagnostics failed.",
                 ex,
-                _diagnosticsService
+                _diagnosticsService,
+                _appSessionState
             );
             DiagnosticsLastLogLinesText = "(diagnostics unavailable)";
         }
@@ -1614,7 +1639,11 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
             OperationText = enabled
                 ? "Crash dumps enabled."
                 : "Crash dumps disabled.";
-            _ = RefreshDiagnosticsAsync(CancellationToken.None);
+            RefreshDiagnosticsAsync(CancellationToken.None).Forget(
+                "RefreshDiagnosticsAfterCrashDumpToggle",
+                caseId: _appSessionState.CurrentCaseId,
+                evidenceId: _appSessionState.CurrentEvidenceId
+            );
         }
         catch (Exception ex)
         {
@@ -1894,7 +1923,7 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
             return;
         }
 
-        _ = Application.Current.Dispatcher.InvokeAsync(() =>
+        var dispatcherOperation = Application.Current.Dispatcher.InvokeAsync(() =>
         {
             try
             {
@@ -1905,13 +1934,19 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
                 var report = UiExceptionReporter.LogFatalException(
                     "Failed applying job update to UI state.",
                     ex,
-                    _diagnosticsService
+                    _diagnosticsService,
+                    _appSessionState
                 );
                 AppFileLogger.Log(
                     $"[JobQueue] UI job update containment CorrelationId={report.CorrelationId} jobId={job.JobId:D}"
                 );
             }
         });
+        dispatcherOperation.Task.Forget(
+            "ApplyJobUpdateDispatch",
+            caseId: _appSessionState.CurrentCaseId,
+            evidenceId: _appSessionState.CurrentEvidenceId
+        );
     }
 
     private void ApplyJobUpdate(JobInfo job)
@@ -1947,7 +1982,11 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
 
         if (IsTerminalStatus(job.Status))
         {
-            _ = RefreshAfterJobCompletionAsync(job);
+            RefreshAfterJobCompletionAsync(job).Forget(
+                "RefreshAfterJobCompletion",
+                caseId: _appSessionState.CurrentCaseId,
+                evidenceId: _appSessionState.CurrentEvidenceId
+            );
         }
     }
 
@@ -2073,7 +2112,11 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
 
         var refreshCts = new CancellationTokenSource();
         _latestMessagesParseRefreshCts = refreshCts;
-        _ = RefreshLatestMessagesParseJobForSelectionAsync(refreshCts);
+        RefreshLatestMessagesParseJobForSelectionAsync(refreshCts).Forget(
+            "RefreshLatestMessagesParseJobForSelection",
+            caseId: _appSessionState.CurrentCaseId,
+            evidenceId: _appSessionState.CurrentEvidenceId
+        );
     }
 
     private async Task RefreshLatestMessagesParseJobForSelectionAsync(CancellationTokenSource refreshCts)

@@ -224,6 +224,87 @@ public sealed class TargetRegistryServiceTests
     }
 
     [Fact]
+    public async Task GetTargetsAsync_UsesSqliteProvider_OrdersInMemoryWithoutDateTimeOffsetOrderByFailure()
+    {
+        await using var fixture = await WorkspaceFixture.CreateAsync();
+        var registry = fixture.Services.GetRequiredService<ITargetRegistryService>();
+        var caseInfo = await fixture.CreateCaseAsync("Target Ordering Case");
+
+        var now = new DateTimeOffset(2026, 2, 20, 12, 0, 0, TimeSpan.Zero);
+        var targetA = Guid.NewGuid();
+        var targetB = Guid.NewGuid();
+        var targetC = Guid.NewGuid();
+
+        await using (var db = await fixture.CreateDbContextAsync())
+        {
+            db.Targets.AddRange(
+                new TargetRecord
+                {
+                    TargetId = targetA,
+                    CaseId = caseInfo.CaseId,
+                    DisplayName = "Zulu",
+                    PrimaryAlias = null,
+                    Notes = null,
+                    CreatedAtUtc = now.AddHours(-4),
+                    UpdatedAtUtc = now.AddHours(-1),
+                    SourceType = "Manual",
+                    SourceEvidenceItemId = null,
+                    SourceLocator = "test:target-a",
+                    IngestModuleVersion = "test"
+                },
+                new TargetRecord
+                {
+                    TargetId = targetB,
+                    CaseId = caseInfo.CaseId,
+                    DisplayName = "alpha",
+                    PrimaryAlias = null,
+                    Notes = null,
+                    CreatedAtUtc = now.AddHours(-3),
+                    UpdatedAtUtc = now.AddHours(-1),
+                    SourceType = "Manual",
+                    SourceEvidenceItemId = null,
+                    SourceLocator = "test:target-b",
+                    IngestModuleVersion = "test"
+                },
+                new TargetRecord
+                {
+                    TargetId = targetC,
+                    CaseId = caseInfo.CaseId,
+                    DisplayName = "Bravo",
+                    PrimaryAlias = null,
+                    Notes = null,
+                    CreatedAtUtc = now.AddMinutes(-30),
+                    UpdatedAtUtc = default,
+                    SourceType = "Manual",
+                    SourceEvidenceItemId = null,
+                    SourceLocator = "test:target-c",
+                    IngestModuleVersion = "test"
+                }
+            );
+
+            await db.SaveChangesAsync();
+        }
+
+        var exception = await Record.ExceptionAsync(() => registry.GetTargetsAsync(
+            caseInfo.CaseId,
+            search: null,
+            CancellationToken.None
+        ));
+        Assert.Null(exception);
+
+        var targets = await registry.GetTargetsAsync(
+            caseInfo.CaseId,
+            search: null,
+            CancellationToken.None
+        );
+
+        Assert.Equal(
+            [targetC, targetB, targetA],
+            targets.Select(target => target.TargetId).ToArray()
+        );
+    }
+
+    [Fact]
     public async Task TargetCreateUpdateAndIdentifierEdit_WriteAuditTrail()
     {
         await using var fixture = await WorkspaceFixture.CreateAsync();

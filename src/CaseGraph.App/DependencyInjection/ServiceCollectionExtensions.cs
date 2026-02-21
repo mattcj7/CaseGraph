@@ -4,6 +4,7 @@ using CaseGraph.Core.Abstractions;
 using CaseGraph.Core.Diagnostics;
 using CaseGraph.Infrastructure.Persistence;
 using CaseGraph.Infrastructure.Services;
+using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using System.IO;
@@ -19,14 +20,20 @@ public static class ServiceCollectionExtensions
         {
             var paths = provider.GetRequiredService<IWorkspacePathProvider>();
             Directory.CreateDirectory(paths.WorkspaceRoot);
-
-            options.UseSqlite($"Data Source={paths.WorkspaceDbPath}");
+            var connectionStringBuilder = new SqliteConnectionStringBuilder
+            {
+                DataSource = paths.WorkspaceDbPath,
+                Mode = SqliteOpenMode.ReadWriteCreate,
+                DefaultTimeout = 5
+            };
+            options.UseSqlite(connectionStringBuilder.ConnectionString);
         });
 
         services.AddSingleton<INavigationService, NavigationService>();
         services.AddSingleton<IThemeService, ThemeService>();
         services.AddSingleton<IUserInteractionService, UserInteractionService>();
         services.AddSingleton<IAppRuntimePaths, AppRuntimePaths>();
+        services.AddSingleton<IAppSessionState, AppSessionState>();
         services.AddSingleton<IRegistryValueStore, WindowsCurrentUserRegistryValueStore>();
         services.AddSingleton<ICrashDumpService, CrashDumpService>();
         services.AddSingleton<ISessionJournal>(provider =>

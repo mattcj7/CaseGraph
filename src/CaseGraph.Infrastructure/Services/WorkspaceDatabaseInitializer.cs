@@ -10,6 +10,8 @@ namespace CaseGraph.Infrastructure.Services;
 
 public class WorkspaceDbInitializer : IWorkspaceDbInitializer, IWorkspaceDatabaseInitializer
 {
+    private const int SqliteBusyTimeoutSeconds = 5;
+
     private static readonly string[] RequiredTableNames =
     {
         "CaseRecord",
@@ -76,6 +78,7 @@ public class WorkspaceDbInitializer : IWorkspaceDbInitializer, IWorkspaceDatabas
                     ["workspaceDbPath"] = currentWorkspaceDbPath
                 }
             );
+            LogWorkspaceInitStep("InspectDatabase", "Inspecting existing workspace database state.");
 
             Directory.CreateDirectory(_workspacePathProvider.WorkspaceRoot);
             Directory.CreateDirectory(_workspacePathProvider.CasesRoot);
@@ -117,7 +120,9 @@ public class WorkspaceDbInitializer : IWorkspaceDbInitializer, IWorkspaceDatabas
                 );
             }
 
+            LogWorkspaceInitStep("SchemaVerify", "Running workspace schema verification query.");
             await VerifySchemaHealthAsync(ct);
+            LogWorkspaceInitStep("Finalize", "Marking stale running jobs as abandoned.");
             await MarkRunningJobsAsAbandonedAsync(ct);
             _initialized = true;
             _initializedWorkspaceDbPath = currentWorkspaceDbPath;
@@ -140,8 +145,37 @@ public class WorkspaceDbInitializer : IWorkspaceDbInitializer, IWorkspaceDatabas
     public async Task EnsureUpgradedAsync(CancellationToken ct)
     {
         await using var db = await _dbContextFactory.CreateDbContextAsync(ct);
-        await db.Database.MigrateAsync(ct);
-        await EnsureMessageFtsObjectsAsync(db, ct);
+
+        LogWorkspaceInitStep("OpenConnection", "Opening workspace database connection.");
+        await db.Database.OpenConnectionAsync(ct);
+        try
+        {
+            await db.Database.ExecuteSqlRawAsync($"PRAGMA busy_timeout = {SqliteBusyTimeoutSeconds * 1000};", ct);
+
+            LogWorkspaceInitStep("LoadMigrations", "Loading pending EF migrations.");
+            var pendingMigrations = (await db.Database.GetPendingMigrationsAsync(ct)).ToArray();
+            AppFileLogger.LogEvent(
+                eventName: "WorkspacePendingMigrations",
+                level: "INFO",
+                message: "Workspace pending migrations loaded.",
+                fields: new Dictionary<string, object?>
+                {
+                    ["pendingMigrationCount"] = pendingMigrations.Length,
+                    ["pendingMigrations"] = pendingMigrations.Length == 0
+                        ? "(none)"
+                        : string.Join(", ", pendingMigrations)
+                }
+            );
+
+            LogWorkspaceInitStep("ApplyMigrations", "Applying EF Core migrations.");
+            await db.Database.MigrateAsync(ct);
+            LogWorkspaceInitStep("ApplyMigrationsCompleted", "EF Core migrations applied.");
+            await EnsureMessageFtsObjectsAsync(db, ct);
+        }
+        finally
+        {
+            await db.Database.CloseConnectionAsync();
+        }
     }
 
     private async Task VerifySchemaHealthAsync(CancellationToken ct)
@@ -164,6 +198,7 @@ public class WorkspaceDbInitializer : IWorkspaceDbInitializer, IWorkspaceDatabas
                 }
             );
 
+            LogWorkspaceInitStep("SchemaVerifyQuery", "Executing schema verification query against CaseRecord.");
             var caseCount = await db.Cases.AsNoTracking().CountAsync(ct);
             AppFileLogger.LogEvent(
                 eventName: "WorkspaceSchemaVerified",
@@ -233,9 +268,13 @@ public class WorkspaceDbInitializer : IWorkspaceDbInitializer, IWorkspaceDatabas
 
     private async Task<HashSet<string>> ReadTableNamesAsync(CancellationToken ct)
     {
-        await using var connection = new SqliteConnection(
-            $"Data Source={_workspacePathProvider.WorkspaceDbPath};Mode=ReadWrite"
-        );
+        var connectionStringBuilder = new SqliteConnectionStringBuilder
+        {
+            DataSource = _workspacePathProvider.WorkspaceDbPath,
+            Mode = SqliteOpenMode.ReadWrite,
+            DefaultTimeout = SqliteBusyTimeoutSeconds
+        };
+        await using var connection = new SqliteConnection(connectionStringBuilder.ConnectionString);
         await connection.OpenAsync(ct);
 
         await using var command = connection.CreateCommand();
@@ -476,6 +515,20 @@ public class WorkspaceDbInitializer : IWorkspaceDbInitializer, IWorkspaceDatabas
         }
 
         File.Move(sourcePath, destinationPath);
+    }
+
+    private void LogWorkspaceInitStep(string step, string message)
+    {
+        AppFileLogger.LogEvent(
+            eventName: "WorkspaceInitStep",
+            level: "INFO",
+            message: message,
+            fields: new Dictionary<string, object?>
+            {
+                ["step"] = step,
+                ["workspaceDbPath"] = _workspacePathProvider.WorkspaceDbPath
+            }
+        );
     }
 
     private sealed class DatabaseInspection
