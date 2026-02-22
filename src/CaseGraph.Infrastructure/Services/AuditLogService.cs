@@ -10,21 +10,21 @@ public sealed class AuditLogService : IAuditLogService
 {
     private readonly IDbContextFactory<WorkspaceDbContext> _dbContextFactory;
     private readonly IWorkspaceDatabaseInitializer _databaseInitializer;
+    private readonly IWorkspaceWriteGate _workspaceWriteGate;
 
     public AuditLogService(
         IDbContextFactory<WorkspaceDbContext> dbContextFactory,
-        IWorkspaceDatabaseInitializer databaseInitializer
+        IWorkspaceDatabaseInitializer databaseInitializer,
+        IWorkspaceWriteGate workspaceWriteGate
     )
     {
         _dbContextFactory = dbContextFactory;
         _databaseInitializer = databaseInitializer;
+        _workspaceWriteGate = workspaceWriteGate;
     }
 
     public async Task AddAsync(AuditEvent auditEvent, CancellationToken ct)
     {
-        await _databaseInitializer.EnsureInitializedAsync(ct);
-
-        await using var db = await _dbContextFactory.CreateDbContextAsync(ct);
         var record = new AuditEventRecord
         {
             AuditEventId = auditEvent.AuditEventId == Guid.Empty ? Guid.NewGuid() : auditEvent.AuditEventId,
@@ -37,8 +37,22 @@ public sealed class AuditLogService : IAuditLogService
             JsonPayload = auditEvent.JsonPayload
         };
 
-        db.AuditEvents.Add(record);
-        await db.SaveChangesAsync(ct);
+        await _workspaceWriteGate.RunAsync(
+            async writeCt =>
+            {
+                await SqliteWriteRetryPolicy.ExecuteAsync(
+                    async retryCt =>
+                    {
+                        await _databaseInitializer.EnsureInitializedAsync(retryCt);
+                        await using var db = await _dbContextFactory.CreateDbContextAsync(retryCt);
+                        db.AuditEvents.Add(record);
+                        await db.SaveChangesAsync(retryCt);
+                    },
+                    writeCt
+                );
+            },
+            ct
+        );
     }
 
     public async Task<IReadOnlyList<AuditEvent>> GetRecentAsync(Guid? caseId, int take, CancellationToken ct)

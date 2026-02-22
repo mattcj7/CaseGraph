@@ -30,9 +30,11 @@ public sealed class JobQueueService : IJobQueueService
     private readonly IMessageIngestService _messageIngestService;
     private readonly IAuditLogService _auditLogService;
     private readonly IJobQueryService _jobQueryService;
+    private readonly IWorkspaceWriteGate _workspaceWriteGate;
     private readonly Channel<Guid> _dispatchChannel;
     private readonly ConcurrentDictionary<Guid, CancellationTokenSource> _runningJobs = new();
     private readonly ConcurrentDictionary<Guid, byte> _pendingRunningCancels = new();
+    private readonly ConcurrentDictionary<Guid, byte> _progressDropWarnings = new();
     private readonly JobInfoObservable _jobUpdates = new();
     private readonly SemaphoreSlim _primeSemaphore = new(1, 1);
 
@@ -46,7 +48,8 @@ public sealed class JobQueueService : IJobQueueService
         IEvidenceVaultService evidenceVaultService,
         IMessageIngestService messageIngestService,
         IAuditLogService auditLogService,
-        IJobQueryService jobQueryService
+        IJobQueryService jobQueryService,
+        IWorkspaceWriteGate workspaceWriteGate
     )
     {
         _dbContextFactory = dbContextFactory;
@@ -57,6 +60,7 @@ public sealed class JobQueueService : IJobQueueService
         _messageIngestService = messageIngestService;
         _auditLogService = auditLogService;
         _jobQueryService = jobQueryService;
+        _workspaceWriteGate = workspaceWriteGate;
         _dispatchChannel = Channel.CreateUnbounded<Guid>(
             new UnboundedChannelOptions
             {
@@ -465,6 +469,7 @@ public sealed class JobQueueService : IJobQueueService
 
             _runningJobs.TryRemove(jobId, out _);
             _pendingRunningCancels.TryRemove(jobId, out _);
+            _progressDropWarnings.TryRemove(jobId, out _);
         }
     }
 
@@ -503,12 +508,12 @@ public sealed class JobQueueService : IJobQueueService
 
             var fileProgress = new Progress<double>(progress =>
             {
-                _ = SafeReportProgressAsync(
+                SafeReportProgressAsync(
                     jobRecord.JobId,
                     (fileIndex + progress) / totalFiles,
                     $"Importing {fileIndex + 1}/{totalFiles}: {fileName}",
                     ct
-                );
+                ).Forget("ReportEvidenceImportProgress", caseId: jobRecord.CaseId, evidenceId: jobRecord.EvidenceItemId);
             });
 
             await _evidenceVaultService.ImportEvidenceFileAsync(caseInfo, filePath, fileProgress, ct);
@@ -543,12 +548,12 @@ public sealed class JobQueueService : IJobQueueService
 
         var verifyProgress = new Progress<double>(progress =>
         {
-            _ = SafeReportProgressAsync(
+            SafeReportProgressAsync(
                 jobRecord.JobId,
                 progress,
                 $"Verifying {evidenceItem.OriginalFileName}...",
                 ct
-            );
+            ).Forget("ReportEvidenceVerifyProgress", caseId: jobRecord.CaseId, evidenceId: jobRecord.EvidenceItemId);
         });
 
         await ReportProgressAsync(jobRecord.JobId, 0, $"Verifying {evidenceItem.OriginalFileName}...", ct);
@@ -624,12 +629,12 @@ public sealed class JobQueueService : IJobQueueService
         {
             var clampedProgress = Math.Clamp(update.FractionComplete, 0, 1);
             var statusMessage = BuildIngestStatusMessage(update);
-            _ = SafeReportProgressAsync(
+            SafeReportProgressAsync(
                 jobRecord.JobId,
                 clampedProgress,
                 statusMessage,
                 ct
-            );
+            ).Forget("ReportMessagesIngestProgress", caseId: jobRecord.CaseId, evidenceId: jobRecord.EvidenceItemId);
 
             var percent = (int)Math.Round(clampedProgress * 100, MidpointRounding.AwayFromZero);
             var now = DateTimeOffset.UtcNow;
@@ -720,9 +725,13 @@ public sealed class JobQueueService : IJobQueueService
         {
             await ReportProgressAsync(jobId, progress, statusMessage, ct);
         }
-        catch (OperationCanceledException)
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
             // Ignore transient callback updates once the job has been canceled.
+        }
+        catch (Exception ex)
+        {
+            WarnProgressDroppedOnce(jobId, progress, statusMessage, ex);
         }
     }
 
@@ -734,46 +743,73 @@ public sealed class JobQueueService : IJobQueueService
     )
     {
         var clampedProgress = Math.Clamp(progress, 0, 1);
+        JobInfo? progressInfo = null;
 
-        await _databaseInitializer.EnsureInitializedAsync(ct);
-        await using var db = await _dbContextFactory.CreateDbContextAsync(ct);
-        var jobRecord = await db.Jobs.FirstOrDefaultAsync(j => j.JobId == jobId, ct);
-        if (jobRecord is null || jobRecord.Status != JobStatus.Running.ToString())
+        await _workspaceWriteGate.RunAsync(
+            async writeCt =>
+            {
+                await SqliteWriteRetryPolicy.ExecuteAsync(
+                    async retryCt =>
+                    {
+                        await _databaseInitializer.EnsureInitializedAsync(retryCt);
+                        await using var db = await _dbContextFactory.CreateDbContextAsync(retryCt);
+                        var jobRecord = await db.Jobs.FirstOrDefaultAsync(
+                            j => j.JobId == jobId,
+                            retryCt
+                        );
+                        if (jobRecord is null || jobRecord.Status != JobStatus.Running.ToString())
+                        {
+                            return;
+                        }
+
+                        if (jobRecord.CompletedAtUtc.HasValue || IsTerminalStatus(jobRecord.Status))
+                        {
+                            return;
+                        }
+
+                        if (clampedProgress + 0.0005 < jobRecord.Progress)
+                        {
+                            return;
+                        }
+
+                        var monotonicProgress = Math.Max(jobRecord.Progress, clampedProgress);
+
+                        if (
+                            Math.Abs(jobRecord.Progress - monotonicProgress) < 0.0005
+                            && string.Equals(
+                                jobRecord.StatusMessage,
+                                statusMessage,
+                                StringComparison.Ordinal
+                            )
+                        )
+                        {
+                            return;
+                        }
+
+                        if (Math.Abs(jobRecord.Progress - monotonicProgress) < 0.0005
+                            && ShouldIgnoreSameProgressMessage(
+                                jobRecord.StatusMessage,
+                                statusMessage
+                            ))
+                        {
+                            return;
+                        }
+
+                        jobRecord.Progress = monotonicProgress;
+                        jobRecord.StatusMessage = statusMessage;
+                        await db.SaveChangesAsync(retryCt);
+                        progressInfo = MapJobInfo(jobRecord);
+                    },
+                    writeCt
+                );
+            },
+            ct
+        );
+
+        if (progressInfo is not null)
         {
-            return;
+            _jobUpdates.Publish(progressInfo);
         }
-
-        if (jobRecord.CompletedAtUtc.HasValue || IsTerminalStatus(jobRecord.Status))
-        {
-            return;
-        }
-
-        if (clampedProgress + 0.0005 < jobRecord.Progress)
-        {
-            return;
-        }
-
-        var monotonicProgress = Math.Max(jobRecord.Progress, clampedProgress);
-
-        if (
-            Math.Abs(jobRecord.Progress - monotonicProgress) < 0.0005
-            && string.Equals(jobRecord.StatusMessage, statusMessage, StringComparison.Ordinal)
-        )
-        {
-            return;
-        }
-
-        if (Math.Abs(jobRecord.Progress - monotonicProgress) < 0.0005
-            && ShouldIgnoreSameProgressMessage(jobRecord.StatusMessage, statusMessage))
-        {
-            return;
-        }
-
-        jobRecord.Progress = monotonicProgress;
-        jobRecord.StatusMessage = statusMessage;
-        await db.SaveChangesAsync(ct);
-
-        _jobUpdates.Publish(MapJobInfo(jobRecord));
     }
 
     private async Task<JobInfo?> FinalizeTerminalStateAsync(
@@ -1027,6 +1063,36 @@ public sealed class JobQueueService : IJobQueueService
         }
 
         return message.Trim();
+    }
+
+    private void WarnProgressDroppedOnce(
+        Guid jobId,
+        double progress,
+        string statusMessage,
+        Exception ex
+    )
+    {
+        if (!_progressDropWarnings.TryAdd(jobId, 0))
+        {
+            return;
+        }
+
+        var clampedProgress = Math.Clamp(progress, 0, 1);
+        var isLockContention = SqliteWriteRetryPolicy.IsBusyOrLocked(ex);
+        AppFileLogger.LogEvent(
+            eventName: "JobProgressUpdateDropped",
+            level: "WARN",
+            message: isLockContention
+                ? "Job progress update dropped after SQLite lock retries were exhausted."
+                : "Job progress update dropped due to non-disruptive callback failure.",
+            ex: ex,
+            fields: new Dictionary<string, object?>
+            {
+                ["jobId"] = jobId.ToString("D"),
+                ["progress"] = clampedProgress,
+                ["statusMessage"] = statusMessage
+            }
+        );
     }
 
     private static void LogJobEvent(

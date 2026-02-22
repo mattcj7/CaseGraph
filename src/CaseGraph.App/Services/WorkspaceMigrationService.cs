@@ -9,6 +9,9 @@ public sealed class WorkspaceMigrationService : IWorkspaceMigrationService
 
     private readonly IWorkspaceDbInitializer _workspaceDbInitializer;
     private readonly IWorkspacePathProvider _workspacePathProvider;
+    private readonly SemaphoreSlim _migrationSemaphore = new(1, 1);
+    private bool _migrationSucceeded;
+    private string? _migratedWorkspaceDbPath;
 
     public WorkspaceMigrationService(
         IWorkspaceDbInitializer workspaceDbInitializer,
@@ -21,9 +24,35 @@ public sealed class WorkspaceMigrationService : IWorkspaceMigrationService
 
     public async Task EnsureMigratedAsync(CancellationToken ct)
     {
+        var workspaceDbPath = _workspacePathProvider.WorkspaceDbPath;
+        if (HasSuccessfulMigration(workspaceDbPath))
+        {
+            return;
+        }
+
+        await _migrationSemaphore.WaitAsync(ct);
+        try
+        {
+            if (HasSuccessfulMigration(workspaceDbPath))
+            {
+                return;
+            }
+
+            await EnsureMigratedCoreAsync(workspaceDbPath, ct);
+            _migrationSucceeded = true;
+            _migratedWorkspaceDbPath = workspaceDbPath;
+        }
+        finally
+        {
+            _migrationSemaphore.Release();
+        }
+    }
+
+    private async Task EnsureMigratedCoreAsync(string workspaceDbPath, CancellationToken ct)
+    {
         var timeoutMessage =
             $"Workspace initialization timed out after {WorkspaceMigrationTimeout.TotalSeconds:0} seconds. "
-            + $"WorkspaceDbPath={_workspacePathProvider.WorkspaceDbPath}";
+            + $"WorkspaceDbPath={workspaceDbPath}";
 
         try
         {
@@ -44,11 +73,21 @@ public sealed class WorkspaceMigrationService : IWorkspaceMigrationService
                 ex: ex,
                 fields: new Dictionary<string, object?>
                 {
-                    ["workspaceDbPath"] = _workspacePathProvider.WorkspaceDbPath,
+                    ["workspaceDbPath"] = workspaceDbPath,
                     ["timeoutSeconds"] = WorkspaceMigrationTimeout.TotalSeconds
                 }
             );
             throw;
         }
+    }
+
+    private bool HasSuccessfulMigration(string workspaceDbPath)
+    {
+        return _migrationSucceeded
+            && string.Equals(
+                _migratedWorkspaceDbPath,
+                workspaceDbPath,
+                StringComparison.OrdinalIgnoreCase
+            );
     }
 }

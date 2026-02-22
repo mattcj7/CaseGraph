@@ -244,6 +244,7 @@ public sealed class WorkspaceDbInitializerTests
             services.AddSingleton<IWorkspaceDatabaseInitializer>(
                 provider => provider.GetRequiredService<WorkspaceDbInitializer>()
             );
+            services.AddSingleton<IWorkspaceWriteGate, WorkspaceWriteGate>();
             services.AddSingleton<IAuditLogService, AuditLogService>();
             services.AddSingleton<ICaseWorkspaceService, CaseWorkspaceService>();
             services.AddSingleton<IEvidenceVaultService, EvidenceVaultService>();

@@ -54,18 +54,21 @@ public sealed class MessageIngestService : IMessageIngestService
     private readonly IDbContextFactory<WorkspaceDbContext> _dbContextFactory;
     private readonly IWorkspaceDatabaseInitializer _databaseInitializer;
     private readonly IWorkspacePathProvider _workspacePathProvider;
+    private readonly IWorkspaceWriteGate _workspaceWriteGate;
     private readonly IClock _clock;
 
     public MessageIngestService(
         IDbContextFactory<WorkspaceDbContext> dbContextFactory,
         IWorkspaceDatabaseInitializer databaseInitializer,
         IWorkspacePathProvider workspacePathProvider,
+        IWorkspaceWriteGate workspaceWriteGate,
         IClock clock
     )
     {
         _dbContextFactory = dbContextFactory;
         _databaseInitializer = databaseInitializer;
         _workspacePathProvider = workspacePathProvider;
+        _workspaceWriteGate = workspaceWriteGate;
         _clock = clock;
     }
 
@@ -438,6 +441,22 @@ public sealed class MessageIngestService : IMessageIngestService
     }
 
     private async Task<int> PersistAsync(
+        Guid caseId,
+        Guid evidenceItemId,
+        IReadOnlyList<ParsedMessage> parsed,
+        CancellationToken ct
+    )
+    {
+        return await _workspaceWriteGate.RunAsync(
+            writeCt => SqliteWriteRetryPolicy.ExecuteAsync(
+                retryCt => PersistCoreAsync(caseId, evidenceItemId, parsed, retryCt),
+                writeCt
+            ),
+            ct
+        );
+    }
+
+    private async Task<int> PersistCoreAsync(
         Guid caseId,
         Guid evidenceItemId,
         IReadOnlyList<ParsedMessage> parsed,

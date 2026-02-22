@@ -121,6 +121,7 @@ public sealed class WorkspaceMigrationSmokeTests
             services.AddSingleton<IWorkspaceDatabaseInitializer>(
                 provider => provider.GetRequiredService<WorkspaceDbInitializer>()
             );
+            services.AddSingleton<IWorkspaceWriteGate, WorkspaceWriteGate>();
             services.AddSingleton<IAuditLogService, AuditLogService>();
             services.AddSingleton<IAuditQueryService, AuditQueryService>();
             services.AddSingleton<ICaseWorkspaceService, CaseWorkspaceService>();

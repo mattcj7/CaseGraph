@@ -523,6 +523,7 @@ public sealed class EvidenceVaultServiceTests
             services.AddSingleton<WorkspaceDbInitializer>();
             services.AddSingleton<IWorkspaceDbInitializer>(provider => provider.GetRequiredService<WorkspaceDbInitializer>());
             services.AddSingleton<IWorkspaceDatabaseInitializer>(provider => provider.GetRequiredService<WorkspaceDbInitializer>());
+            services.AddSingleton<IWorkspaceWriteGate, WorkspaceWriteGate>();
             services.AddSingleton<IAuditLogService, AuditLogService>();
             services.AddSingleton<ICaseWorkspaceService, CaseWorkspaceService>();
             services.AddSingleton<IEvidenceVaultService, EvidenceVaultService>();

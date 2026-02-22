@@ -34,7 +34,6 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
     private readonly IWorkspacePathProvider _workspacePathProvider;
     private readonly IUserInteractionService _userInteractionService;
     private readonly IDiagnosticsService _diagnosticsService;
-    private readonly IWorkspaceMigrationService _workspaceMigrationService;
     private readonly SafeAsyncActionRunner _safeAsyncActionRunner;
     private readonly ISessionJournal _sessionJournal;
     private readonly IAppSessionState _appSessionState;
@@ -361,7 +360,6 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
         IWorkspacePathProvider workspacePathProvider,
         IUserInteractionService userInteractionService,
         IDiagnosticsService diagnosticsService,
-        IWorkspaceMigrationService workspaceMigrationService,
         SafeAsyncActionRunner safeAsyncActionRunner,
         ISessionJournal sessionJournal,
         IAppSessionState appSessionState
@@ -380,7 +378,6 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
         _workspacePathProvider = workspacePathProvider;
         _userInteractionService = userInteractionService;
         _diagnosticsService = diagnosticsService;
-        _workspaceMigrationService = workspaceMigrationService;
         _safeAsyncActionRunner = safeAsyncActionRunner;
         _sessionJournal = sessionJournal;
         _appSessionState = appSessionState;
@@ -610,7 +607,6 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
 
         try
         {
-            await EnsureWorkspaceMigratedAsync(operation.Token);
             var createdCase = await _caseWorkspaceService.CreateCaseAsync(caseName, operation.Token);
             await RefreshCasesAsync(operation.Token);
 
@@ -638,7 +634,6 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
 
         try
         {
-            await EnsureWorkspaceMigratedAsync(operation.Token);
             await OpenCaseInternalAsync(SelectedCase.CaseId, operation.Token);
             OperationProgress = 1.0;
             OperationText = $"Opened case \"{CurrentCaseInfo?.Name}\".";
@@ -651,8 +646,6 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
 
     private async Task RefreshCasesAsync(CancellationToken ct)
     {
-        await EnsureWorkspaceMigratedAsync(ct);
-
         var selectedCaseId = SelectedCase?.CaseId;
         var currentCaseId = CurrentCaseInfo?.CaseId;
         var cases = await _caseQueryService.GetRecentCasesAsync(ct);
@@ -666,27 +659,6 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
         SelectedCase = cases.FirstOrDefault(c => c.CaseId == selectedCaseId)
             ?? cases.FirstOrDefault(c => c.CaseId == currentCaseId)
             ?? cases.FirstOrDefault();
-    }
-
-    private async Task EnsureWorkspaceMigratedAsync(CancellationToken ct)
-    {
-        try
-        {
-            await _workspaceMigrationService.EnsureMigratedAsync(ct);
-        }
-        catch (Exception ex)
-        {
-            if (Application.Current is App app)
-            {
-                await app.HandleFatalExceptionAsync(
-                    "CaseGraph Workspace Error",
-                    "Workspace database verification failed.",
-                    ex
-                );
-            }
-
-            throw;
-        }
     }
 
     private IAsyncRelayCommand CreateSafeAsyncCommand(string actionName, Func<Task> executeAsync)
