@@ -6,6 +6,7 @@ using CaseGraph.Core.Diagnostics;
 using CaseGraph.Core.Models;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
+using Microsoft.Data.Sqlite;
 using System.Collections.ObjectModel;
 using System.Collections.Specialized;
 using System.IO;
@@ -397,8 +398,8 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
         CreateNewCaseCommand = CreateSafeAsyncCommand("CreateCase", CreateNewCaseAsync);
         OpenSelectedCaseCommand = CreateSafeAsyncCommand("OpenCase", OpenSelectedCaseAsync);
         RefreshCasesCommand = new AsyncRelayCommand(() => RefreshCasesAsync(CancellationToken.None));
-        ImportFilesCommand = new AsyncRelayCommand(ImportFilesAsync);
-        VerifySelectedEvidenceCommand = new AsyncRelayCommand(VerifySelectedEvidenceAsync);
+        ImportFilesCommand = CreateSafeAsyncCommand("ImportEvidence", ImportFilesAsync);
+        VerifySelectedEvidenceCommand = CreateSafeAsyncCommand("VerifyEvidence", VerifySelectedEvidenceAsync);
         ParseMessagesFromEvidenceCommand = CreateSafeAsyncCommand(
             "ParseMessages",
             ParseMessagesFromSelectedEvidenceAsync
@@ -423,7 +424,7 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
         CopySha256Command = new RelayCommand(CopySha256);
         CopyMessageCitationCommand = new RelayCommand(CopyMessageCitation);
         CopyMessageStoredPathCommand = new RelayCommand(CopyMessageStoredPath);
-        CancelOperationCommand = new AsyncRelayCommand(CancelCurrentOperationAsync);
+        CancelOperationCommand = CreateSafeAsyncCommand("CancelOperation", CancelCurrentOperationAsync);
         RefreshDiagnosticsCommand = new AsyncRelayCommand(() => RefreshDiagnosticsAsync(CancellationToken.None));
         OpenLogsFolderCommand = new RelayCommand(OpenLogsFolder);
         CopyDiagnosticsCommand = new RelayCommand(CopyDiagnostics);
@@ -444,7 +445,23 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
 
         _isInitialized = true;
         await RefreshDiagnosticsAsync(CancellationToken.None);
-        await RefreshCasesAsync(CancellationToken.None);
+
+        try
+        {
+            await RefreshCasesAsync(CancellationToken.None);
+        }
+        catch (Exception ex) when (IsWorkspaceLockException(ex))
+        {
+            var shouldRetry = PromptWorkspaceLockRetry("Load cases", ex);
+            if (shouldRetry)
+            {
+                await RefreshCasesAsync(CancellationToken.None);
+            }
+            else
+            {
+                OperationText = "Case list refresh deferred because workspace DB is locked.";
+            }
+        }
     }
 
     partial void OnSelectedNavigationItemChanged(NavigationItem? value)
@@ -616,6 +633,13 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
             OperationProgress = 1.0;
             OperationText = $"Case \"{createdCase.Name}\" created.";
         }
+        catch (Exception ex) when (IsWorkspaceLockException(ex))
+        {
+            ShowWorkspaceLockFailure(
+                "Create/open case failed because the workspace database is locked.",
+                ex
+            );
+        }
         catch (OperationCanceledException)
         {
             OperationText = "Case creation canceled.";
@@ -634,6 +658,19 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
 
         try
         {
+            await OpenCaseInternalAsync(SelectedCase.CaseId, operation.Token);
+            OperationProgress = 1.0;
+            OperationText = $"Opened case \"{CurrentCaseInfo?.Name}\".";
+        }
+        catch (Exception ex) when (IsWorkspaceLockException(ex))
+        {
+            var shouldRetry = PromptWorkspaceLockRetry("Open case", ex);
+            if (!shouldRetry)
+            {
+                OperationText = "Open case deferred because workspace DB is locked.";
+                return;
+            }
+
             await OpenCaseInternalAsync(SelectedCase.CaseId, operation.Token);
             OperationProgress = 1.0;
             OperationText = $"Opened case \"{CurrentCaseInfo?.Name}\".";
@@ -743,6 +780,15 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
             return;
         }
 
+        if (result.Exception is not null && IsWorkspaceLockException(result.Exception))
+        {
+            ShowWorkspaceLockFailure(
+                $"The \"{actionName}\" action could not complete because the workspace database is locked.",
+                result.Exception
+            );
+            return;
+        }
+
         var diagnosticsText = _diagnosticsService.BuildDiagnosticsText(
             $"{actionName} command failed.",
             result.CorrelationId,
@@ -804,6 +850,108 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
         return fields;
     }
 
+    private bool PromptWorkspaceLockRetry(string actionName, Exception ex)
+    {
+        var snapshot = _diagnosticsService.GetSnapshot();
+        var workspaceDbPath = snapshot.WorkspaceDbPath;
+        var logsDirectory = snapshot.LogsDirectory;
+
+        AppFileLogger.LogEvent(
+            eventName: "WorkspaceLockRetryPrompt",
+            level: "WARN",
+            message: $"{actionName} blocked by SQLite lock.",
+            ex: ex,
+            fields: new Dictionary<string, object?>
+            {
+                ["workspaceDbPath"] = workspaceDbPath,
+                ["logsDirectory"] = logsDirectory
+            }
+        );
+
+        var result = MessageBox.Show(
+            $"{actionName} could not complete because the workspace database is locked."
+            + Environment.NewLine
+            + Environment.NewLine
+            + $"Workspace DB: {workspaceDbPath}"
+            + Environment.NewLine
+            + $"Logs: {logsDirectory}"
+            + Environment.NewLine
+            + Environment.NewLine
+            + "Likely cause: a running job or another process is holding a write lock."
+            + Environment.NewLine
+            + "Click Yes to retry now, or No to continue using the app.",
+            "CaseGraph Workspace Busy",
+            MessageBoxButton.YesNo,
+            MessageBoxImage.Warning
+        );
+        return result == MessageBoxResult.Yes;
+    }
+
+    private void ShowWorkspaceLockFailure(string message, Exception ex)
+    {
+        var snapshot = _diagnosticsService.GetSnapshot();
+        var workspaceDbPath = snapshot.WorkspaceDbPath;
+        var logsDirectory = snapshot.LogsDirectory;
+
+        OperationText = "Workspace DB is locked. Action deferred.";
+        AppFileLogger.LogEvent(
+            eventName: "WorkspaceLockNonFatalActionFailure",
+            level: "WARN",
+            message: message,
+            ex: ex,
+            fields: new Dictionary<string, object?>
+            {
+                ["workspaceDbPath"] = workspaceDbPath,
+                ["logsDirectory"] = logsDirectory
+            }
+        );
+
+        MessageBox.Show(
+            message
+            + Environment.NewLine
+            + Environment.NewLine
+            + $"Workspace DB: {workspaceDbPath}"
+            + Environment.NewLine
+            + $"Logs: {logsDirectory}"
+            + Environment.NewLine
+            + Environment.NewLine
+            + "Next steps:"
+            + Environment.NewLine
+            + "1) Wait a few seconds and retry."
+            + Environment.NewLine
+            + "2) Ensure no other CaseGraph instance is running."
+            + Environment.NewLine
+            + "3) If it persists, capture diagnostics from the Logs folder.",
+            "CaseGraph Workspace Busy",
+            MessageBoxButton.OK,
+            MessageBoxImage.Warning
+        );
+    }
+
+    private static bool IsWorkspaceLockException(Exception ex)
+    {
+        if (ex is WorkspaceDbLockedException)
+        {
+            return true;
+        }
+
+        for (Exception? current = ex; current is not null; current = current.InnerException)
+        {
+            if (current is not SqliteException sqliteException)
+            {
+                continue;
+            }
+
+            if (sqliteException.SqliteErrorCode is 5 or 6
+                || sqliteException.SqliteExtendedErrorCode is 5 or 6)
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     private async Task ImportFilesAsync()
     {
         if (CurrentCaseInfo is null)
@@ -840,6 +988,13 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
             OperationText = $"Queued import job {jobId:D}.";
             OperationProgress = 0;
             await RefreshRecentJobsAsync(CancellationToken.None);
+        }
+        catch (Exception ex) when (IsWorkspaceLockException(ex))
+        {
+            ShowWorkspaceLockFailure(
+                "Queueing import job failed because the workspace database is locked.",
+                ex
+            );
         }
         catch (OperationCanceledException)
         {
@@ -878,6 +1033,13 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
             OperationProgress = 0;
             await RefreshRecentJobsAsync(CancellationToken.None);
         }
+        catch (Exception ex) when (IsWorkspaceLockException(ex))
+        {
+            ShowWorkspaceLockFailure(
+                "Queueing verify job failed because the workspace database is locked.",
+                ex
+            );
+        }
         catch (OperationCanceledException)
         {
             OperationText = "Verify canceled.";
@@ -915,6 +1077,13 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
             OperationProgress = 0;
             await RefreshRecentJobsAsync(CancellationToken.None);
             await RefreshLatestMessagesParseJobAsync(CancellationToken.None);
+        }
+        catch (Exception ex) when (IsWorkspaceLockException(ex))
+        {
+            ShowWorkspaceLockFailure(
+                "Queueing messages ingest failed because the workspace database is locked.",
+                ex
+            );
         }
         catch (OperationCanceledException)
         {
@@ -1848,7 +2017,20 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
     {
         if (_activeJobId.HasValue)
         {
-            await _jobQueueService.CancelAsync(_activeJobId.Value, CancellationToken.None);
+            OperationText = "Cancel requested...";
+            try
+            {
+                await _jobQueueService.CancelAsync(_activeJobId.Value, CancellationToken.None);
+                OperationText = "Cancel requested...";
+            }
+            catch (Exception ex) when (IsWorkspaceLockException(ex))
+            {
+                ShowWorkspaceLockFailure(
+                    "Cancel request could not be persisted because the workspace database is locked.",
+                    ex
+                );
+            }
+
             return;
         }
 

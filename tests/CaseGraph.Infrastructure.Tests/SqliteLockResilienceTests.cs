@@ -1,4 +1,5 @@
 using CaseGraph.Core.Abstractions;
+using CaseGraph.Core.Diagnostics;
 using CaseGraph.Core.Models;
 using CaseGraph.Infrastructure.Persistence;
 using CaseGraph.Infrastructure.Persistence.Entities;
@@ -78,6 +79,107 @@ public sealed class SqliteLockResilienceTests
     }
 
     [Fact]
+    public async Task CancelAsync_WhenWorkspaceDbWriteLocked_ThrowsControlledLockException()
+    {
+        await using var fixture = await JobQueueFixture.CreateAsync(startRunner: false);
+        var queue = fixture.Services.GetRequiredService<IJobQueueService>();
+        var jobId = await queue.EnqueueAsync(
+            new JobEnqueueRequest(
+                JobQueueService.TestLongRunningJobType,
+                CaseId: null,
+                EvidenceItemId: null,
+                JsonSerializer.Serialize(new
+                {
+                    SchemaVersion = 1,
+                    DelayMilliseconds = 3000
+                })
+            ),
+            CancellationToken.None
+        );
+
+        await using var lockConnection = new SqliteConnection(
+            $"Data Source={fixture.PathProvider.WorkspaceDbPath};Mode=ReadWrite"
+        );
+        await lockConnection.OpenAsync();
+        await using (var beginCommand = lockConnection.CreateCommand())
+        {
+            beginCommand.CommandText = "BEGIN IMMEDIATE;";
+            await beginCommand.ExecuteNonQueryAsync();
+        }
+
+        var lockException = await Assert.ThrowsAsync<WorkspaceDbLockedException>(
+            () => queue.CancelAsync(jobId, CancellationToken.None)
+        );
+        Assert.Equal("Cancel", lockException.OperationName);
+        Assert.True(lockException.AttemptCount >= 2);
+
+        await using (var rollbackCommand = lockConnection.CreateCommand())
+        {
+            rollbackCommand.CommandText = "ROLLBACK;";
+            await rollbackCommand.ExecuteNonQueryAsync();
+        }
+
+        await queue.CancelAsync(jobId, CancellationToken.None);
+        await using var verifyDb = await fixture.CreateDbContextAsync();
+        var canceled = await verifyDb.Jobs
+            .AsNoTracking()
+            .FirstAsync(job => job.JobId == jobId);
+        Assert.Equal("Canceled", canceled.Status);
+    }
+
+    [Fact]
+    public async Task ProgressPersistence_ThrottlesRunningJobWrites_AndFinalProgressIsOne()
+    {
+        await using var fixture = await JobQueueFixture.CreateAsync(startRunner: true);
+        await using (var db = await fixture.CreateDbContextAsync())
+        {
+            await db.Database.ExecuteSqlRawAsync(
+                "CREATE TABLE IF NOT EXISTS JobUpdateCounter (Count INTEGER NOT NULL);"
+            );
+            await db.Database.ExecuteSqlRawAsync("DELETE FROM JobUpdateCounter;");
+            await db.Database.ExecuteSqlRawAsync("INSERT INTO JobUpdateCounter(Count) VALUES (0);");
+            await db.Database.ExecuteSqlRawAsync(
+                """
+                CREATE TRIGGER IF NOT EXISTS JobUpdateCounterTrigger
+                AFTER UPDATE OF Progress, StatusMessage ON JobRecord
+                WHEN NEW.Status = 'Running' AND NEW.Progress < 1
+                BEGIN
+                    UPDATE JobUpdateCounter SET Count = Count + 1;
+                END;
+                """
+            );
+        }
+
+        var queue = fixture.Services.GetRequiredService<IJobQueueService>();
+        var jobId = await queue.EnqueueAsync(
+            new JobEnqueueRequest(
+                JobQueueService.TestLongRunningJobType,
+                CaseId: null,
+                EvidenceItemId: null,
+                JsonSerializer.Serialize(new
+                {
+                    SchemaVersion = 1,
+                    DelayMilliseconds = 3000
+                })
+            ),
+            CancellationToken.None
+        );
+
+        var succeeded = await WaitForJobStatusAsync(
+            fixture,
+            jobId,
+            expectedStatus: "Succeeded",
+            timeout: TimeSpan.FromSeconds(12)
+        );
+        Assert.Equal(1, succeeded.Progress);
+
+        var persistedRunningWriteCount = await ReadCounterAsync(
+            fixture.PathProvider.WorkspaceDbPath
+        );
+        Assert.InRange(persistedRunningWriteCount, 1, 12);
+    }
+
+    [Fact]
     public async Task JobRunnerHostedService_DoesNotBeginProcessingUntilWorkspaceInitCompletes()
     {
         await using var fixture = await RunnerGateFixture.CreateAsync();
@@ -146,6 +248,171 @@ public sealed class SqliteLockResilienceTests
         throw new TimeoutException(
             $"Job {jobId:D} did not reach {expectedStatus} within {timeout.TotalSeconds:0.##}s."
         );
+    }
+
+    private static async Task<JobRecord> WaitForJobStatusAsync(
+        JobQueueFixture fixture,
+        Guid jobId,
+        string expectedStatus,
+        TimeSpan timeout
+    )
+    {
+        var startedAt = DateTimeOffset.UtcNow;
+        while (DateTimeOffset.UtcNow - startedAt < timeout)
+        {
+            await using var db = await fixture.CreateDbContextAsync();
+            var record = await db.Jobs
+                .AsNoTracking()
+                .FirstOrDefaultAsync(job => job.JobId == jobId);
+
+            if (record is not null && string.Equals(record.Status, expectedStatus, StringComparison.Ordinal))
+            {
+                return record;
+            }
+
+            await Task.Delay(50);
+        }
+
+        throw new TimeoutException(
+            $"Job {jobId:D} did not reach {expectedStatus} within {timeout.TotalSeconds:0.##}s."
+        );
+    }
+
+    private static async Task<int> ReadCounterAsync(string workspaceDbPath)
+    {
+        await using var connection = new SqliteConnection(
+            $"Data Source={workspaceDbPath};Mode=ReadWrite"
+        );
+        await connection.OpenAsync();
+        await using var command = connection.CreateCommand();
+        command.CommandText = "SELECT Count FROM JobUpdateCounter LIMIT 1;";
+        var value = await command.ExecuteScalarAsync();
+        return value is null ? 0 : Convert.ToInt32(value);
+    }
+
+    private sealed class JobQueueFixture : IAsyncDisposable
+    {
+        private readonly ServiceProvider _provider;
+        private readonly JobRunnerHostedService? _runner;
+
+        private JobQueueFixture(
+            ServiceProvider provider,
+            TestWorkspacePathProvider pathProvider,
+            JobRunnerHostedService? runner
+        )
+        {
+            _provider = provider;
+            PathProvider = pathProvider;
+            _runner = runner;
+        }
+
+        public IServiceProvider Services => _provider;
+
+        public TestWorkspacePathProvider PathProvider { get; }
+
+        public static async Task<JobQueueFixture> CreateAsync(bool startRunner)
+        {
+            var workspaceRoot = Path.Combine(
+                Path.GetTempPath(),
+                "CaseGraph.Infrastructure.Tests",
+                Guid.NewGuid().ToString("N")
+            );
+            Directory.CreateDirectory(workspaceRoot);
+
+            var pathProvider = new TestWorkspacePathProvider(workspaceRoot);
+            var services = new ServiceCollection();
+            services.AddSingleton<IClock>(
+                new FixedClock(new DateTimeOffset(2026, 2, 22, 12, 0, 0, TimeSpan.Zero))
+            );
+            services.AddSingleton<IWorkspacePathProvider>(pathProvider);
+            services.AddDbContextFactory<WorkspaceDbContext>(options =>
+            {
+                Directory.CreateDirectory(pathProvider.WorkspaceRoot);
+                options.UseSqlite($"Data Source={pathProvider.WorkspaceDbPath}");
+            });
+
+            services.AddSingleton<WorkspaceDbRebuilder>();
+            services.AddSingleton<WorkspaceDbInitializer>();
+            services.AddSingleton<IWorkspaceDbInitializer>(
+                provider => provider.GetRequiredService<WorkspaceDbInitializer>()
+            );
+            services.AddSingleton<IWorkspaceDatabaseInitializer>(
+                provider => provider.GetRequiredService<WorkspaceDbInitializer>()
+            );
+            services.AddSingleton<IWorkspaceWriteGate, WorkspaceWriteGate>();
+            services.AddSingleton<IAuditLogService, AuditLogService>();
+            services.AddSingleton<ICaseWorkspaceService, CaseWorkspaceService>();
+            services.AddSingleton<IEvidenceVaultService, EvidenceVaultService>();
+            services.AddSingleton<IMessageSearchService, MessageSearchService>();
+            services.AddSingleton<IMessageIngestService, MessageIngestService>();
+            services.AddSingleton<IJobQueryService, JobQueryService>();
+            services.AddSingleton<JobQueueService>();
+            services.AddSingleton<IJobQueueService>(provider =>
+                provider.GetRequiredService<JobQueueService>()
+            );
+
+            var provider = services.BuildServiceProvider();
+            var initializer = provider.GetRequiredService<IWorkspaceDatabaseInitializer>();
+            await initializer.EnsureInitializedAsync(CancellationToken.None);
+
+            JobRunnerHostedService? runner = null;
+            if (startRunner)
+            {
+                runner = ActivatorUtilities.CreateInstance<JobRunnerHostedService>(provider);
+                await runner.StartAsync(CancellationToken.None);
+            }
+
+            return new JobQueueFixture(provider, pathProvider, runner);
+        }
+
+        public Task<WorkspaceDbContext> CreateDbContextAsync()
+        {
+            var factory = _provider.GetRequiredService<IDbContextFactory<WorkspaceDbContext>>();
+            return factory.CreateDbContextAsync(CancellationToken.None);
+        }
+
+        public async ValueTask DisposeAsync()
+        {
+            if (_runner is not null)
+            {
+                using var stopCts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+                await _runner.StopAsync(stopCts.Token);
+                _runner.Dispose();
+            }
+
+            await _provider.DisposeAsync();
+            if (!Directory.Exists(PathProvider.WorkspaceRoot))
+            {
+                return;
+            }
+
+            for (var attempt = 1; attempt <= 5; attempt++)
+            {
+                try
+                {
+                    Directory.Delete(PathProvider.WorkspaceRoot, recursive: true);
+                    return;
+                }
+                catch (IOException)
+                {
+                    if (attempt == 5)
+                    {
+                        return;
+                    }
+
+                    await Task.Delay(50);
+                }
+                catch (UnauthorizedAccessException)
+                {
+                    if (attempt == 5)
+                    {
+                        return;
+                    }
+
+                    await Task.Delay(50);
+                }
+            }
+        }
     }
 
     private sealed class RunnerGateFixture : IAsyncDisposable

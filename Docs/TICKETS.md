@@ -10,13 +10,77 @@ This file tracks planned, active, and completed tickets.
   - **Completed Tickets** (append-only)
 
 ## Active Ticket
-- ID: (none)
-- Title: (none queued)
+- T0016 - SQLite lock hardening for Job Queue + Cancel + OpenCase/Workspace init
 
-## Active Ticket Spec
-```md
-(none queued)
-```
+### T0016 - SQLite lock hardening for Job Queue + Cancel + OpenCase/Workspace init
+
+#### Goal
+Eliminate user-facing crashes and “hung” behavior caused by SQLite write-lock contention by making JobQueue writes, Cancel operations, and workspace init resilient (retry/backoff, throttling, and non-fatal UI handling).
+
+#### Context / Evidence
+We have confirmed fatal UI-thread crashes caused by `SQLite Error 5: 'database is locked'` during:
+- `JobQueueService.CancelAsync(...)` triggered by `CancelCurrentOperationAsync()` (UI command crash path).
+- `ParseMessages` command failing due to locked DB during job/audit writes.
+Additionally, OpenCase/Workspace init can time out when the DB is locked.
+
+#### In Scope
+1) JobQueueService write resiliency
+- Add a focused retry/backoff policy for SQLITE_BUSY/SQLITE_LOCKED (Error 5 / locked) around ALL JobQueue write operations:
+  - Enqueue / Start / ReportProgress / Complete / Fail / Cancel
+- Retries MUST be bounded and logged (attempt count, delay, final failure).
+- If a write still fails after retries, surface a non-fatal error to UI (toast/dialog) and keep the app running.
+
+2) Progress write throttling
+- Throttle JobQueue progress persistence so we do not write to SQLite for every tiny increment.
+- Keep UI responsiveness: UI can still update live via in-memory progress events; database persistence can be coarser (e.g., max 2-4 writes/sec OR “only on percent change”).
+- Ensure final persisted progress always ends at 1.0 (100%) on success.
+
+3) Cancel command safety
+- Ensure CancelCurrentOperationCommand is executed via the SafeAsyncActionRunner pattern so Cancel failures do not crash the UI thread.
+- If cancel cannot be persisted immediately due to lock, show “Cancel requested…” and continue retrying briefly; if it still fails, show a clear error with next steps.
+
+4) Workspace init / OpenCase non-fatal handling
+- If workspace init/migration verification times out due to lock, do NOT hard-exit the entire app.
+- Show a user-readable error with:
+  - workspace db path
+  - logs path
+  - likely cause (DB locked by a running job or another instance)
+  - a “Retry” action.
+
+#### Out of Scope
+- Big architecture changes (separate DB for job queue, moving off SQLite, major refactor of ingest pipeline).
+- New UI pages/features beyond minimal messaging/toast/dialog updates needed to avoid crashes.
+
+#### Acceptance Criteria
+- Repro: Start a long MessagesIngest; while it runs, click Cancel.
+  - Expected: no crash; Cancel either succeeds or shows a non-fatal message and retries.
+- Repro: Start ParseMessages while DB is temporarily locked (simulated or real contention).
+  - Expected: no crash; operation fails gracefully with actionable message OR waits/retries then proceeds.
+- Job history: succeeded jobs persist Progress=1.0 and final status text is stable (no regressions where progress stays < 1.0).
+- OpenCase/Workspace init: lock-induced timeout produces a non-fatal UI error with retry; app stays open.
+- Automated tests added to prevent regressions (see Test Plan).
+
+#### Test Plan (Automated)
+- Add infrastructure test that simulates SQLite write lock:
+  - Open a SqliteConnection to workspace.db (or a temp db), begin an IMMEDIATE transaction to hold the write lock.
+  - Call JobQueueService.CancelAsync and/or ReportProgressAsync.
+  - Assert: method does not throw; returns controlled failure result (or exception is wrapped/handled); logs contain retry attempts.
+- Add test for progress throttling behavior (e.g., multiple calls within short interval only persist limited writes).
+- Update/extend any existing JobQueueService tests as needed.
+
+#### Manual Verify Steps
+1) Run app, parse 10k XLSX.
+2) While parsing, click Cancel.
+3) Confirm:
+   - UI stays responsive, no crash.
+   - Cancel either completes or clearly reports failure without exiting app.
+4) Open/close cases and confirm OpenCase doesn’t kill the app on lock; shows retry UI if needed.
+
+#### Notes / Implementation Guidance
+- Prefer a small shared helper (e.g., SqliteWriteRetry) used only where needed (JobQueue writes).
+- Log retries with correlationId and operation name.
+- Avoid increasing global timeouts as the main fix; prefer retry + throttling + correct UI containment.
+
 
 ## Upcoming Tickets
 - (none currently queued)
@@ -54,3 +118,4 @@ This file tracks planned, active, and completed tickets.
 - 2026-02-21 - T0013 - Added identifier input validation UX, routed Add Identifier through safe async handling, switched service validation to ArgumentException, and added guard/service regression tests.
 - 2026-02-21 - T0014 - Added participant-to-target link/create modal actions in Search, explicit conflict resolution (including non-primary dual-link), UI-Link-v1 provenance/audit logging, and SQLite conflict/link coverage.
 - 2026-02-22 - T0015 - Added startup-only workspace migration gating with cached success, introduced workspace write gate + SQLite busy/locked retry/backoff on progress/audit/provenance write paths, hardened non-disruptive SafeReportProgress behavior, and added deterministic lock-resilience runner/gate tests.
+- 2026-02-22 - T0016 - Hardened JobQueue writes (enqueue/start/progress/finalize/cancel) with bounded SQLite lock retries + structured retry/exhaustion logging, added progress persistence throttling with live in-memory updates, moved Cancel to safe async containment with lock-aware user guidance, and made workspace-init lock timeouts non-fatal with retryable startup messaging.

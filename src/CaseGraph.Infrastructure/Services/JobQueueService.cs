@@ -21,9 +21,20 @@ public sealed class JobQueueService : IJobQueueService
     {
         PropertyNameCaseInsensitive = true
     };
+    private static readonly TimeSpan[] JobWriteRetryDelays =
+    [
+        TimeSpan.FromMilliseconds(50),
+        TimeSpan.FromMilliseconds(100),
+        TimeSpan.FromMilliseconds(200),
+        TimeSpan.FromMilliseconds(400),
+        TimeSpan.FromMilliseconds(800)
+    ];
+    private static readonly TimeSpan ProgressPersistMinimumInterval = TimeSpan.FromMilliseconds(300);
+    private const double ProgressPersistMinimumDelta = 0.10;
 
     private readonly IDbContextFactory<WorkspaceDbContext> _dbContextFactory;
     private readonly IWorkspaceDatabaseInitializer _databaseInitializer;
+    private readonly IWorkspacePathProvider _workspacePathProvider;
     private readonly IClock _clock;
     private readonly ICaseWorkspaceService _caseWorkspaceService;
     private readonly IEvidenceVaultService _evidenceVaultService;
@@ -35,6 +46,8 @@ public sealed class JobQueueService : IJobQueueService
     private readonly ConcurrentDictionary<Guid, CancellationTokenSource> _runningJobs = new();
     private readonly ConcurrentDictionary<Guid, byte> _pendingRunningCancels = new();
     private readonly ConcurrentDictionary<Guid, byte> _progressDropWarnings = new();
+    private readonly ConcurrentDictionary<Guid, PersistedProgressState> _persistedProgressStates = new();
+    private readonly ConcurrentDictionary<Guid, JobInfo> _latestJobInfos = new();
     private readonly JobInfoObservable _jobUpdates = new();
     private readonly SemaphoreSlim _primeSemaphore = new(1, 1);
 
@@ -43,6 +56,7 @@ public sealed class JobQueueService : IJobQueueService
     public JobQueueService(
         IDbContextFactory<WorkspaceDbContext> dbContextFactory,
         IWorkspaceDatabaseInitializer databaseInitializer,
+        IWorkspacePathProvider workspacePathProvider,
         IClock clock,
         ICaseWorkspaceService caseWorkspaceService,
         IEvidenceVaultService evidenceVaultService,
@@ -54,6 +68,7 @@ public sealed class JobQueueService : IJobQueueService
     {
         _dbContextFactory = dbContextFactory;
         _databaseInitializer = databaseInitializer;
+        _workspacePathProvider = workspacePathProvider;
         _clock = clock;
         _caseWorkspaceService = caseWorkspaceService;
         _evidenceVaultService = evidenceVaultService;
@@ -89,8 +104,6 @@ public sealed class JobQueueService : IJobQueueService
             );
         }
 
-        await _databaseInitializer.EnsureInitializedAsync(ct);
-
         var now = _clock.UtcNow.ToUniversalTime();
         var jobRecord = new JobRecord
         {
@@ -109,35 +122,48 @@ public sealed class JobQueueService : IJobQueueService
             Operator = Environment.UserName
         };
 
-        await using (var db = await _dbContextFactory.CreateDbContextAsync(ct))
-        {
-            if (ShouldDeduplicateEvidenceVerify(request))
+        var enqueueOutcome = await ExecuteJobWriteWithRetryAsync(
+            operationName: "Enqueue",
+            jobId: jobRecord.JobId,
+            correlationId: jobRecord.CorrelationId,
+            async writeCt =>
             {
-                var existing = await FindActiveEvidenceVerifyDuplicateAsync(
-                    db,
-                    request.CaseId!.Value,
-                    request.EvidenceItemId!.Value,
-                    ct
-                );
-
-                if (existing is not null)
+                await using var db = await _dbContextFactory.CreateDbContextAsync(writeCt);
+                if (ShouldDeduplicateEvidenceVerify(request))
                 {
-                    LogJobEvent(
-                        existing,
-                        eventName: "JobEnqueueDeduplicated",
-                        level: "INFO",
-                        message: "Reused existing active verify job."
+                    var existing = await FindActiveEvidenceVerifyDuplicateAsync(
+                        db,
+                        request.CaseId!.Value,
+                        request.EvidenceItemId!.Value,
+                        writeCt
                     );
-                    return existing.JobId;
-                }
-            }
 
-            db.Jobs.Add(jobRecord);
-            await db.SaveChangesAsync(ct);
+                    if (existing is not null)
+                    {
+                        return EnqueueWriteOutcome.Deduplicated(existing);
+                    }
+                }
+
+                db.Jobs.Add(jobRecord);
+                await db.SaveChangesAsync(writeCt);
+                return EnqueueWriteOutcome.Queued(jobRecord);
+            },
+            ct
+        );
+
+        if (enqueueOutcome.DeduplicatedJob is not null)
+        {
+            LogJobEvent(
+                enqueueOutcome.DeduplicatedJob,
+                eventName: "JobEnqueueDeduplicated",
+                level: "INFO",
+                message: "Reused existing active verify job."
+            );
+            return enqueueOutcome.DeduplicatedJob.JobId;
         }
 
-        var queuedInfo = MapJobInfo(jobRecord);
-        _jobUpdates.Publish(queuedInfo);
+        var queuedInfo = MapJobInfo(enqueueOutcome.QueuedJob!);
+        PublishJobUpdate(queuedInfo);
         LogJobEvent(jobRecord, "JobQueued", "INFO", "Job queued.");
         await WriteLifecycleAuditAsync(
             queuedInfo,
@@ -146,123 +172,152 @@ public sealed class JobQueueService : IJobQueueService
             ct
         );
 
-        await _dispatchChannel.Writer.WriteAsync(jobRecord.JobId, ct);
-        return jobRecord.JobId;
+        await _dispatchChannel.Writer.WriteAsync(queuedInfo.JobId, ct);
+        return queuedInfo.JobId;
     }
 
     public async Task CancelAsync(Guid jobId, CancellationToken ct)
     {
-        await _databaseInitializer.EnsureInitializedAsync(ct);
+        var cancelOutcome = await ExecuteJobWriteWithRetryAsync(
+            operationName: "Cancel",
+            jobId: jobId,
+            correlationId: null,
+            async writeCt =>
+            {
+                await using var db = await _dbContextFactory.CreateDbContextAsync(writeCt);
+                var jobRecord = await db.Jobs.FirstOrDefaultAsync(j => j.JobId == jobId, writeCt);
+                if (jobRecord is null)
+                {
+                    return CancelWriteOutcome.NotFound();
+                }
 
-        await using var db = await _dbContextFactory.CreateDbContextAsync(ct);
-        var jobRecord = await db.Jobs.FirstOrDefaultAsync(j => j.JobId == jobId, ct);
-        if (jobRecord is null)
-        {
-            return;
-        }
+                if (jobRecord.Status == JobStatus.Queued.ToString())
+                {
+                    var now = _clock.UtcNow.ToUniversalTime();
+                    jobRecord.Status = JobStatus.Canceled.ToString();
+                    jobRecord.CompletedAtUtc = now;
+                    jobRecord.Progress = 1;
+                    jobRecord.StatusMessage = "Canceled";
+                    jobRecord.ErrorMessage = null;
+                    await db.SaveChangesAsync(writeCt);
+                    return CancelWriteOutcome.Completed(CancelAction.MarkedCanceled, MapJobInfo(jobRecord));
+                }
 
-        using var jobScope = AppFileLogger.BeginJobScope(
-            jobRecord.JobId,
-            jobRecord.JobType,
-            jobRecord.CorrelationId,
-            jobRecord.CaseId,
-            jobRecord.EvidenceItemId
+                if (IsTerminalStatus(jobRecord.Status))
+                {
+                    return CancelWriteOutcome.Completed(CancelAction.AlreadyTerminal, MapJobInfo(jobRecord));
+                }
+
+                if (jobRecord.Status != JobStatus.Running.ToString())
+                {
+                    return CancelWriteOutcome.Completed(CancelAction.IgnoredNotRunning, MapJobInfo(jobRecord));
+                }
+
+                jobRecord.StatusMessage = "Cancellation requested.";
+                await db.SaveChangesAsync(writeCt);
+                return CancelWriteOutcome.Completed(
+                    CancelAction.MarkedCancelRequested,
+                    MapJobInfo(jobRecord)
+                );
+            },
+            ct
         );
 
-        if (jobRecord.Status == JobStatus.Queued.ToString())
+        if (!cancelOutcome.Found || cancelOutcome.JobInfo is null)
         {
-            var now = _clock.UtcNow.ToUniversalTime();
-            jobRecord.Status = JobStatus.Canceled.ToString();
-            jobRecord.CompletedAtUtc = now;
-            jobRecord.Progress = 1;
-            jobRecord.StatusMessage = "Canceled";
-            jobRecord.ErrorMessage = null;
-
-            await db.SaveChangesAsync(ct);
-
-            var canceledInfo = MapJobInfo(jobRecord);
-            _jobUpdates.Publish(canceledInfo);
-            AppFileLogger.LogEvent(
-                eventName: "JobCancelRequested",
-                level: "INFO",
-                message: "Cancel request marked queued job as canceled.",
-                fields: new Dictionary<string, object?>
-                {
-                    ["state"] = JobStatus.Queued.ToString(),
-                    ["action"] = "MarkedCanceled"
-                }
-            );
-            await WriteLifecycleAuditAsync(
-                canceledInfo,
-                "JobCanceled",
-                $"{canceledInfo.JobType} job canceled before execution.",
-                ct
-            );
             return;
         }
 
-        if (IsTerminalStatus(jobRecord.Status))
-        {
-            AppFileLogger.LogEvent(
-                eventName: "JobCancelRequested",
-                level: "INFO",
-                message: "Cancel request ignored because job is already terminal.",
-                fields: new Dictionary<string, object?>
-                {
-                    ["state"] = jobRecord.Status,
-                    ["action"] = "AlreadyTerminal"
-                }
-            );
-            return;
-        }
+        var canceledInfo = cancelOutcome.JobInfo;
+        using var jobScope = AppFileLogger.BeginJobScope(
+            canceledInfo.JobId,
+            canceledInfo.JobType,
+            canceledInfo.CorrelationId,
+            canceledInfo.CaseId,
+            canceledInfo.EvidenceItemId
+        );
 
-        if (jobRecord.Status != JobStatus.Running.ToString())
+        switch (cancelOutcome.Action)
         {
-            AppFileLogger.LogEvent(
-                eventName: "JobCancelRequested",
-                level: "WARN",
-                message: "Cancel request ignored because job is not running.",
-                fields: new Dictionary<string, object?>
+            case CancelAction.MarkedCanceled:
+                PublishJobUpdate(canceledInfo);
+                _persistedProgressStates.TryRemove(jobId, out _);
+                AppFileLogger.LogEvent(
+                    eventName: "JobCancelRequested",
+                    level: "INFO",
+                    message: "Cancel request marked queued job as canceled.",
+                    fields: new Dictionary<string, object?>
+                    {
+                        ["state"] = JobStatus.Queued.ToString(),
+                        ["action"] = "MarkedCanceled"
+                    }
+                );
+                await WriteLifecycleAuditAsync(
+                    canceledInfo,
+                    "JobCanceled",
+                    $"{canceledInfo.JobType} job canceled before execution.",
+                    ct
+                );
+                break;
+            case CancelAction.AlreadyTerminal:
+                AppFileLogger.LogEvent(
+                    eventName: "JobCancelRequested",
+                    level: "INFO",
+                    message: "Cancel request ignored because job is already terminal.",
+                    fields: new Dictionary<string, object?>
+                    {
+                        ["state"] = canceledInfo.Status.ToString(),
+                        ["action"] = "AlreadyTerminal"
+                    }
+                );
+                break;
+            case CancelAction.IgnoredNotRunning:
+                AppFileLogger.LogEvent(
+                    eventName: "JobCancelRequested",
+                    level: "WARN",
+                    message: "Cancel request ignored because job is not running.",
+                    fields: new Dictionary<string, object?>
+                    {
+                        ["state"] = canceledInfo.Status.ToString(),
+                        ["action"] = "Ignored"
+                    }
+                );
+                break;
+            case CancelAction.MarkedCancelRequested:
+                PublishJobUpdate(canceledInfo);
+                if (_runningJobs.TryGetValue(jobId, out var runningJobCts))
                 {
-                    ["state"] = jobRecord.Status,
-                    ["action"] = "Ignored"
+                    runningJobCts.Cancel();
+                    _pendingRunningCancels.TryRemove(jobId, out _);
+                    AppFileLogger.LogEvent(
+                        eventName: "JobCancelRequested",
+                        level: "INFO",
+                        message: "Cancel request signaled running job token.",
+                        fields: new Dictionary<string, object?>
+                        {
+                            ["state"] = JobStatus.Running.ToString(),
+                            ["action"] = "CtsCanceled"
+                        }
+                    );
                 }
-            );
-            return;
-        }
+                else
+                {
+                    _pendingRunningCancels[jobId] = 0;
+                    AppFileLogger.LogEvent(
+                        eventName: "JobCancelRequested",
+                        level: "INFO",
+                        message: "Cancel request queued until running token is available.",
+                        fields: new Dictionary<string, object?>
+                        {
+                            ["state"] = JobStatus.Running.ToString(),
+                            ["action"] = "PendingUntilCtsAvailable"
+                        }
+                    );
+                }
 
-        jobRecord.StatusMessage = "Cancellation requested.";
-        await db.SaveChangesAsync(ct);
-        _jobUpdates.Publish(MapJobInfo(jobRecord));
-
-        if (_runningJobs.TryGetValue(jobId, out var runningJobCts))
-        {
-            runningJobCts.Cancel();
-            _pendingRunningCancels.TryRemove(jobId, out _);
-            AppFileLogger.LogEvent(
-                eventName: "JobCancelRequested",
-                level: "INFO",
-                message: "Cancel request signaled running job token.",
-                fields: new Dictionary<string, object?>
-                {
-                    ["state"] = JobStatus.Running.ToString(),
-                    ["action"] = "CtsCanceled"
-                }
-            );
-        }
-        else
-        {
-            _pendingRunningCancels[jobId] = 0;
-            AppFileLogger.LogEvent(
-                eventName: "JobCancelRequested",
-                level: "INFO",
-                message: "Cancel request queued until running token is available.",
-                fields: new Dictionary<string, object?>
-                {
-                    ["state"] = JobStatus.Running.ToString(),
-                    ["action"] = "PendingUntilCtsAvailable"
-                }
-            );
+                break;
+            default:
+                break;
         }
     }
 
@@ -317,32 +372,43 @@ public sealed class JobQueueService : IJobQueueService
 
     public async Task ExecuteAsync(Guid jobId, CancellationToken stoppingToken)
     {
-        await _databaseInitializer.EnsureInitializedAsync(stoppingToken);
-
-        await using (var db = await _dbContextFactory.CreateDbContextAsync(stoppingToken))
-        {
-            var jobRecord = await db.Jobs.FirstOrDefaultAsync(j => j.JobId == jobId, stoppingToken);
-            if (jobRecord is null || jobRecord.Status != JobStatus.Queued.ToString())
+        var runningInfo = await ExecuteJobWriteWithRetryAsync(
+            operationName: "Start",
+            jobId: jobId,
+            correlationId: null,
+            async writeCt =>
             {
-                return;
-            }
+                await using var db = await _dbContextFactory.CreateDbContextAsync(writeCt);
+                var jobRecord = await db.Jobs.FirstOrDefaultAsync(j => j.JobId == jobId, writeCt);
+                if (jobRecord is null || jobRecord.Status != JobStatus.Queued.ToString())
+                {
+                    return null;
+                }
 
-            var now = _clock.UtcNow.ToUniversalTime();
-            jobRecord.Status = JobStatus.Running.ToString();
-            jobRecord.StartedAtUtc ??= now;
-            jobRecord.StatusMessage = $"Running {jobRecord.JobType}...";
-            await db.SaveChangesAsync(stoppingToken);
+                var now = _clock.UtcNow.ToUniversalTime();
+                jobRecord.Status = JobStatus.Running.ToString();
+                jobRecord.StartedAtUtc ??= now;
+                jobRecord.StatusMessage = $"Running {jobRecord.JobType}...";
+                await db.SaveChangesAsync(writeCt);
+                return MapJobInfo(jobRecord);
+            },
+            stoppingToken
+        );
 
-            var runningInfo = MapJobInfo(jobRecord);
-            _jobUpdates.Publish(runningInfo);
-            LogJobEvent(runningInfo, "JobStarted", "INFO", "Job execution started.");
-            await WriteLifecycleAuditAsync(
-                runningInfo,
-                "JobStarted",
-                $"{runningInfo.JobType} job started.",
-                stoppingToken
-            );
+        if (runningInfo is null)
+        {
+            return;
         }
+
+        PublishJobUpdate(runningInfo);
+        MarkProgressPersisted(jobId, runningInfo.Progress, runningInfo.StatusMessage);
+        LogJobEvent(runningInfo, "JobStarted", "INFO", "Job execution started.");
+        await WriteLifecycleAuditAsync(
+            runningInfo,
+            "JobStarted",
+            $"{runningInfo.JobType} job started.",
+            stoppingToken
+        );
 
         using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
         if (!_runningJobs.TryAdd(jobId, linkedCts))
@@ -470,6 +536,8 @@ public sealed class JobQueueService : IJobQueueService
             _runningJobs.TryRemove(jobId, out _);
             _pendingRunningCancels.TryRemove(jobId, out _);
             _progressDropWarnings.TryRemove(jobId, out _);
+            _persistedProgressStates.TryRemove(jobId, out _);
+            _latestJobInfos.TryRemove(jobId, out _);
         }
     }
 
@@ -743,73 +811,66 @@ public sealed class JobQueueService : IJobQueueService
     )
     {
         var clampedProgress = Math.Clamp(progress, 0, 1);
-        JobInfo? progressInfo = null;
+        PublishInMemoryProgressUpdate(jobId, clampedProgress, statusMessage);
+        if (!ShouldPersistProgress(jobId, clampedProgress, statusMessage))
+        {
+            return;
+        }
 
-        await _workspaceWriteGate.RunAsync(
+        var correlationId = _latestJobInfos.TryGetValue(jobId, out var latestInfo)
+            ? latestInfo.CorrelationId
+            : null;
+        var progressInfo = await ExecuteJobWriteWithRetryAsync(
+            operationName: "ReportProgress",
+            jobId: jobId,
+            correlationId: correlationId,
             async writeCt =>
             {
-                await SqliteWriteRetryPolicy.ExecuteAsync(
-                    async retryCt =>
-                    {
-                        await _databaseInitializer.EnsureInitializedAsync(retryCt);
-                        await using var db = await _dbContextFactory.CreateDbContextAsync(retryCt);
-                        var jobRecord = await db.Jobs.FirstOrDefaultAsync(
-                            j => j.JobId == jobId,
-                            retryCt
-                        );
-                        if (jobRecord is null || jobRecord.Status != JobStatus.Running.ToString())
-                        {
-                            return;
-                        }
+                await using var db = await _dbContextFactory.CreateDbContextAsync(writeCt);
+                var jobRecord = await db.Jobs.FirstOrDefaultAsync(j => j.JobId == jobId, writeCt);
+                if (jobRecord is null || jobRecord.Status != JobStatus.Running.ToString())
+                {
+                    return null;
+                }
 
-                        if (jobRecord.CompletedAtUtc.HasValue || IsTerminalStatus(jobRecord.Status))
-                        {
-                            return;
-                        }
+                if (jobRecord.CompletedAtUtc.HasValue || IsTerminalStatus(jobRecord.Status))
+                {
+                    return null;
+                }
 
-                        if (clampedProgress + 0.0005 < jobRecord.Progress)
-                        {
-                            return;
-                        }
+                if (clampedProgress + 0.0005 < jobRecord.Progress)
+                {
+                    return null;
+                }
 
-                        var monotonicProgress = Math.Max(jobRecord.Progress, clampedProgress);
+                var monotonicProgress = Math.Max(jobRecord.Progress, clampedProgress);
+                if (Math.Abs(jobRecord.Progress - monotonicProgress) < 0.0005
+                    && string.Equals(jobRecord.StatusMessage, statusMessage, StringComparison.Ordinal))
+                {
+                    return null;
+                }
 
-                        if (
-                            Math.Abs(jobRecord.Progress - monotonicProgress) < 0.0005
-                            && string.Equals(
-                                jobRecord.StatusMessage,
-                                statusMessage,
-                                StringComparison.Ordinal
-                            )
-                        )
-                        {
-                            return;
-                        }
+                if (Math.Abs(jobRecord.Progress - monotonicProgress) < 0.0005
+                    && ShouldIgnoreSameProgressMessage(jobRecord.StatusMessage, statusMessage))
+                {
+                    return null;
+                }
 
-                        if (Math.Abs(jobRecord.Progress - monotonicProgress) < 0.0005
-                            && ShouldIgnoreSameProgressMessage(
-                                jobRecord.StatusMessage,
-                                statusMessage
-                            ))
-                        {
-                            return;
-                        }
-
-                        jobRecord.Progress = monotonicProgress;
-                        jobRecord.StatusMessage = statusMessage;
-                        await db.SaveChangesAsync(retryCt);
-                        progressInfo = MapJobInfo(jobRecord);
-                    },
-                    writeCt
-                );
+                jobRecord.Progress = monotonicProgress;
+                jobRecord.StatusMessage = statusMessage;
+                await db.SaveChangesAsync(writeCt);
+                return MapJobInfo(jobRecord);
             },
             ct
         );
 
-        if (progressInfo is not null)
+        if (progressInfo is null)
         {
-            _jobUpdates.Publish(progressInfo);
+            return;
         }
+
+        MarkProgressPersisted(jobId, progressInfo.Progress, progressInfo.StatusMessage);
+        PublishJobUpdate(progressInfo);
     }
 
     private async Task<JobInfo?> FinalizeTerminalStateAsync(
@@ -820,25 +881,40 @@ public sealed class JobQueueService : IJobQueueService
         CancellationToken ct
     )
     {
-        await _databaseInitializer.EnsureInitializedAsync(ct);
+        var correlationId = _latestJobInfos.TryGetValue(jobId, out var latestInfo)
+            ? latestInfo.CorrelationId
+            : null;
+        var jobInfo = await ExecuteJobWriteWithRetryAsync(
+            operationName: "FinalizeTerminalState",
+            jobId: jobId,
+            correlationId: correlationId,
+            async writeCt =>
+            {
+                await using var db = await _dbContextFactory.CreateDbContextAsync(writeCt);
+                var jobRecord = await db.Jobs.FirstOrDefaultAsync(j => j.JobId == jobId, writeCt);
+                if (jobRecord is null)
+                {
+                    return null;
+                }
 
-        await using var db = await _dbContextFactory.CreateDbContextAsync(ct);
-        var jobRecord = await db.Jobs.FirstOrDefaultAsync(j => j.JobId == jobId, ct);
-        if (jobRecord is null)
+                jobRecord.Status = status.ToString();
+                jobRecord.CompletedAtUtc = _clock.UtcNow.ToUniversalTime();
+                jobRecord.StatusMessage = statusMessage;
+                jobRecord.ErrorMessage = errorMessage;
+                jobRecord.Progress = 1;
+                await db.SaveChangesAsync(writeCt);
+                return MapJobInfo(jobRecord);
+            },
+            ct
+        );
+
+        if (jobInfo is null)
         {
             return null;
         }
 
-        jobRecord.Status = status.ToString();
-        jobRecord.CompletedAtUtc = _clock.UtcNow.ToUniversalTime();
-        jobRecord.StatusMessage = statusMessage;
-        jobRecord.ErrorMessage = errorMessage;
-        jobRecord.Progress = 1;
-
-        await db.SaveChangesAsync(ct);
-
-        var jobInfo = MapJobInfo(jobRecord);
-        _jobUpdates.Publish(jobInfo);
+        MarkProgressPersisted(jobId, jobInfo.Progress, jobInfo.StatusMessage);
+        PublishJobUpdate(jobInfo);
         return jobInfo;
     }
 
@@ -1065,6 +1141,229 @@ public sealed class JobQueueService : IJobQueueService
         return message.Trim();
     }
 
+    private async Task<T> ExecuteJobWriteWithRetryAsync<T>(
+        string operationName,
+        Guid? jobId,
+        string? correlationId,
+        Func<CancellationToken, Task<T>> operation,
+        CancellationToken ct
+    )
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(operationName);
+        ArgumentNullException.ThrowIfNull(operation);
+
+        var maxAttempts = JobWriteRetryDelays.Length + 1;
+        for (var attemptIndex = 0; ; attemptIndex++)
+        {
+            ct.ThrowIfCancellationRequested();
+
+            try
+            {
+                return await _workspaceWriteGate.RunAsync(
+                    async writeCt =>
+                    {
+                        await _databaseInitializer.EnsureInitializedAsync(writeCt);
+                        return await operation(writeCt);
+                    },
+                    ct
+                );
+            }
+            catch (Exception ex) when (SqliteWriteRetryPolicy.IsBusyOrLocked(ex)
+                && attemptIndex < JobWriteRetryDelays.Length)
+            {
+                var retryDelay = JobWriteRetryDelays[attemptIndex];
+                LogJobWriteRetry(
+                    operationName,
+                    jobId,
+                    correlationId,
+                    attemptNumber: attemptIndex + 1,
+                    maxAttempts,
+                    retryDelay,
+                    ex
+                );
+                await Task.Delay(retryDelay, ct);
+            }
+            catch (Exception ex) when (SqliteWriteRetryPolicy.IsBusyOrLocked(ex))
+            {
+                LogJobWriteRetryExhausted(
+                    operationName,
+                    jobId,
+                    correlationId,
+                    maxAttempts,
+                    ex
+                );
+                throw new WorkspaceDbLockedException(
+                    operationName,
+                    maxAttempts,
+                    _workspacePathProvider.WorkspaceDbPath,
+                    ex
+                );
+            }
+        }
+    }
+
+    private void PublishJobUpdate(JobInfo jobInfo)
+    {
+        _latestJobInfos[jobInfo.JobId] = jobInfo;
+        _jobUpdates.Publish(jobInfo);
+    }
+
+    private void PublishInMemoryProgressUpdate(
+        Guid jobId,
+        double clampedProgress,
+        string statusMessage
+    )
+    {
+        if (!_latestJobInfos.TryGetValue(jobId, out var current))
+        {
+            return;
+        }
+
+        if (current.Status != JobStatus.Running)
+        {
+            return;
+        }
+
+        if (clampedProgress + 0.0005 < current.Progress)
+        {
+            return;
+        }
+
+        var monotonicProgress = Math.Max(current.Progress, clampedProgress);
+        if (Math.Abs(current.Progress - monotonicProgress) < 0.0005
+            && string.Equals(current.StatusMessage, statusMessage, StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        if (Math.Abs(current.Progress - monotonicProgress) < 0.0005
+            && ShouldIgnoreSameProgressMessage(current.StatusMessage, statusMessage))
+        {
+            return;
+        }
+
+        PublishJobUpdate(current with
+        {
+            Progress = monotonicProgress,
+            StatusMessage = statusMessage
+        });
+    }
+
+    private bool ShouldPersistProgress(Guid jobId, double clampedProgress, string statusMessage)
+    {
+        if (clampedProgress >= 0.9995 || IsTerminalLikeProgressMessage(statusMessage))
+        {
+            return true;
+        }
+
+        if (!_persistedProgressStates.TryGetValue(jobId, out var persistedState))
+        {
+            return true;
+        }
+
+        if (clampedProgress + 0.0005 < persistedState.Progress)
+        {
+            return false;
+        }
+
+        if (clampedProgress - persistedState.Progress >= ProgressPersistMinimumDelta)
+        {
+            return true;
+        }
+
+        var elapsed = DateTimeOffset.UtcNow - persistedState.TimestampUtc;
+        if (elapsed >= ProgressPersistMinimumInterval)
+        {
+            return true;
+        }
+
+        return !string.Equals(
+            persistedState.StatusMessage,
+            statusMessage,
+            StringComparison.Ordinal
+        ) && elapsed >= TimeSpan.FromMilliseconds(150);
+    }
+
+    private void MarkProgressPersisted(Guid jobId, double progress, string statusMessage)
+    {
+        _persistedProgressStates[jobId] = new PersistedProgressState(
+            DateTimeOffset.UtcNow,
+            Math.Clamp(progress, 0, 1),
+            statusMessage
+        );
+    }
+
+    private static void LogJobWriteRetry(
+        string operationName,
+        Guid? jobId,
+        string? correlationId,
+        int attemptNumber,
+        int maxAttempts,
+        TimeSpan retryDelay,
+        Exception ex
+    )
+    {
+        var fields = new Dictionary<string, object?>
+        {
+            ["operation"] = operationName,
+            ["attempt"] = attemptNumber,
+            ["maxAttempts"] = maxAttempts,
+            ["retryDelayMs"] = (int)retryDelay.TotalMilliseconds
+        };
+
+        if (jobId.HasValue)
+        {
+            fields["jobId"] = jobId.Value.ToString("D");
+        }
+
+        if (!string.IsNullOrWhiteSpace(correlationId))
+        {
+            fields["correlationId"] = correlationId;
+        }
+
+        AppFileLogger.LogEvent(
+            eventName: "JobWriteRetry",
+            level: "WARN",
+            message: $"SQLite lock retry for {operationName}.",
+            ex: ex,
+            fields: fields
+        );
+    }
+
+    private static void LogJobWriteRetryExhausted(
+        string operationName,
+        Guid? jobId,
+        string? correlationId,
+        int maxAttempts,
+        Exception ex
+    )
+    {
+        var fields = new Dictionary<string, object?>
+        {
+            ["operation"] = operationName,
+            ["attempt"] = maxAttempts,
+            ["maxAttempts"] = maxAttempts
+        };
+
+        if (jobId.HasValue)
+        {
+            fields["jobId"] = jobId.Value.ToString("D");
+        }
+
+        if (!string.IsNullOrWhiteSpace(correlationId))
+        {
+            fields["correlationId"] = correlationId;
+        }
+
+        AppFileLogger.LogEvent(
+            eventName: "JobWriteRetryExhausted",
+            level: "ERROR",
+            message: $"SQLite lock retries exhausted for {operationName}.",
+            ex: ex,
+            fields: fields
+        );
+    }
+
     private void WarnProgressDroppedOnce(
         Guid jobId,
         double progress,
@@ -1132,6 +1431,50 @@ public sealed class JobQueueService : IJobQueueService
         );
         AppFileLogger.LogEvent(eventName, level, message, ex: ex, fields: fields);
     }
+
+    private sealed record EnqueueWriteOutcome(JobRecord? QueuedJob, JobRecord? DeduplicatedJob)
+    {
+        public static EnqueueWriteOutcome Queued(JobRecord queuedJob)
+        {
+            return new EnqueueWriteOutcome(queuedJob, DeduplicatedJob: null);
+        }
+
+        public static EnqueueWriteOutcome Deduplicated(JobRecord deduplicatedJob)
+        {
+            return new EnqueueWriteOutcome(
+                QueuedJob: null,
+                DeduplicatedJob: deduplicatedJob
+            );
+        }
+    }
+
+    private enum CancelAction
+    {
+        None = 0,
+        MarkedCanceled = 1,
+        AlreadyTerminal = 2,
+        IgnoredNotRunning = 3,
+        MarkedCancelRequested = 4
+    }
+
+    private sealed record CancelWriteOutcome(bool Found, CancelAction Action, JobInfo? JobInfo)
+    {
+        public static CancelWriteOutcome NotFound()
+        {
+            return new CancelWriteOutcome(false, CancelAction.None, JobInfo: null);
+        }
+
+        public static CancelWriteOutcome Completed(CancelAction action, JobInfo jobInfo)
+        {
+            return new CancelWriteOutcome(true, action, jobInfo);
+        }
+    }
+
+    private sealed record PersistedProgressState(
+        DateTimeOffset TimestampUtc,
+        double Progress,
+        string StatusMessage
+    );
 
     private sealed class EvidenceImportPayload
     {

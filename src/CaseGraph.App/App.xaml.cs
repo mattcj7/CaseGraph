@@ -158,73 +158,98 @@ public partial class App : Application
             throw new InvalidOperationException("Host was not built before migration check.");
         }
 
-        try
+        while (true)
         {
-            var migrationService = _host.Services.GetRequiredService<IWorkspaceMigrationService>();
-            await migrationService.EnsureMigratedAsync(CancellationToken.None);
-            return true;
-        }
-        catch (TimeoutException ex)
-        {
-            var snapshot = ResolveDiagnosticsService()?.GetSnapshot();
-            var dbPath = snapshot?.WorkspaceDbPath ?? "(unknown)";
-            var logsDirectory = snapshot?.LogsDirectory ?? AppFileLogger.GetLogDirectory();
-
-            AppFileLogger.LogEvent(
-                eventName: "WorkspaceInitializationWatchdogTimeout",
-                level: "ERROR",
-                message: "Workspace initialization timed out; workspace.db may be locked by another process or another CaseGraph instance.",
-                ex: ex,
-                fields: new Dictionary<string, object?>
-                {
-                    ["workspaceDbPath"] = dbPath,
-                    ["logsDirectory"] = logsDirectory
-                }
-            );
-            AppFileLogger.Flush();
-
-            if (!_selfTestMode)
+            try
             {
-                MessageBox.Show(
-                    "Workspace initialization timed out and the app must close."
+                var migrationService = _host.Services.GetRequiredService<IWorkspaceMigrationService>();
+                await migrationService.EnsureMigratedAsync(CancellationToken.None);
+                return true;
+            }
+            catch (TimeoutException ex)
+            {
+                var snapshot = ResolveDiagnosticsService()?.GetSnapshot();
+                var dbPath = snapshot?.WorkspaceDbPath ?? "(unknown)";
+                var logsDirectory = snapshot?.LogsDirectory ?? AppFileLogger.GetLogDirectory();
+
+                AppFileLogger.LogEvent(
+                    eventName: "WorkspaceInitializationWatchdogTimeout",
+                    level: "ERROR",
+                    message: "Workspace initialization timed out; workspace.db may be locked by another process or another CaseGraph instance.",
+                    ex: ex,
+                    fields: new Dictionary<string, object?>
+                    {
+                        ["workspaceDbPath"] = dbPath,
+                        ["logsDirectory"] = logsDirectory
+                    }
+                );
+                AppFileLogger.Flush();
+
+                if (_selfTestMode)
+                {
+                    await ShutdownAsync(-1);
+                    return false;
+                }
+
+                var retryResult = MessageBox.Show(
+                    "Workspace initialization timed out because the database appears to be locked."
                     + Environment.NewLine
                     + Environment.NewLine
                     + $"Workspace DB: {dbPath}"
                     + Environment.NewLine
-                    + $"Logs: {logsDirectory}",
-                    "CaseGraph Workspace Timeout",
-                    MessageBoxButton.OK,
-                    MessageBoxImage.Error
+                    + $"Logs: {logsDirectory}"
+                    + Environment.NewLine
+                    + Environment.NewLine
+                    + "Likely cause: a running job or another CaseGraph instance holding a write lock."
+                    + Environment.NewLine
+                    + "Click Yes to retry now, or No to continue with the app open and retry later.",
+                    "CaseGraph Workspace Busy",
+                    MessageBoxButton.YesNo,
+                    MessageBoxImage.Warning
                 );
+
+                if (retryResult == MessageBoxResult.Yes)
+                {
+                    continue;
+                }
+
+                AppFileLogger.LogEvent(
+                    eventName: "WorkspaceInitializationDeferred",
+                    level: "WARN",
+                    message: "Workspace initialization deferred by user after timeout.",
+                    fields: new Dictionary<string, object?>
+                    {
+                        ["workspaceDbPath"] = dbPath,
+                        ["logsDirectory"] = logsDirectory
+                    }
+                );
+                return true;
             }
-
-            await ShutdownAsync(-1);
-            return false;
-        }
-        catch (Exception ex)
-        {
-            var report = UiExceptionReporter.LogFatalException(
-                context,
-                ex,
-                ResolveDiagnosticsService(),
-                ResolveAppSessionState()
-            );
-
-            AppFileLogger.Flush();
-            if (!_selfTestMode)
+            catch (Exception ex)
             {
-                var snapshot = ResolveDiagnosticsService()?.GetSnapshot();
-                var dbPath = snapshot?.WorkspaceDbPath ?? "(unknown)";
-                UiExceptionReporter.ShowCrashDialog(
-                    "CaseGraph Workspace Error",
-                    $"Workspace database migration failed.{Environment.NewLine}Workspace DB: {dbPath}",
-                    report,
-                    ResolveDiagnosticsService()
+                var report = UiExceptionReporter.LogFatalException(
+                    context,
+                    ex,
+                    ResolveDiagnosticsService(),
+                    ResolveAppSessionState()
                 );
-            }
 
-            await ShutdownAsync(-1);
-            return false;
+                AppFileLogger.Flush();
+                if (!_selfTestMode)
+                {
+                    var snapshot = ResolveDiagnosticsService()?.GetSnapshot();
+                    var dbPath = snapshot?.WorkspaceDbPath ?? "(unknown)";
+                    UiExceptionReporter.ShowCrashDialog(
+                        "CaseGraph Workspace Error",
+                        $"Workspace database migration failed.{Environment.NewLine}Workspace DB: {dbPath}",
+                        report,
+                        ResolveDiagnosticsService()
+                    );
+                }
+
+                await ShutdownAsync(-1);
+                return false;
+            }
         }
     }
 
