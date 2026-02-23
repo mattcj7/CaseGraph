@@ -45,6 +45,7 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
     private CancellationTokenSource? _messageSearchCts;
     private CancellationTokenSource? _latestMessagesParseRefreshCts;
     private Guid? _activeJobId;
+    private Guid? _cancelRequestedJobId;
     private bool _isInitialized;
     private bool _isDisposed;
     private bool _isRefreshingDiagnosticsSnapshot;
@@ -255,6 +256,12 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
         }
     }
 
+    public string OpenCaseAvailabilityText => _cancelRequestedJobId.HasValue
+        ? "Cancel pending. Case switching is disabled until the job reaches a terminal state."
+        : SelectedCase is null
+            ? "Select a case to open."
+            : "Open selected case.";
+
     public bool CanCancelLatestMessagesParseJob => LatestMessagesParseJob is not null
         && !IsTerminalStatus(LatestMessagesParseJob.Status);
 
@@ -396,7 +403,11 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
         ToggleThemeCommand = new RelayCommand(() => IsDarkTheme = !IsDarkTheme);
         ToggleEvidenceDrawerCommand = new RelayCommand(() => IsEvidenceDrawerOpen = !IsEvidenceDrawerOpen);
         CreateNewCaseCommand = CreateSafeAsyncCommand("CreateCase", CreateNewCaseAsync);
-        OpenSelectedCaseCommand = CreateSafeAsyncCommand("OpenCase", OpenSelectedCaseAsync);
+        OpenSelectedCaseCommand = CreateSafeAsyncCommand(
+            "OpenCase",
+            OpenSelectedCaseAsync,
+            CanOpenSelectedCase
+        );
         RefreshCasesCommand = new AsyncRelayCommand(() => RefreshCasesAsync(CancellationToken.None));
         ImportFilesCommand = CreateSafeAsyncCommand("ImportEvidence", ImportFilesAsync);
         VerifySelectedEvidenceCommand = CreateSafeAsyncCommand("VerifyEvidence", VerifySelectedEvidenceAsync);
@@ -405,7 +416,11 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
             ParseMessagesFromSelectedEvidenceAsync
         );
         RefreshLatestMessagesParseJobCommand = new AsyncRelayCommand(RefreshLatestMessagesParseJobManuallyAsync);
-        CancelLatestMessagesParseJobCommand = new AsyncRelayCommand(CancelLatestMessagesParseJobAsync);
+        CancelLatestMessagesParseJobCommand = CreateSafeAsyncCommand(
+            "CancelMessagesParseJob",
+            CancelLatestMessagesParseJobAsync,
+            () => CanCancelLatestMessagesParseJob
+        );
         RefreshTargetsCommand = new AsyncRelayCommand(() => RefreshTargetsAsync(CancellationToken.None));
         CreateTargetCommand = CreateSafeAsyncCommand("CreateTarget", CreateTargetAsync);
         SaveSelectedTargetCommand = new AsyncRelayCommand(SaveSelectedTargetAsync);
@@ -505,6 +520,12 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
         }
     }
 
+    partial void OnSelectedCaseChanged(CaseInfo? value)
+    {
+        OnPropertyChanged(nameof(OpenCaseAvailabilityText));
+        OpenSelectedCaseCommand.NotifyCanExecuteChanged();
+    }
+
     partial void OnCurrentCaseInfoChanged(CaseInfo? value)
     {
         _appSessionState.CurrentCaseId = value?.CaseId;
@@ -535,6 +556,7 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
     partial void OnLatestMessagesParseJobChanged(JobInfo? value)
     {
         OnPropertyChanged(nameof(CanCancelLatestMessagesParseJob));
+        CancelLatestMessagesParseJobCommand.NotifyCanExecuteChanged();
         UpdateSelectedEvidenceMessagesStatus();
     }
 
@@ -654,6 +676,12 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
             return;
         }
 
+        if (!CanOpenSelectedCase())
+        {
+            OperationText = "Cancel pending. Case switching is disabled until the job reaches a terminal state.";
+            return;
+        }
+
         using var operation = BeginOperation($"Opening case \"{SelectedCase.Name}\"...");
 
         try
@@ -698,9 +726,21 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
             ?? cases.FirstOrDefault();
     }
 
-    private IAsyncRelayCommand CreateSafeAsyncCommand(string actionName, Func<Task> executeAsync)
+    private bool CanOpenSelectedCase()
     {
-        return new AsyncRelayCommand(() => ExecuteSafeAsync(actionName, executeAsync));
+        return SelectedCase is not null
+            && !_cancelRequestedJobId.HasValue;
+    }
+
+    private IAsyncRelayCommand CreateSafeAsyncCommand(
+        string actionName,
+        Func<Task> executeAsync,
+        Func<bool>? canExecute = null
+    )
+    {
+        return canExecute is null
+            ? new AsyncRelayCommand(() => ExecuteSafeAsync(actionName, executeAsync))
+            : new AsyncRelayCommand(() => ExecuteSafeAsync(actionName, executeAsync), canExecute);
     }
 
     private async Task ExecuteSafeAsync(string actionName, Func<Task> executeAsync)
@@ -2017,18 +2057,24 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
     {
         if (_activeJobId.HasValue)
         {
-            OperationText = "Cancel requested...";
+            var jobId = _activeJobId.Value;
+            ApplyOptimisticCancelRequestedUiState(jobId);
             try
             {
-                await _jobQueueService.CancelAsync(_activeJobId.Value, CancellationToken.None);
-                OperationText = "Cancel requested...";
+                await _jobQueueService.CancelAsync(jobId, CancellationToken.None);
             }
             catch (Exception ex) when (IsWorkspaceLockException(ex))
             {
+                ClearPendingCancelRequest(jobId);
                 ShowWorkspaceLockFailure(
                     "Cancel request could not be persisted because the workspace database is locked.",
                     ex
                 );
+            }
+            catch
+            {
+                ClearPendingCancelRequest(jobId);
+                throw;
             }
 
             return;
@@ -2097,6 +2143,7 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
             RecentJobs.Clear();
             SelectedJobHistoryItem = null;
             _activeJobId = null;
+            SetPendingCancelRequest(null);
             return;
         }
 
@@ -2114,13 +2161,14 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
         RecentJobs.Clear();
         foreach (var job in jobs)
         {
-            RecentJobs.Add(job);
+            RecentJobs.Add(NormalizeJobForUi(job));
         }
 
         SelectedJobHistoryItem = selectedId is null
             ? RecentJobs.FirstOrDefault()
             : RecentJobs.FirstOrDefault(job => job.JobId == selectedId.Value)
                 ?? RecentJobs.FirstOrDefault();
+        SyncPendingCancelRequestFromJobs();
     }
 
     private void OnJobUpdated(JobInfo job)
@@ -2163,17 +2211,19 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
             return;
         }
 
-        var existing = RecentJobs.FirstOrDefault(item => item.JobId == job.JobId);
+        var normalizedJob = NormalizeJobForUi(job);
+
+        var existing = RecentJobs.FirstOrDefault(item => item.JobId == normalizedJob.JobId);
         if (existing is null)
         {
-            RecentJobs.Add(job);
+            RecentJobs.Add(normalizedJob);
         }
         else
         {
             var index = RecentJobs.IndexOf(existing);
             if (index >= 0)
             {
-                RecentJobs[index] = job;
+                RecentJobs[index] = normalizedJob;
             }
         }
 
@@ -2182,14 +2232,15 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
             .Take(50)
             .ToList();
         SetRecentJobs(sorted);
+        SyncPendingCancelRequestFromJobs();
 
-        SyncStatusBarFromJobs(job);
+        SyncStatusBarFromJobs(normalizedJob);
         UpdateSelectedEvidenceVerifyStatus();
-        ApplyLatestMessagesParseJobUpdate(job);
+        ApplyLatestMessagesParseJobUpdate(normalizedJob);
 
-        if (IsTerminalStatus(job.Status))
+        if (IsTerminalStatus(normalizedJob.Status))
         {
-            RefreshAfterJobCompletionAsync(job).Forget(
+            RefreshAfterJobCompletionAsync(normalizedJob).Forget(
                 "RefreshAfterJobCompletion",
                 caseId: _appSessionState.CurrentCaseId,
                 evidenceId: _appSessionState.CurrentEvidenceId
@@ -2235,6 +2286,7 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
 
     private void SyncStatusBarFromJobs(JobInfo? latestJob = null)
     {
+        latestJob = latestJob is null ? null : NormalizeJobForUi(latestJob);
         var activeJob = RecentJobs
             .Where(job => !IsTerminalStatus(job.Status))
             .OrderByDescending(job => job.CreatedAtUtc)
@@ -2244,17 +2296,18 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
         {
             _activeJobId = activeJob.JobId;
             IsOperationInProgress = true;
-            OperationProgress = activeJob.Progress;
+            OperationProgress = ResolveJobDisplayProgress(activeJob);
             OperationText = $"{activeJob.JobType}: {FormatJobStatusMessage(activeJob)}";
             return;
         }
 
         _activeJobId = null;
         IsOperationInProgress = false;
+        SyncPendingCancelRequestFromJobs();
 
         if (latestJob is not null)
         {
-            OperationProgress = latestJob.Progress;
+            OperationProgress = ResolveJobDisplayProgress(latestJob);
             OperationText = $"{latestJob.JobType}: {FormatJobStatusMessage(latestJob)}";
         }
     }
@@ -2366,7 +2419,7 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
             return;
         }
 
-        LatestMessagesParseJob = job;
+        LatestMessagesParseJob = NormalizeJobForUi(job);
     }
 
     private async Task RefreshLatestMessagesParseJobManuallyAsync()
@@ -2382,6 +2435,7 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
             return;
         }
 
+        ApplyOptimisticCancelRequestedUiState(LatestMessagesParseJob.JobId);
         await _jobQueueService.CancelAsync(LatestMessagesParseJob.JobId, CancellationToken.None);
     }
 
@@ -2407,7 +2461,7 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
             return;
         }
 
-        LatestMessagesParseJob = latestJob;
+        LatestMessagesParseJob = latestJob is null ? null : NormalizeJobForUi(latestJob);
     }
 
     private async Task<JobInfo?> QueryLatestMessagesParseJobAsync(
@@ -2422,6 +2476,93 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
             MessagesIngestJobType,
             ct
         );
+    }
+
+    private void ApplyOptimisticCancelRequestedUiState(Guid jobId)
+    {
+        SetPendingCancelRequest(jobId);
+        const string cancelRequestedMessage = "Cancellation requested.";
+
+        var existing = RecentJobs.FirstOrDefault(item => item.JobId == jobId);
+        if (existing is not null && !IsTerminalStatus(existing.Status))
+        {
+            var updated = NormalizeJobForUi(existing with
+            {
+                StatusMessage = cancelRequestedMessage
+            });
+            var index = RecentJobs.IndexOf(existing);
+            if (index >= 0)
+            {
+                RecentJobs[index] = updated;
+            }
+
+            if (SelectedJobHistoryItem?.JobId == jobId)
+            {
+                SelectedJobHistoryItem = updated;
+            }
+
+            if (LatestMessagesParseJob?.JobId == jobId)
+            {
+                LatestMessagesParseJob = updated;
+            }
+
+            IsOperationInProgress = true;
+            OperationProgress = ResolveJobDisplayProgress(updated);
+        }
+
+        OperationText = "Cancel requested... Case switching is disabled until the job reaches a terminal state.";
+    }
+
+    private void SetPendingCancelRequest(Guid? jobId)
+    {
+        if (_cancelRequestedJobId == jobId)
+        {
+            return;
+        }
+
+        _cancelRequestedJobId = jobId;
+        OnPropertyChanged(nameof(OpenCaseAvailabilityText));
+        OpenSelectedCaseCommand.NotifyCanExecuteChanged();
+    }
+
+    private void ClearPendingCancelRequest(Guid jobId)
+    {
+        if (_cancelRequestedJobId != jobId)
+        {
+            return;
+        }
+
+        SetPendingCancelRequest(null);
+    }
+
+    private void SyncPendingCancelRequestFromJobs()
+    {
+        if (!_cancelRequestedJobId.HasValue)
+        {
+            return;
+        }
+
+        var pendingId = _cancelRequestedJobId.Value;
+        var pendingJob = RecentJobs.FirstOrDefault(job => job.JobId == pendingId);
+        if (pendingJob is null || IsTerminalStatus(pendingJob.Status))
+        {
+            SetPendingCancelRequest(null);
+        }
+    }
+
+    private static JobInfo NormalizeJobForUi(JobInfo job)
+    {
+        return job with
+        {
+            Progress = ResolveJobDisplayProgress(job)
+        };
+    }
+
+    private static double ResolveJobDisplayProgress(JobInfo job)
+    {
+        return IsTerminalStatus(job.Status)
+            ? 1
+            : Math.Clamp(job.Progress, 0, 1);
     }
 
     private static bool IsTerminalStatus(JobStatus status)

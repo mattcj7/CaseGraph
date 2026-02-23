@@ -44,6 +44,7 @@
                     <Button Content="Open Case"
                             Margin="{StaticResource SpaceRight12}"
                             Command="{Binding OpenSelectedCaseCommand}"
+                            ToolTip="{Binding OpenCaseAvailabilityText}"
                             Style="{StaticResource TopBarButtonStyle}" />
 
                     <Button Content="Toggle Theme"

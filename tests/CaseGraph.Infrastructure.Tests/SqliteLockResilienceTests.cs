@@ -7,6 +7,7 @@ using CaseGraph.Infrastructure.Services;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
+using System.Diagnostics;
 using System.Text.Json;
 
 namespace CaseGraph.Infrastructure.Tests;
@@ -128,6 +129,59 @@ public sealed class SqliteLockResilienceTests
     }
 
     [Fact]
+    public async Task CancelAsync_WhenWorkspaceDbWriteLockedBriefly_DoesNotThrowAndCancels()
+    {
+        await using var fixture = await JobQueueFixture.CreateAsync(startRunner: false);
+        var queue = fixture.Services.GetRequiredService<IJobQueueService>();
+        var jobId = await queue.EnqueueAsync(
+            new JobEnqueueRequest(
+                JobQueueService.TestLongRunningJobType,
+                CaseId: null,
+                EvidenceItemId: null,
+                JsonSerializer.Serialize(new
+                {
+                    SchemaVersion = 1,
+                    DelayMilliseconds = 3000
+                })
+            ),
+            CancellationToken.None
+        );
+
+        await using var lockConnection = new SqliteConnection(
+            $"Data Source={fixture.PathProvider.WorkspaceDbPath};Mode=ReadWrite"
+        );
+        await lockConnection.OpenAsync();
+        await using (var beginCommand = lockConnection.CreateCommand())
+        {
+            beginCommand.CommandText = "BEGIN IMMEDIATE;";
+            await beginCommand.ExecuteNonQueryAsync();
+        }
+
+        var stopwatch = Stopwatch.StartNew();
+        var cancelTask = queue.CancelAsync(jobId, CancellationToken.None);
+
+        await Task.Delay(250);
+
+        await using (var rollbackCommand = lockConnection.CreateCommand())
+        {
+            rollbackCommand.CommandText = "ROLLBACK;";
+            await rollbackCommand.ExecuteNonQueryAsync();
+        }
+
+        await cancelTask;
+        stopwatch.Stop();
+
+        var canceled = await WaitForJobStatusAsync(
+            fixture,
+            jobId,
+            expectedStatus: "Canceled",
+            timeout: TimeSpan.FromSeconds(4)
+        );
+        Assert.Equal(1, canceled.Progress);
+        Assert.True(stopwatch.ElapsedMilliseconds >= 50);
+    }
+
+    [Fact]
     public async Task ProgressPersistence_ThrottlesRunningJobWrites_AndFinalProgressIsOne()
     {
         await using var fixture = await JobQueueFixture.CreateAsync(startRunner: true);
@@ -177,6 +231,104 @@ public sealed class SqliteLockResilienceTests
             fixture.PathProvider.WorkspaceDbPath
         );
         Assert.InRange(persistedRunningWriteCount, 1, 12);
+    }
+
+    [Fact]
+    public async Task ProgressPersistence_IsMonotonic_WhenExternalWriteSetsHigherProgress()
+    {
+        await using var fixture = await JobQueueFixture.CreateAsync(startRunner: true);
+        var queue = fixture.Services.GetRequiredService<IJobQueueService>();
+        var jobId = await queue.EnqueueAsync(
+            new JobEnqueueRequest(
+                JobQueueService.TestLongRunningJobType,
+                CaseId: null,
+                EvidenceItemId: null,
+                JsonSerializer.Serialize(new
+                {
+                    SchemaVersion = 1,
+                    DelayMilliseconds = 6000
+                })
+            ),
+            CancellationToken.None
+        );
+
+        var running = await WaitForRunningJobWithProgressBelowAsync(
+            fixture,
+            jobId,
+            maxProgressExclusive: 0.5,
+            timeout: TimeSpan.FromSeconds(8)
+        );
+        Assert.Equal("Running", running.Status);
+
+        await using (var db = await fixture.CreateDbContextAsync())
+        {
+            var jobRecord = await db.Jobs.FirstAsync(job => job.JobId == jobId);
+            jobRecord.Progress = 0.9;
+            jobRecord.StatusMessage = "External high-water mark.";
+            await db.SaveChangesAsync();
+        }
+
+        var minObservedProgress = 1.0;
+        JobRecord? terminal = null;
+        var startedAt = DateTimeOffset.UtcNow;
+        while (DateTimeOffset.UtcNow - startedAt < TimeSpan.FromSeconds(12))
+        {
+            await using var db = await fixture.CreateDbContextAsync();
+            var record = await db.Jobs
+                .AsNoTracking()
+                .FirstAsync(job => job.JobId == jobId);
+
+            minObservedProgress = Math.Min(minObservedProgress, record.Progress);
+            if (string.Equals(record.Status, "Succeeded", StringComparison.Ordinal))
+            {
+                terminal = record;
+                break;
+            }
+
+            await Task.Delay(50);
+        }
+
+        Assert.NotNull(terminal);
+        Assert.True(minObservedProgress >= 0.8995, $"Observed regressed progress {minObservedProgress:0.####}.");
+        Assert.Equal(1, terminal!.Progress);
+    }
+
+    [Fact]
+    public async Task CancelAsync_RunningJob_TerminalStatusForcesProgressToOne()
+    {
+        await using var fixture = await JobQueueFixture.CreateAsync(startRunner: true);
+        var queue = fixture.Services.GetRequiredService<IJobQueueService>();
+        var jobId = await queue.EnqueueAsync(
+            new JobEnqueueRequest(
+                JobQueueService.TestLongRunningJobType,
+                CaseId: null,
+                EvidenceItemId: null,
+                JsonSerializer.Serialize(new
+                {
+                    SchemaVersion = 1,
+                    DelayMilliseconds = 3000
+                })
+            ),
+            CancellationToken.None
+        );
+
+        var running = await WaitForJobStatusAsync(
+            fixture,
+            jobId,
+            expectedStatus: "Running",
+            timeout: TimeSpan.FromSeconds(8)
+        );
+        Assert.Equal("Running", running.Status);
+
+        await queue.CancelAsync(jobId, CancellationToken.None);
+
+        var canceled = await WaitForJobStatusAsync(
+            fixture,
+            jobId,
+            expectedStatus: "Canceled",
+            timeout: TimeSpan.FromSeconds(10)
+        );
+        Assert.Equal(1, canceled.Progress);
     }
 
     [Fact]
@@ -288,6 +440,37 @@ public sealed class SqliteLockResilienceTests
         command.CommandText = "SELECT Count FROM JobUpdateCounter LIMIT 1;";
         var value = await command.ExecuteScalarAsync();
         return value is null ? 0 : Convert.ToInt32(value);
+    }
+
+    private static async Task<JobRecord> WaitForRunningJobWithProgressBelowAsync(
+        JobQueueFixture fixture,
+        Guid jobId,
+        double maxProgressExclusive,
+        TimeSpan timeout
+    )
+    {
+        var startedAt = DateTimeOffset.UtcNow;
+        while (DateTimeOffset.UtcNow - startedAt < timeout)
+        {
+            await using var db = await fixture.CreateDbContextAsync();
+            var record = await db.Jobs
+                .AsNoTracking()
+                .FirstOrDefaultAsync(job => job.JobId == jobId);
+
+            if (record is not null
+                && string.Equals(record.Status, "Running", StringComparison.Ordinal)
+                && record.Progress > 0
+                && record.Progress < maxProgressExclusive)
+            {
+                return record;
+            }
+
+            await Task.Delay(50);
+        }
+
+        throw new TimeoutException(
+            $"Job {jobId:D} did not reach Running with progress < {maxProgressExclusive:0.##} within {timeout.TotalSeconds:0.##}s."
+        );
     }
 
     private sealed class JobQueueFixture : IAsyncDisposable

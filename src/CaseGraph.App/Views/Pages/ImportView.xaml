@@ -48,6 +48,7 @@
                         Margin="{StaticResource SpaceRight12}"
                         Content="Open Case"
                         Command="{Binding OpenSelectedCaseCommand}"
+                        ToolTip="{Binding OpenCaseAvailabilityText}"
                         Style="{StaticResource TopBarButtonStyle}" />
 
                 <Button Grid.Column="4"
