@@ -28,6 +28,7 @@ public class WorkspaceDbInitializer : IWorkspaceDbInitializer, IWorkspaceDatabas
     private readonly IDbContextFactory<WorkspaceDbContext> _dbContextFactory;
     private readonly IWorkspacePathProvider _workspacePathProvider;
     private readonly WorkspaceDbRebuilder _workspaceDbRebuilder;
+    private readonly IWorkspaceWriteGate _workspaceWriteGate;
     private readonly IClock _clock;
     private readonly SemaphoreSlim _semaphore = new(1, 1);
     private bool _initialized;
@@ -37,12 +38,14 @@ public class WorkspaceDbInitializer : IWorkspaceDbInitializer, IWorkspaceDatabas
         IDbContextFactory<WorkspaceDbContext> dbContextFactory,
         IWorkspacePathProvider workspacePathProvider,
         WorkspaceDbRebuilder workspaceDbRebuilder,
+        IWorkspaceWriteGate workspaceWriteGate,
         IClock clock
     )
     {
         _dbContextFactory = dbContextFactory;
         _workspacePathProvider = workspacePathProvider;
         _workspaceDbRebuilder = workspaceDbRebuilder;
+        _workspaceWriteGate = workspaceWriteGate;
         _clock = clock;
     }
 
@@ -381,49 +384,57 @@ public class WorkspaceDbInitializer : IWorkspaceDbInitializer, IWorkspaceDatabas
 
     private async Task MarkRunningJobsAsAbandonedAsync(CancellationToken ct)
     {
-        await using var db = await _dbContextFactory.CreateDbContextAsync(ct);
-        var runningJobs = await db.Jobs
-            .Where(job => job.Status == "Running")
-            .ToListAsync(ct);
+        await _workspaceWriteGate.ExecuteWriteAsync(
+            operationName: "WorkspaceInit.MarkRunningJobsAbandoned",
+            async writeCt =>
+            {
+                await using var db = await _dbContextFactory.CreateDbContextAsync(writeCt);
+                var runningJobs = await db.Jobs
+                    .Where(job => job.Status == "Running")
+                    .ToListAsync(writeCt);
 
-        if (runningJobs.Count == 0)
-        {
-            return;
-        }
-
-        var now = _clock.UtcNow.ToUniversalTime();
-        foreach (var job in runningJobs)
-        {
-            job.Status = "Abandoned";
-            job.CompletedAtUtc = now;
-            job.Progress = 1;
-            job.StatusMessage = "Abandoned (app shutdown before completion)";
-            job.ErrorMessage ??= "Job abandoned after unexpected app shutdown.";
-
-            db.AuditEvents.Add(
-                new AuditEventRecord
+                if (runningJobs.Count == 0)
                 {
-                    AuditEventId = Guid.NewGuid(),
-                    TimestampUtc = now,
-                    Operator = string.IsNullOrWhiteSpace(job.Operator)
-                        ? Environment.UserName
-                        : job.Operator,
-                    ActionType = "JobAbandoned",
-                    CaseId = job.CaseId,
-                    EvidenceItemId = job.EvidenceItemId,
-                    Summary = $"{job.JobType} job abandoned after app shutdown.",
-                    JsonPayload = JsonSerializer.Serialize(new
-                    {
-                        job.JobId,
-                        job.JobType,
-                        job.CorrelationId,
-                        job.StatusMessage
-                    })
+                    return;
                 }
-            );
-        }
 
-        await db.SaveChangesAsync(ct);
+                var now = _clock.UtcNow.ToUniversalTime();
+                foreach (var job in runningJobs)
+                {
+                    job.Status = "Abandoned";
+                    job.CompletedAtUtc = now;
+                    job.Progress = 1;
+                    job.StatusMessage = "Abandoned (app shutdown before completion)";
+                    job.ErrorMessage ??= "Job abandoned after unexpected app shutdown.";
+
+                    db.AuditEvents.Add(
+                        new AuditEventRecord
+                        {
+                            AuditEventId = Guid.NewGuid(),
+                            TimestampUtc = now,
+                            Operator = string.IsNullOrWhiteSpace(job.Operator)
+                                ? Environment.UserName
+                                : job.Operator,
+                            ActionType = "JobAbandoned",
+                            CaseId = job.CaseId,
+                            EvidenceItemId = job.EvidenceItemId,
+                            Summary = $"{job.JobType} job abandoned after app shutdown.",
+                            JsonPayload = JsonSerializer.Serialize(new
+                            {
+                                job.JobId,
+                                job.JobType,
+                                job.CorrelationId,
+                                job.StatusMessage
+                            })
+                        }
+                    );
+                }
+
+                await db.SaveChangesAsync(writeCt);
+            },
+            ct,
+            correlationId: AppFileLogger.GetScopeValue("correlationId")
+        );
     }
 
     private static async Task EnsureMessageFtsObjectsAsync(WorkspaceDbContext db, CancellationToken ct)
@@ -560,9 +571,10 @@ public sealed class WorkspaceDatabaseInitializer : WorkspaceDbInitializer
         IDbContextFactory<WorkspaceDbContext> dbContextFactory,
         IWorkspacePathProvider workspacePathProvider,
         WorkspaceDbRebuilder workspaceDbRebuilder,
+        IWorkspaceWriteGate workspaceWriteGate,
         IClock clock
     )
-        : base(dbContextFactory, workspacePathProvider, workspaceDbRebuilder, clock)
+        : base(dbContextFactory, workspacePathProvider, workspaceDbRebuilder, workspaceWriteGate, clock)
     {
     }
 }

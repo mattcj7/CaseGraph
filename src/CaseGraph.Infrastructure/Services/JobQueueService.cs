@@ -21,20 +21,11 @@ public sealed class JobQueueService : IJobQueueService
     {
         PropertyNameCaseInsensitive = true
     };
-    private static readonly TimeSpan[] JobWriteRetryDelays =
-    [
-        TimeSpan.FromMilliseconds(50),
-        TimeSpan.FromMilliseconds(100),
-        TimeSpan.FromMilliseconds(200),
-        TimeSpan.FromMilliseconds(400),
-        TimeSpan.FromMilliseconds(800)
-    ];
     private static readonly TimeSpan ProgressPersistMinimumInterval = TimeSpan.FromMilliseconds(300);
     private const double ProgressPersistMinimumDelta = 0.10;
 
     private readonly IDbContextFactory<WorkspaceDbContext> _dbContextFactory;
     private readonly IWorkspaceDatabaseInitializer _databaseInitializer;
-    private readonly IWorkspacePathProvider _workspacePathProvider;
     private readonly IClock _clock;
     private readonly ICaseWorkspaceService _caseWorkspaceService;
     private readonly IEvidenceVaultService _evidenceVaultService;
@@ -56,7 +47,6 @@ public sealed class JobQueueService : IJobQueueService
     public JobQueueService(
         IDbContextFactory<WorkspaceDbContext> dbContextFactory,
         IWorkspaceDatabaseInitializer databaseInitializer,
-        IWorkspacePathProvider workspacePathProvider,
         IClock clock,
         ICaseWorkspaceService caseWorkspaceService,
         IEvidenceVaultService evidenceVaultService,
@@ -68,7 +58,6 @@ public sealed class JobQueueService : IJobQueueService
     {
         _dbContextFactory = dbContextFactory;
         _databaseInitializer = databaseInitializer;
-        _workspacePathProvider = workspacePathProvider;
         _clock = clock;
         _caseWorkspaceService = caseWorkspaceService;
         _evidenceVaultService = evidenceVaultService;
@@ -1152,54 +1141,26 @@ public sealed class JobQueueService : IJobQueueService
         ArgumentException.ThrowIfNullOrWhiteSpace(operationName);
         ArgumentNullException.ThrowIfNull(operation);
 
-        var maxAttempts = JobWriteRetryDelays.Length + 1;
-        for (var attemptIndex = 0; ; attemptIndex++)
+        IReadOnlyDictionary<string, object?>? fields = null;
+        if (jobId.HasValue)
         {
-            ct.ThrowIfCancellationRequested();
-
-            try
+            fields = new Dictionary<string, object?>
             {
-                return await _workspaceWriteGate.RunAsync(
-                    async writeCt =>
-                    {
-                        await _databaseInitializer.EnsureInitializedAsync(writeCt);
-                        return await operation(writeCt);
-                    },
-                    ct
-                );
-            }
-            catch (Exception ex) when (SqliteWriteRetryPolicy.IsBusyOrLocked(ex)
-                && attemptIndex < JobWriteRetryDelays.Length)
-            {
-                var retryDelay = JobWriteRetryDelays[attemptIndex];
-                LogJobWriteRetry(
-                    operationName,
-                    jobId,
-                    correlationId,
-                    attemptNumber: attemptIndex + 1,
-                    maxAttempts,
-                    retryDelay,
-                    ex
-                );
-                await Task.Delay(retryDelay, ct);
-            }
-            catch (Exception ex) when (SqliteWriteRetryPolicy.IsBusyOrLocked(ex))
-            {
-                LogJobWriteRetryExhausted(
-                    operationName,
-                    jobId,
-                    correlationId,
-                    maxAttempts,
-                    ex
-                );
-                throw new WorkspaceDbLockedException(
-                    operationName,
-                    maxAttempts,
-                    _workspacePathProvider.WorkspaceDbPath,
-                    ex
-                );
-            }
+                ["jobId"] = jobId.Value.ToString("D")
+            };
         }
+
+        return await _workspaceWriteGate.ExecuteWriteWithResultAsync(
+            operationName: operationName,
+            async writeCt =>
+            {
+                await _databaseInitializer.EnsureInitializedAsync(writeCt);
+                return await operation(writeCt);
+            },
+            ct,
+            correlationId: correlationId,
+            fields: fields
+        );
     }
 
     private void PublishJobUpdate(JobInfo jobInfo)
@@ -1290,77 +1251,6 @@ public sealed class JobQueueService : IJobQueueService
             DateTimeOffset.UtcNow,
             Math.Clamp(progress, 0, 1),
             statusMessage
-        );
-    }
-
-    private static void LogJobWriteRetry(
-        string operationName,
-        Guid? jobId,
-        string? correlationId,
-        int attemptNumber,
-        int maxAttempts,
-        TimeSpan retryDelay,
-        Exception ex
-    )
-    {
-        var fields = new Dictionary<string, object?>
-        {
-            ["operation"] = operationName,
-            ["attempt"] = attemptNumber,
-            ["maxAttempts"] = maxAttempts,
-            ["retryDelayMs"] = (int)retryDelay.TotalMilliseconds
-        };
-
-        if (jobId.HasValue)
-        {
-            fields["jobId"] = jobId.Value.ToString("D");
-        }
-
-        if (!string.IsNullOrWhiteSpace(correlationId))
-        {
-            fields["correlationId"] = correlationId;
-        }
-
-        AppFileLogger.LogEvent(
-            eventName: "JobWriteRetry",
-            level: "WARN",
-            message: $"SQLite lock retry for {operationName}.",
-            ex: ex,
-            fields: fields
-        );
-    }
-
-    private static void LogJobWriteRetryExhausted(
-        string operationName,
-        Guid? jobId,
-        string? correlationId,
-        int maxAttempts,
-        Exception ex
-    )
-    {
-        var fields = new Dictionary<string, object?>
-        {
-            ["operation"] = operationName,
-            ["attempt"] = maxAttempts,
-            ["maxAttempts"] = maxAttempts
-        };
-
-        if (jobId.HasValue)
-        {
-            fields["jobId"] = jobId.Value.ToString("D");
-        }
-
-        if (!string.IsNullOrWhiteSpace(correlationId))
-        {
-            fields["correlationId"] = correlationId;
-        }
-
-        AppFileLogger.LogEvent(
-            eventName: "JobWriteRetryExhausted",
-            level: "ERROR",
-            message: $"SQLite lock retries exhausted for {operationName}.",
-            ex: ex,
-            fields: fields
         );
     }
 

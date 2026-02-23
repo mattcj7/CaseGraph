@@ -1,4 +1,5 @@
 using CaseGraph.Core.Abstractions;
+using CaseGraph.Core.Diagnostics;
 using CaseGraph.Core.Models;
 using CaseGraph.Infrastructure.Persistence;
 using CaseGraph.Infrastructure.Persistence.Entities;
@@ -16,18 +17,21 @@ public sealed class TargetRegistryService : ITargetRegistryService
 
     private readonly IDbContextFactory<WorkspaceDbContext> _dbContextFactory;
     private readonly IWorkspaceDatabaseInitializer _databaseInitializer;
+    private readonly IWorkspaceWriteGate _workspaceWriteGate;
     private readonly IAuditLogService _auditLogService;
     private readonly IClock _clock;
 
     public TargetRegistryService(
         IDbContextFactory<WorkspaceDbContext> dbContextFactory,
         IWorkspaceDatabaseInitializer databaseInitializer,
+        IWorkspaceWriteGate workspaceWriteGate,
         IAuditLogService auditLogService,
         IClock clock
     )
     {
         _dbContextFactory = dbContextFactory;
         _databaseInitializer = databaseInitializer;
+        _workspaceWriteGate = workspaceWriteGate;
         _auditLogService = auditLogService;
         _clock = clock;
     }
@@ -167,7 +171,12 @@ public sealed class TargetRegistryService : ITargetRegistryService
             db.TargetAliases.Add(aliasRecord);
         }
 
-        await db.SaveChangesAsync(ct);
+        await SaveChangesWithWritePolicyAsync(
+            db,
+            operationName: "TargetRegistry.CreateTarget",
+            caseId: request.CaseId,
+            ct
+        );
 
         await WriteAuditAsync(
             actionType: "TargetCreated",
@@ -226,7 +235,12 @@ public sealed class TargetRegistryService : ITargetRegistryService
         target.PrimaryAlias = NormalizeOptional(request.PrimaryAlias);
         target.Notes = NormalizeOptional(request.Notes);
         target.UpdatedAtUtc = _clock.UtcNow.ToUniversalTime();
-        await db.SaveChangesAsync(ct);
+        await SaveChangesWithWritePolicyAsync(
+            db,
+            operationName: "TargetRegistry.UpdateTarget",
+            caseId: request.CaseId,
+            ct
+        );
 
         await WriteAuditAsync(
             actionType: "TargetUpdated",
@@ -291,7 +305,12 @@ public sealed class TargetRegistryService : ITargetRegistryService
         };
         db.TargetAliases.Add(aliasRecord);
         target.UpdatedAtUtc = _clock.UtcNow.ToUniversalTime();
-        await db.SaveChangesAsync(ct);
+        await SaveChangesWithWritePolicyAsync(
+            db,
+            operationName: "TargetRegistry.AddAlias",
+            caseId: request.CaseId,
+            ct
+        );
 
         await WriteAuditAsync(
             actionType: "AliasAdded",
@@ -329,7 +348,12 @@ public sealed class TargetRegistryService : ITargetRegistryService
             aliasRecord.Target.UpdatedAtUtc = _clock.UtcNow.ToUniversalTime();
         }
 
-        await db.SaveChangesAsync(ct);
+        await SaveChangesWithWritePolicyAsync(
+            db,
+            operationName: "TargetRegistry.RemoveAlias",
+            caseId: caseId,
+            ct
+        );
 
         await WriteAuditAsync(
             actionType: "AliasRemoved",
@@ -411,7 +435,12 @@ public sealed class TargetRegistryService : ITargetRegistryService
         }
 
         db.TargetIdentifierLinks.Remove(link);
-        await db.SaveChangesAsync(ct);
+        await SaveChangesWithWritePolicyAsync(
+            db,
+            operationName: "TargetRegistry.RemoveIdentifier.Unlink",
+            caseId: request.CaseId,
+            ct
+        );
 
         await WriteAuditAsync(
             actionType: "IdentifierUnlinkedFromTarget",
@@ -427,7 +456,12 @@ public sealed class TargetRegistryService : ITargetRegistryService
         );
 
         await DeleteIdentifierIfOrphanedAsync(db, request.CaseId, request.IdentifierId, ct);
-        await db.SaveChangesAsync(ct);
+        await SaveChangesWithWritePolicyAsync(
+            db,
+            operationName: "TargetRegistry.RemoveIdentifier.Cleanup",
+            caseId: request.CaseId,
+            ct
+        );
     }
 
     public async Task<MessageParticipantLinkResult> LinkMessageParticipantAsync(
@@ -594,7 +628,12 @@ public sealed class TargetRegistryService : ITargetRegistryService
             participantLinkId = existingParticipantLink.ParticipantLinkId;
         }
 
-        await db.SaveChangesAsync(ct);
+        await SaveChangesWithWritePolicyAsync(
+            db,
+            operationName: "TargetRegistry.LinkMessageParticipant",
+            caseId: request.CaseId,
+            ct
+        );
 
         if (createdTarget)
         {
@@ -701,7 +740,12 @@ public sealed class TargetRegistryService : ITargetRegistryService
             isUpdateOperation,
             ct
         );
-        await db.SaveChangesAsync(ct);
+        await SaveChangesWithWritePolicyAsync(
+            db,
+            operationName: "TargetRegistry.UpsertIdentifier",
+            caseId: caseId,
+            ct
+        );
         return result;
     }
 
@@ -1087,6 +1131,25 @@ public sealed class TargetRegistryService : ITargetRegistryService
             existingTargetName
         );
         return new IdentifierConflictException(conflict);
+    }
+
+    private Task SaveChangesWithWritePolicyAsync(
+        WorkspaceDbContext db,
+        string operationName,
+        Guid caseId,
+        CancellationToken ct
+    )
+    {
+        return _workspaceWriteGate.ExecuteWriteAsync(
+            operationName,
+            writeCt => db.SaveChangesAsync(writeCt),
+            ct,
+            correlationId: AppFileLogger.GetScopeValue("correlationId"),
+            fields: new Dictionary<string, object?>
+            {
+                ["caseId"] = caseId.ToString("D")
+            }
+        );
     }
 
     private async Task WriteAuditAsync(

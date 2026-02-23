@@ -9,12 +9,11 @@ This file tracks planned, active, and completed tickets.
   - **Upcoming Tickets** (current and deduplicated)
   - **Completed Tickets** (append-only)
 
-## Active Ticket
-- (none)
-
-
 ## Upcoming Tickets
 - (none currently queued)
+
+## Active Ticket
+- (none)
 
 ## Completed Tickets (append-only)
 - 2026-02-12 - T0002 - Established WPF solution skeleton, app shell, MVVM, and DI baseline.
@@ -51,3 +50,4 @@ This file tracks planned, active, and completed tickets.
 - 2026-02-22 - T0015 - Added startup-only workspace migration gating with cached success, introduced workspace write gate + SQLite busy/locked retry/backoff on progress/audit/provenance write paths, hardened non-disruptive SafeReportProgress behavior, and added deterministic lock-resilience runner/gate tests.
 - 2026-02-22 - T0016 - Hardened JobQueue writes (enqueue/start/progress/finalize/cancel) with bounded SQLite lock retries + structured retry/exhaustion logging, added progress persistence throttling with live in-memory updates, moved Cancel to safe async containment with lock-aware user guidance, and made workspace-init lock timeouts non-fatal with retryable startup messaging.
 - 2026-02-23 - T0017 - Completed jobs reliability hardening: optimistic in-memory cancel state, terminal UI progress normalization to 100%, consistent case-switch blocking with clear reason while cancel is pending, and added lock-resilience + monotonic/terminal progress regression tests.
+- 2026-02-23 - T0018 - Added project-wide workspace write policy via `IWorkspaceWriteGate.ExecuteWrite*` + `SqliteBusyRetry`, routed key write paths (jobs, audit/provenance, case/workspace finalize flows) through the policy, added deterministic gate lock/serialization tests, and documented the enforced write rule.

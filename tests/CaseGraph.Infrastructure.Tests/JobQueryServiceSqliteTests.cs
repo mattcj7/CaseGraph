@@ -279,6 +279,7 @@ public sealed class JobQueryServiceSqliteTests
             services.AddSingleton<IWorkspaceDatabaseInitializer>(
                 provider => provider.GetRequiredService<WorkspaceDbInitializer>()
             );
+            services.AddSingleton<IWorkspaceWriteGate, WorkspaceWriteGate>();
             services.AddSingleton<IJobQueryService, JobQueryService>();
 
             var provider = services.BuildServiceProvider();

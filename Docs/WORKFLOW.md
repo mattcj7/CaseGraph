@@ -4,6 +4,11 @@
 - Use `pwsh tools/test-smart.ps1` for normal ticket verification.
 - Do NOT run root `dotnet test` unless the ticket explicitly includes `FULL_TESTS_REQUIRED` or the user asks for full-suite validation.
 
+## Workspace DB Write Policy
+- All `workspace.db` writes must go through `IWorkspaceWriteGate.ExecuteWriteAsync` or `IWorkspaceWriteGate.ExecuteWriteWithResultAsync`.
+- The write gate wrapper must use `SqliteBusyRetry` (SQLITE_BUSY/SQLITE_LOCKED bounded retry with cancellation).
+- Keep reads ungated unless there is an explicit ticketed exception.
+
 ## Tier Definitions
 - FAST tier (`tools/test-fast.ps1`):
   - Runs every time.

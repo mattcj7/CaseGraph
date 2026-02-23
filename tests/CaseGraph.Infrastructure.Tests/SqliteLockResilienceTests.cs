@@ -15,7 +15,7 @@ namespace CaseGraph.Infrastructure.Tests;
 public sealed class SqliteLockResilienceTests
 {
     [Fact]
-    public async Task WorkspaceWriteGate_RunAsync_SerializesConcurrentWriters()
+    public async Task WorkspaceWriteGate_ExecuteWriteAsync_SerializesConcurrentWriters()
     {
         var gate = new WorkspaceWriteGate();
         var firstEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -23,7 +23,8 @@ public sealed class SqliteLockResilienceTests
         var secondEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var order = new List<int>();
 
-        var firstTask = gate.RunAsync(
+        var firstTask = gate.ExecuteWriteAsync(
+            operationName: "Test.FirstWrite",
             async _ =>
             {
                 order.Add(1);
@@ -35,7 +36,8 @@ public sealed class SqliteLockResilienceTests
 
         await firstEntered.Task.WaitAsync(TimeSpan.FromSeconds(2));
 
-        var secondTask = gate.RunAsync(
+        var secondTask = gate.ExecuteWriteAsync(
+            operationName: "Test.SecondWrite",
             _ =>
             {
                 order.Add(2);
@@ -53,6 +55,58 @@ public sealed class SqliteLockResilienceTests
         await Task.WhenAll(firstTask, secondTask);
 
         Assert.Equal([1, 2], order);
+    }
+
+    [Fact]
+    public async Task WorkspaceWriteGate_ExecuteWriteAsync_WhenWriteLockReleased_RetriesAndSucceeds()
+    {
+        await using var fixture = await JobQueueFixture.CreateAsync(startRunner: false);
+        var gate = fixture.Services.GetRequiredService<IWorkspaceWriteGate>();
+        var dbContextFactory = fixture.Services.GetRequiredService<IDbContextFactory<WorkspaceDbContext>>();
+
+        await using var lockConnection = new SqliteConnection(
+            $"Data Source={fixture.PathProvider.WorkspaceDbPath};Mode=ReadWrite"
+        );
+        await lockConnection.OpenAsync();
+        await using (var beginCommand = lockConnection.CreateCommand())
+        {
+            beginCommand.CommandText = "BEGIN IMMEDIATE;";
+            await beginCommand.ExecuteNonQueryAsync();
+        }
+
+        var insertAuditTask = gate.ExecuteWriteAsync(
+            operationName: "Test.WorkspaceWriteGateInsertAudit",
+            async writeCt =>
+            {
+                await using var db = await dbContextFactory.CreateDbContextAsync(writeCt);
+                db.AuditEvents.Add(new AuditEventRecord
+                {
+                    AuditEventId = Guid.NewGuid(),
+                    TimestampUtc = DateTimeOffset.UtcNow,
+                    Operator = Environment.UserName,
+                    ActionType = "TestWrite",
+                    Summary = "Inserted under lock retry test."
+                });
+                await db.SaveChangesAsync(writeCt);
+            },
+            CancellationToken.None
+        );
+
+        await Task.Delay(250);
+
+        await using (var rollbackCommand = lockConnection.CreateCommand())
+        {
+            rollbackCommand.CommandText = "ROLLBACK;";
+            await rollbackCommand.ExecuteNonQueryAsync();
+        }
+
+        await insertAuditTask;
+
+        await using var verifyDb = await fixture.CreateDbContextAsync();
+        var count = await verifyDb.AuditEvents
+            .AsNoTracking()
+            .CountAsync(audit => audit.ActionType == "TestWrite");
+        Assert.Equal(1, count);
     }
 
     [Fact]
@@ -511,7 +565,13 @@ public sealed class SqliteLockResilienceTests
             services.AddDbContextFactory<WorkspaceDbContext>(options =>
             {
                 Directory.CreateDirectory(pathProvider.WorkspaceRoot);
-                options.UseSqlite($"Data Source={pathProvider.WorkspaceDbPath}");
+                var connectionStringBuilder = new SqliteConnectionStringBuilder
+                {
+                    DataSource = pathProvider.WorkspaceDbPath,
+                    Mode = SqliteOpenMode.ReadWriteCreate,
+                    DefaultTimeout = 1
+                };
+                options.UseSqlite(connectionStringBuilder.ConnectionString);
             });
 
             services.AddSingleton<WorkspaceDbRebuilder>();
@@ -641,7 +701,13 @@ public sealed class SqliteLockResilienceTests
             services.AddDbContextFactory<WorkspaceDbContext>(options =>
             {
                 Directory.CreateDirectory(pathProvider.WorkspaceRoot);
-                options.UseSqlite($"Data Source={pathProvider.WorkspaceDbPath}");
+                var connectionStringBuilder = new SqliteConnectionStringBuilder
+                {
+                    DataSource = pathProvider.WorkspaceDbPath,
+                    Mode = SqliteOpenMode.ReadWriteCreate,
+                    DefaultTimeout = 1
+                };
+                options.UseSqlite(connectionStringBuilder.ConnectionString);
             });
 
             services.AddSingleton<WorkspaceDbRebuilder>();

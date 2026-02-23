@@ -299,6 +299,7 @@ public sealed class OpenCaseQueryServicesSqliteTests
             services.AddSingleton<IWorkspaceDatabaseInitializer>(
                 provider => provider.GetRequiredService<WorkspaceDbInitializer>()
             );
+            services.AddSingleton<IWorkspaceWriteGate, WorkspaceWriteGate>();
             services.AddSingleton<ICaseQueryService, CaseQueryService>();
             services.AddSingleton<IAuditQueryService, AuditQueryService>();
 

@@ -447,12 +447,16 @@ public sealed class MessageIngestService : IMessageIngestService
         CancellationToken ct
     )
     {
-        return await _workspaceWriteGate.RunAsync(
-            writeCt => SqliteWriteRetryPolicy.ExecuteAsync(
-                retryCt => PersistCoreAsync(caseId, evidenceItemId, parsed, retryCt),
-                writeCt
-            ),
-            ct
+        return await _workspaceWriteGate.ExecuteWriteWithResultAsync(
+            operationName: "MessagesIngest.Persist",
+            writeCt => PersistCoreAsync(caseId, evidenceItemId, parsed, writeCt),
+            ct,
+            correlationId: AppFileLogger.GetScopeValue("correlationId"),
+            fields: new Dictionary<string, object?>
+            {
+                ["caseId"] = caseId.ToString("D"),
+                ["evidenceItemId"] = evidenceItemId.ToString("D")
+            }
         );
     }
 

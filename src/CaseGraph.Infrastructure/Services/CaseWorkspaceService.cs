@@ -1,4 +1,5 @@
 using CaseGraph.Core.Abstractions;
+using CaseGraph.Core.Diagnostics;
 using CaseGraph.Core.Models;
 using CaseGraph.Infrastructure.Persistence;
 using CaseGraph.Infrastructure.Persistence.Entities;
@@ -18,6 +19,7 @@ public sealed class CaseWorkspaceService : ICaseWorkspaceService
     private readonly IWorkspacePathProvider _pathProvider;
     private readonly IDbContextFactory<WorkspaceDbContext> _dbContextFactory;
     private readonly IWorkspaceDatabaseInitializer _databaseInitializer;
+    private readonly IWorkspaceWriteGate _workspaceWriteGate;
     private readonly IAuditLogService _auditLogService;
 
     private readonly SemaphoreSlim _legacyImportLock = new(1, 1);
@@ -28,6 +30,7 @@ public sealed class CaseWorkspaceService : ICaseWorkspaceService
         IWorkspacePathProvider pathProvider,
         IDbContextFactory<WorkspaceDbContext> dbContextFactory,
         IWorkspaceDatabaseInitializer databaseInitializer,
+        IWorkspaceWriteGate workspaceWriteGate,
         IAuditLogService auditLogService
     )
     {
@@ -35,6 +38,7 @@ public sealed class CaseWorkspaceService : ICaseWorkspaceService
         _pathProvider = pathProvider;
         _dbContextFactory = dbContextFactory;
         _databaseInitializer = databaseInitializer;
+        _workspaceWriteGate = workspaceWriteGate;
         _auditLogService = auditLogService;
 
         Directory.CreateDirectory(_pathProvider.WorkspaceRoot);
@@ -126,73 +130,85 @@ public sealed class CaseWorkspaceService : ICaseWorkspaceService
         await _databaseInitializer.EnsureInitializedAsync(ct);
         await ImportLegacyCasesIfNeededAsync(ct);
 
-        await using var db = await _dbContextFactory.CreateDbContextAsync(ct);
-        await using var transaction = await db.Database.BeginTransactionAsync(ct);
-
-        var caseRecord = await db.Cases
-            .FirstOrDefaultAsync(c => c.CaseId == caseInfo.CaseId, ct);
-
-        if (caseRecord is null)
-        {
-            caseRecord = new CaseRecord
+        await _workspaceWriteGate.ExecuteWriteAsync(
+            operationName: "CaseWorkspace.SaveCase",
+            async writeCt =>
             {
-                CaseId = caseInfo.CaseId,
-                Name = caseInfo.Name,
-                CreatedAtUtc = caseInfo.CreatedAtUtc,
-                LastOpenedAtUtc = caseInfo.LastOpenedAtUtc
-            };
-            db.Cases.Add(caseRecord);
-        }
-        else
-        {
-            caseRecord.Name = caseInfo.Name;
-            caseRecord.CreatedAtUtc = caseInfo.CreatedAtUtc;
-            caseRecord.LastOpenedAtUtc = caseInfo.LastOpenedAtUtc;
-        }
+                await using var db = await _dbContextFactory.CreateDbContextAsync(writeCt);
+                await using var transaction = await db.Database.BeginTransactionAsync(writeCt);
 
-        var incomingIds = evidence.Select(e => e.EvidenceItemId).ToHashSet();
-        var existingRecords = await db.EvidenceItems
-            .Where(e => e.CaseId == caseInfo.CaseId)
-            .ToListAsync(ct);
+                var caseRecord = await db.Cases
+                    .FirstOrDefaultAsync(c => c.CaseId == caseInfo.CaseId, writeCt);
 
-        var recordsToRemove = existingRecords
-            .Where(e => !incomingIds.Contains(e.EvidenceItemId))
-            .ToList();
-        if (recordsToRemove.Count > 0)
-        {
-            db.EvidenceItems.RemoveRange(recordsToRemove);
-        }
-
-        foreach (var evidenceItem in evidence)
-        {
-            var evidenceRecord = existingRecords
-                .FirstOrDefault(e => e.EvidenceItemId == evidenceItem.EvidenceItemId);
-
-            if (evidenceRecord is null)
-            {
-                evidenceRecord = new EvidenceItemRecord
+                if (caseRecord is null)
                 {
-                    EvidenceItemId = evidenceItem.EvidenceItemId,
-                    CaseId = caseInfo.CaseId
-                };
-                db.EvidenceItems.Add(evidenceRecord);
+                    caseRecord = new CaseRecord
+                    {
+                        CaseId = caseInfo.CaseId,
+                        Name = caseInfo.Name,
+                        CreatedAtUtc = caseInfo.CreatedAtUtc,
+                        LastOpenedAtUtc = caseInfo.LastOpenedAtUtc
+                    };
+                    db.Cases.Add(caseRecord);
+                }
+                else
+                {
+                    caseRecord.Name = caseInfo.Name;
+                    caseRecord.CreatedAtUtc = caseInfo.CreatedAtUtc;
+                    caseRecord.LastOpenedAtUtc = caseInfo.LastOpenedAtUtc;
+                }
+
+                var incomingIds = evidence.Select(e => e.EvidenceItemId).ToHashSet();
+                var existingRecords = await db.EvidenceItems
+                    .Where(e => e.CaseId == caseInfo.CaseId)
+                    .ToListAsync(writeCt);
+
+                var recordsToRemove = existingRecords
+                    .Where(e => !incomingIds.Contains(e.EvidenceItemId))
+                    .ToList();
+                if (recordsToRemove.Count > 0)
+                {
+                    db.EvidenceItems.RemoveRange(recordsToRemove);
+                }
+
+                foreach (var evidenceItem in evidence)
+                {
+                    var evidenceRecord = existingRecords
+                        .FirstOrDefault(e => e.EvidenceItemId == evidenceItem.EvidenceItemId);
+
+                    if (evidenceRecord is null)
+                    {
+                        evidenceRecord = new EvidenceItemRecord
+                        {
+                            EvidenceItemId = evidenceItem.EvidenceItemId,
+                            CaseId = caseInfo.CaseId
+                        };
+                        db.EvidenceItems.Add(evidenceRecord);
+                    }
+
+                    evidenceRecord.CaseId = caseInfo.CaseId;
+                    evidenceRecord.DisplayName = evidenceItem.DisplayName;
+                    evidenceRecord.OriginalPath = evidenceItem.OriginalPath;
+                    evidenceRecord.OriginalFileName = evidenceItem.OriginalFileName;
+                    evidenceRecord.AddedAtUtc = evidenceItem.AddedAtUtc;
+                    evidenceRecord.SizeBytes = evidenceItem.SizeBytes;
+                    evidenceRecord.Sha256Hex = evidenceItem.Sha256Hex;
+                    evidenceRecord.FileExtension = evidenceItem.FileExtension;
+                    evidenceRecord.SourceType = evidenceItem.SourceType;
+                    evidenceRecord.ManifestRelativePath = evidenceItem.ManifestRelativePath;
+                    evidenceRecord.StoredRelativePath = evidenceItem.StoredRelativePath;
+                }
+
+                await db.SaveChangesAsync(writeCt);
+                await transaction.CommitAsync(writeCt);
+            },
+            ct,
+            correlationId: AppFileLogger.GetScopeValue("correlationId"),
+            fields: new Dictionary<string, object?>
+            {
+                ["caseId"] = caseInfo.CaseId.ToString("D")
             }
-
-            evidenceRecord.CaseId = caseInfo.CaseId;
-            evidenceRecord.DisplayName = evidenceItem.DisplayName;
-            evidenceRecord.OriginalPath = evidenceItem.OriginalPath;
-            evidenceRecord.OriginalFileName = evidenceItem.OriginalFileName;
-            evidenceRecord.AddedAtUtc = evidenceItem.AddedAtUtc;
-            evidenceRecord.SizeBytes = evidenceItem.SizeBytes;
-            evidenceRecord.Sha256Hex = evidenceItem.Sha256Hex;
-            evidenceRecord.FileExtension = evidenceItem.FileExtension;
-            evidenceRecord.SourceType = evidenceItem.SourceType;
-            evidenceRecord.ManifestRelativePath = evidenceItem.ManifestRelativePath;
-            evidenceRecord.StoredRelativePath = evidenceItem.StoredRelativePath;
-        }
-
-        await db.SaveChangesAsync(ct);
-        await transaction.CommitAsync(ct);
+        );
 
         await WriteCaseFileSnapshotAsync(caseInfo, evidence, ct);
     }
@@ -301,7 +317,12 @@ public sealed class CaseWorkspaceService : ICaseWorkspaceService
                 existingSet.Add(document.CaseInfo.CaseId);
             }
 
-            await db.SaveChangesAsync(ct);
+            await _workspaceWriteGate.ExecuteWriteAsync(
+                operationName: "CaseWorkspace.ImportLegacyCases",
+                writeCt => db.SaveChangesAsync(writeCt),
+                ct,
+                correlationId: AppFileLogger.GetScopeValue("correlationId")
+            );
             _legacyImportComplete = true;
         }
         finally

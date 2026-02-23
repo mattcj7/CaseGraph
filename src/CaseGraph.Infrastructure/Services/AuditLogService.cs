@@ -1,4 +1,5 @@
 using CaseGraph.Core.Abstractions;
+using CaseGraph.Core.Diagnostics;
 using CaseGraph.Core.Models;
 using CaseGraph.Infrastructure.Persistence;
 using CaseGraph.Infrastructure.Persistence.Entities;
@@ -37,21 +38,17 @@ public sealed class AuditLogService : IAuditLogService
             JsonPayload = auditEvent.JsonPayload
         };
 
-        await _workspaceWriteGate.RunAsync(
+        await _workspaceWriteGate.ExecuteWriteAsync(
+            operationName: "AuditLog.Add",
             async writeCt =>
             {
-                await SqliteWriteRetryPolicy.ExecuteAsync(
-                    async retryCt =>
-                    {
-                        await _databaseInitializer.EnsureInitializedAsync(retryCt);
-                        await using var db = await _dbContextFactory.CreateDbContextAsync(retryCt);
-                        db.AuditEvents.Add(record);
-                        await db.SaveChangesAsync(retryCt);
-                    },
-                    writeCt
-                );
+                await _databaseInitializer.EnsureInitializedAsync(writeCt);
+                await using var db = await _dbContextFactory.CreateDbContextAsync(writeCt);
+                db.AuditEvents.Add(record);
+                await db.SaveChangesAsync(writeCt);
             },
-            ct
+            ct,
+            correlationId: AppFileLogger.GetScopeValue("correlationId")
         );
     }
 

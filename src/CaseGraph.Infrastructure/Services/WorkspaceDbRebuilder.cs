@@ -1,4 +1,5 @@
 using CaseGraph.Core.Abstractions;
+using CaseGraph.Core.Diagnostics;
 using CaseGraph.Infrastructure.Persistence;
 using CaseGraph.Infrastructure.Persistence.Entities;
 using Microsoft.EntityFrameworkCore;
@@ -15,16 +16,19 @@ public sealed class WorkspaceDbRebuilder
 
     private readonly IDbContextFactory<WorkspaceDbContext> _dbContextFactory;
     private readonly IWorkspacePathProvider _workspacePathProvider;
+    private readonly IWorkspaceWriteGate _workspaceWriteGate;
     private readonly IClock _clock;
 
     public WorkspaceDbRebuilder(
         IDbContextFactory<WorkspaceDbContext> dbContextFactory,
         IWorkspacePathProvider workspacePathProvider,
+        IWorkspaceWriteGate workspaceWriteGate,
         IClock clock
     )
     {
         _dbContextFactory = dbContextFactory;
         _workspacePathProvider = workspacePathProvider;
+        _workspaceWriteGate = workspaceWriteGate;
         _clock = clock;
     }
 
@@ -104,46 +108,54 @@ public sealed class WorkspaceDbRebuilder
             }
         }
 
-        await using var db = await _dbContextFactory.CreateDbContextAsync(ct);
-        await using var transaction = await db.Database.BeginTransactionAsync(ct);
-
-        var existingAuditEvents = await db.AuditEvents.ToListAsync(ct);
-        if (existingAuditEvents.Count > 0)
-        {
-            db.AuditEvents.RemoveRange(existingAuditEvents);
-        }
-
-        var existingEvidence = await db.EvidenceItems.ToListAsync(ct);
-        if (existingEvidence.Count > 0)
-        {
-            db.EvidenceItems.RemoveRange(existingEvidence);
-        }
-
-        var existingCases = await db.Cases.ToListAsync(ct);
-        if (existingCases.Count > 0)
-        {
-            db.Cases.RemoveRange(existingCases);
-        }
-
-        db.Cases.AddRange(rebuiltCases.Values);
-        db.EvidenceItems.AddRange(rebuiltEvidence.Values);
-
-        db.AuditEvents.Add(new AuditEventRecord
-        {
-            AuditEventId = Guid.NewGuid(),
-            TimestampUtc = _clock.UtcNow.ToUniversalTime(),
-            Operator = Environment.UserName,
-            ActionType = "WorkspaceDbRebuilt",
-            Summary = $"Recovered {rebuiltCases.Count} case(s) and {rebuiltEvidence.Count} evidence item(s) from disk manifests.",
-            JsonPayload = JsonSerializer.Serialize(new
+        await _workspaceWriteGate.ExecuteWriteAsync(
+            operationName: "WorkspaceDbRebuilder.Rebuild",
+            async writeCt =>
             {
-                CasesRebuilt = rebuiltCases.Count,
-                EvidenceRebuilt = rebuiltEvidence.Count
-            })
-        });
+                await using var db = await _dbContextFactory.CreateDbContextAsync(writeCt);
+                await using var transaction = await db.Database.BeginTransactionAsync(writeCt);
 
-        await db.SaveChangesAsync(ct);
-        await transaction.CommitAsync(ct);
+                var existingAuditEvents = await db.AuditEvents.ToListAsync(writeCt);
+                if (existingAuditEvents.Count > 0)
+                {
+                    db.AuditEvents.RemoveRange(existingAuditEvents);
+                }
+
+                var existingEvidence = await db.EvidenceItems.ToListAsync(writeCt);
+                if (existingEvidence.Count > 0)
+                {
+                    db.EvidenceItems.RemoveRange(existingEvidence);
+                }
+
+                var existingCases = await db.Cases.ToListAsync(writeCt);
+                if (existingCases.Count > 0)
+                {
+                    db.Cases.RemoveRange(existingCases);
+                }
+
+                db.Cases.AddRange(rebuiltCases.Values);
+                db.EvidenceItems.AddRange(rebuiltEvidence.Values);
+
+                db.AuditEvents.Add(new AuditEventRecord
+                {
+                    AuditEventId = Guid.NewGuid(),
+                    TimestampUtc = _clock.UtcNow.ToUniversalTime(),
+                    Operator = Environment.UserName,
+                    ActionType = "WorkspaceDbRebuilt",
+                    Summary = $"Recovered {rebuiltCases.Count} case(s) and {rebuiltEvidence.Count} evidence item(s) from disk manifests.",
+                    JsonPayload = JsonSerializer.Serialize(new
+                    {
+                        CasesRebuilt = rebuiltCases.Count,
+                        EvidenceRebuilt = rebuiltEvidence.Count
+                    })
+                });
+
+                await db.SaveChangesAsync(writeCt);
+                await transaction.CommitAsync(writeCt);
+            },
+            ct,
+            correlationId: AppFileLogger.GetScopeValue("correlationId")
+        );
 
         return (rebuiltCases.Count, rebuiltEvidence.Count);
     }
