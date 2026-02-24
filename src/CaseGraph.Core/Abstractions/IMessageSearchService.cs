@@ -14,4 +14,18 @@ public interface IMessageSearchService
         int skip,
         CancellationToken ct
     );
+
+    Task<IReadOnlyList<MessageSearchHit>> SearchAsync(
+        MessageSearchRequest request,
+        CancellationToken ct
+    );
+
+    Task<TargetPresenceSummary?> GetTargetPresenceSummaryAsync(
+        Guid caseId,
+        Guid targetId,
+        TargetIdentifierType? identifierTypeFilter,
+        DateTimeOffset? fromUtc,
+        DateTimeOffset? toUtc,
+        CancellationToken ct
+    );
 }

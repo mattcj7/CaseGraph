@@ -14,44 +14,87 @@
         <Border Grid.Row="1"
                 Margin="{StaticResource SpaceTop12}"
                 Style="{StaticResource PlaceholderHintBorderStyle}">
-            <Grid>
-                <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="1.6*" />
-                    <ColumnDefinition Width="12" />
-                    <ColumnDefinition Width="*" />
-                    <ColumnDefinition Width="12" />
-                    <ColumnDefinition Width="*" />
-                    <ColumnDefinition Width="12" />
-                    <ColumnDefinition Width="220" />
-                    <ColumnDefinition Width="12" />
-                    <ColumnDefinition Width="Auto" />
-                </Grid.ColumnDefinitions>
+            <StackPanel>
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="1.6*" />
+                        <ColumnDefinition Width="12" />
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="12" />
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="12" />
+                        <ColumnDefinition Width="220" />
+                        <ColumnDefinition Width="12" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
 
-                <TextBox Grid.Column="0"
-                         Text="{Binding MessageSearchQuery, UpdateSourceTrigger=PropertyChanged}"
-                         Style="{StaticResource TopBarTextBoxStyle}"
-                         ToolTip="Search message body/sender/recipients" />
+                    <TextBox Grid.Column="0"
+                             Text="{Binding MessageSearchQuery, UpdateSourceTrigger=PropertyChanged}"
+                             Style="{StaticResource TopBarTextBoxStyle}"
+                             ToolTip="Keyword search (optional when filters are used)" />
 
-                <TextBox Grid.Column="2"
-                         Text="{Binding MessageSearchSenderFilter, UpdateSourceTrigger=PropertyChanged}"
-                         Style="{StaticResource TopBarTextBoxStyle}"
-                         ToolTip="Sender filter (optional)" />
+                    <TextBox Grid.Column="2"
+                             Text="{Binding MessageSearchSenderFilter, UpdateSourceTrigger=PropertyChanged}"
+                             Style="{StaticResource TopBarTextBoxStyle}"
+                             ToolTip="Sender filter (optional)" />
 
-                <TextBox Grid.Column="4"
-                         Text="{Binding MessageSearchRecipientFilter, UpdateSourceTrigger=PropertyChanged}"
-                         Style="{StaticResource TopBarTextBoxStyle}"
-                         ToolTip="Recipient filter (optional)" />
+                    <TextBox Grid.Column="4"
+                             Text="{Binding MessageSearchRecipientFilter, UpdateSourceTrigger=PropertyChanged}"
+                             Style="{StaticResource TopBarTextBoxStyle}"
+                             ToolTip="Recipient filter (optional)" />
 
-                <ComboBox Grid.Column="6"
-                          ItemsSource="{Binding MessageSearchPlatformFilters}"
-                          SelectedItem="{Binding SelectedMessageSearchPlatform, Mode=TwoWay}"
-                          Style="{StaticResource TopBarComboBoxStyle}" />
+                    <ComboBox Grid.Column="6"
+                              ItemsSource="{Binding MessageSearchPlatformFilters}"
+                              SelectedItem="{Binding SelectedMessageSearchPlatform, Mode=TwoWay}"
+                              Style="{StaticResource TopBarComboBoxStyle}" />
 
-                <Button Grid.Column="8"
-                        Content="Search"
-                        Command="{Binding SearchMessagesCommand}"
-                        Style="{StaticResource TopBarButtonStyle}" />
-            </Grid>
+                    <Button Grid.Column="8"
+                            Content="Search"
+                            Command="{Binding SearchMessagesCommand}"
+                            Style="{StaticResource TopBarButtonStyle}" />
+                </Grid>
+
+                <Grid Margin="{StaticResource SpaceTop8}">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="1.5*" />
+                        <ColumnDefinition Width="12" />
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="12" />
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="12" />
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="12" />
+                        <ColumnDefinition Width="*" />
+                    </Grid.ColumnDefinitions>
+
+                    <ComboBox Grid.Column="0"
+                              ItemsSource="{Binding MessageSearchTargetFilters}"
+                              SelectedItem="{Binding SelectedMessageSearchTargetFilter, Mode=TwoWay}"
+                              DisplayMemberPath="DisplayName"
+                              Style="{StaticResource TopBarComboBoxStyle}"
+                              ToolTip="Target filter" />
+
+                    <ComboBox Grid.Column="2"
+                              ItemsSource="{Binding MessageSearchIdentifierTypeFilters}"
+                              SelectedItem="{Binding SelectedMessageSearchIdentifierType, Mode=TwoWay}"
+                              Style="{StaticResource TopBarComboBoxStyle}"
+                              ToolTip="Identifier type filter (applies to target filter)" />
+
+                    <ComboBox Grid.Column="4"
+                              ItemsSource="{Binding MessageSearchDirectionFilters}"
+                              SelectedItem="{Binding SelectedMessageSearchDirection, Mode=TwoWay}"
+                              Style="{StaticResource TopBarComboBoxStyle}"
+                              ToolTip="Direction filter" />
+
+                    <DatePicker Grid.Column="6"
+                                SelectedDate="{Binding MessageSearchFromDateLocal, Mode=TwoWay}"
+                                ToolTip="From date (local)" />
+
+                    <DatePicker Grid.Column="8"
+                                SelectedDate="{Binding MessageSearchToDateLocal, Mode=TwoWay}"
+                                ToolTip="To date (local)" />
+                </Grid>
+            </StackPanel>
         </Border>
 
         <Grid Grid.Row="2" Margin="{StaticResource SpaceTop12}">

@@ -216,15 +216,44 @@
 
                     <Border Margin="{StaticResource SpaceTop12}" Style="{StaticResource PlaceholderHintBorderStyle}">
                         <StackPanel>
-                            <TextBlock Text="Where Seen" Style="{StaticResource SectionTitleTextStyle}" />
+                            <TextBlock Text="Where Seen (Messages)" Style="{StaticResource SectionTitleTextStyle}" />
                             <TextBlock Margin="{StaticResource SpaceTop8}"
                                        Style="{StaticResource BodyTextStyle}"
                                        Text="{Binding SelectedTargetWhereSeenSummary}" />
                             <Button Margin="{StaticResource SpaceTop8}"
-                                    Content="Open Filtered Search"
+                                    Content="Search messages for this Target"
                                     Command="{Binding OpenSearchForSelectedTargetCommand}"
-                                    IsEnabled="{Binding HasSelectedTargetIdentifier}"
+                                    IsEnabled="{Binding HasSelectedTarget}"
                                     Style="{StaticResource TopBarButtonStyle}" />
+
+                            <DataGrid Margin="{StaticResource SpaceTop8}"
+                                      MinHeight="140"
+                                      ItemsSource="{Binding SelectedTargetWhereSeenIdentifiers}"
+                                      AutoGenerateColumns="False"
+                                      CanUserAddRows="False"
+                                      CanUserDeleteRows="False"
+                                      IsReadOnly="True"
+                                      HeadersVisibility="Column"
+                                      Visibility="{Binding HasSelectedTargetWhereSeenIdentifiers, Converter={StaticResource BoolToVisibilityConverter}}">
+                                <DataGrid.Columns>
+                                    <DataGridTextColumn Header="Type" Binding="{Binding Type}" Width="*" />
+                                    <DataGridTextColumn Header="Identifier" Binding="{Binding ValueDisplay}" Width="1.8*" />
+                                    <DataGridTextColumn Header="Count" Binding="{Binding Count}" Width="0.8*" />
+                                    <DataGridTextColumn Header="Last Seen (UTC)"
+                                                        Binding="{Binding LastSeenUtc, StringFormat={}{0:u}, TargetNullValue=(none)}"
+                                                        Width="1.4*" />
+                                    <DataGridTemplateColumn Header="Actions" Width="1.4*">
+                                        <DataGridTemplateColumn.CellTemplate>
+                                            <DataTemplate>
+                                                <Button Content="Search for Identifier"
+                                                        Command="{Binding DataContext.OpenSearchForIdentifierCommand, RelativeSource={RelativeSource AncestorType=DataGrid}}"
+                                                        CommandParameter="{Binding}"
+                                                        Style="{StaticResource TopBarButtonStyle}" />
+                                            </DataTemplate>
+                                        </DataGridTemplateColumn.CellTemplate>
+                                    </DataGridTemplateColumn>
+                                </DataGrid.Columns>
+                            </DataGrid>
                         </StackPanel>
                     </Border>
                 </StackPanel>

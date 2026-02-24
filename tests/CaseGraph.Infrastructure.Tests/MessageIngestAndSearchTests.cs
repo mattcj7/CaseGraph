@@ -309,6 +309,758 @@ public sealed class MessageIngestAndSearchTests
     }
 
     [Fact]
+    public async Task GetTargetPresenceSummaryAsync_ReturnsCountsAndLastSeenByIdentifier()
+    {
+        await using var fixture = await WorkspaceFixture.CreateAsync();
+        var workspace = fixture.Services.GetRequiredService<ICaseWorkspaceService>();
+        var search = fixture.Services.GetRequiredService<IMessageSearchService>();
+
+        var caseInfo = await workspace.CreateCaseAsync("Presence Summary Case", CancellationToken.None);
+        var evidenceItemId = Guid.NewGuid();
+        var threadId = Guid.NewGuid();
+        var targetId = Guid.NewGuid();
+        var phoneIdentifierId = Guid.NewGuid();
+        var emailIdentifierId = Guid.NewGuid();
+        var handleIdentifierId = Guid.NewGuid();
+        var messageOneId = Guid.NewGuid();
+        var messageTwoId = Guid.NewGuid();
+        var messageThreeId = Guid.NewGuid();
+        var t1 = new DateTimeOffset(2026, 2, 13, 10, 0, 0, TimeSpan.Zero);
+        var t2 = new DateTimeOffset(2026, 2, 13, 11, 30, 0, TimeSpan.Zero);
+
+        await using (var db = await fixture.CreateDbContextAsync())
+        {
+            db.EvidenceItems.Add(new EvidenceItemRecord
+            {
+                EvidenceItemId = evidenceItemId,
+                CaseId = caseInfo.CaseId,
+                DisplayName = "Synthetic",
+                OriginalPath = "synthetic",
+                OriginalFileName = "synthetic.txt",
+                AddedAtUtc = DateTimeOffset.UtcNow,
+                SizeBytes = 1,
+                Sha256Hex = "ab",
+                FileExtension = ".txt",
+                SourceType = "OTHER",
+                ManifestRelativePath = "manifest.json",
+                StoredRelativePath = "stored.dat"
+            });
+
+            db.MessageThreads.Add(new MessageThreadRecord
+            {
+                ThreadId = threadId,
+                CaseId = caseInfo.CaseId,
+                EvidenceItemId = evidenceItemId,
+                Platform = "SMS",
+                ThreadKey = "thread-presence",
+                CreatedAtUtc = DateTimeOffset.UtcNow,
+                SourceLocator = "test:thread:presence",
+                IngestModuleVersion = "test"
+            });
+
+            db.MessageEvents.AddRange(
+                new MessageEventRecord
+                {
+                    MessageEventId = messageOneId,
+                    ThreadId = threadId,
+                    CaseId = caseInfo.CaseId,
+                    EvidenceItemId = evidenceItemId,
+                    Platform = "SMS",
+                    TimestampUtc = t1,
+                    Direction = "Incoming",
+                    Sender = "+15551230001",
+                    Recipients = "alpha@example.com",
+                    Body = "message one",
+                    IsDeleted = false,
+                    SourceLocator = "xlsx:test#Messages:R1",
+                    IngestModuleVersion = "test"
+                },
+                new MessageEventRecord
+                {
+                    MessageEventId = messageTwoId,
+                    ThreadId = threadId,
+                    CaseId = caseInfo.CaseId,
+                    EvidenceItemId = evidenceItemId,
+                    Platform = "SMS",
+                    TimestampUtc = t2,
+                    Direction = "Outgoing",
+                    Sender = "+15551230001",
+                    Recipients = "alpha@example.com",
+                    Body = "message two",
+                    IsDeleted = false,
+                    SourceLocator = "xlsx:test#Messages:R2",
+                    IngestModuleVersion = "test"
+                },
+                new MessageEventRecord
+                {
+                    MessageEventId = messageThreeId,
+                    ThreadId = threadId,
+                    CaseId = caseInfo.CaseId,
+                    EvidenceItemId = evidenceItemId,
+                    Platform = "SMS",
+                    TimestampUtc = null,
+                    Direction = "Incoming",
+                    Sender = "alpha@example.com",
+                    Recipients = "+15551230099",
+                    Body = "message three",
+                    IsDeleted = false,
+                    SourceLocator = "xlsx:test#Messages:R3",
+                    IngestModuleVersion = "test"
+                }
+            );
+
+            db.Targets.Add(new TargetRecord
+            {
+                TargetId = targetId,
+                CaseId = caseInfo.CaseId,
+                DisplayName = "Alpha",
+                PrimaryAlias = null,
+                Notes = null,
+                CreatedAtUtc = t1,
+                UpdatedAtUtc = t1,
+                SourceType = "Manual",
+                SourceEvidenceItemId = null,
+                SourceLocator = "manual:test:target",
+                IngestModuleVersion = "test"
+            });
+
+            db.Identifiers.AddRange(
+                new IdentifierRecord
+                {
+                    IdentifierId = phoneIdentifierId,
+                    CaseId = caseInfo.CaseId,
+                    Type = "Phone",
+                    ValueRaw = "+1 (555) 123-0001",
+                    ValueNormalized = "+15551230001",
+                    Notes = null,
+                    CreatedAtUtc = t1,
+                    SourceType = "Manual",
+                    SourceEvidenceItemId = null,
+                    SourceLocator = "manual:test:id:phone",
+                    IngestModuleVersion = "test"
+                },
+                new IdentifierRecord
+                {
+                    IdentifierId = emailIdentifierId,
+                    CaseId = caseInfo.CaseId,
+                    Type = "Email",
+                    ValueRaw = "alpha@example.com",
+                    ValueNormalized = "alpha@example.com",
+                    Notes = null,
+                    CreatedAtUtc = t1,
+                    SourceType = "Manual",
+                    SourceEvidenceItemId = null,
+                    SourceLocator = "manual:test:id:email",
+                    IngestModuleVersion = "test"
+                },
+                new IdentifierRecord
+                {
+                    IdentifierId = handleIdentifierId,
+                    CaseId = caseInfo.CaseId,
+                    Type = "SocialHandle",
+                    ValueRaw = "@alpha",
+                    ValueNormalized = "@alpha",
+                    Notes = null,
+                    CreatedAtUtc = t1,
+                    SourceType = "Manual",
+                    SourceEvidenceItemId = null,
+                    SourceLocator = "manual:test:id:handle",
+                    IngestModuleVersion = "test"
+                }
+            );
+
+            db.TargetIdentifierLinks.AddRange(
+                new TargetIdentifierLinkRecord
+                {
+                    LinkId = Guid.NewGuid(),
+                    CaseId = caseInfo.CaseId,
+                    TargetId = targetId,
+                    IdentifierId = phoneIdentifierId,
+                    IsPrimary = true,
+                    CreatedAtUtc = t1,
+                    SourceType = "Manual",
+                    SourceEvidenceItemId = null,
+                    SourceLocator = "manual:test:link:phone",
+                    IngestModuleVersion = "test"
+                },
+                new TargetIdentifierLinkRecord
+                {
+                    LinkId = Guid.NewGuid(),
+                    CaseId = caseInfo.CaseId,
+                    TargetId = targetId,
+                    IdentifierId = emailIdentifierId,
+                    IsPrimary = false,
+                    CreatedAtUtc = t1,
+                    SourceType = "Manual",
+                    SourceEvidenceItemId = null,
+                    SourceLocator = "manual:test:link:email",
+                    IngestModuleVersion = "test"
+                },
+                new TargetIdentifierLinkRecord
+                {
+                    LinkId = Guid.NewGuid(),
+                    CaseId = caseInfo.CaseId,
+                    TargetId = targetId,
+                    IdentifierId = handleIdentifierId,
+                    IsPrimary = false,
+                    CreatedAtUtc = t1,
+                    SourceType = "Manual",
+                    SourceEvidenceItemId = null,
+                    SourceLocator = "manual:test:link:handle",
+                    IngestModuleVersion = "test"
+                }
+            );
+
+            db.MessageParticipantLinks.AddRange(
+                new MessageParticipantLinkRecord
+                {
+                    ParticipantLinkId = Guid.NewGuid(),
+                    CaseId = caseInfo.CaseId,
+                    MessageEventId = messageOneId,
+                    Role = "Sender",
+                    ParticipantRaw = "+15551230001",
+                    IdentifierId = phoneIdentifierId,
+                    TargetId = targetId,
+                    CreatedAtUtc = t1,
+                    SourceType = "Derived",
+                    SourceEvidenceItemId = evidenceItemId,
+                    SourceLocator = "xlsx:test#Messages:R1;role=Sender",
+                    IngestModuleVersion = "test"
+                },
+                new MessageParticipantLinkRecord
+                {
+                    ParticipantLinkId = Guid.NewGuid(),
+                    CaseId = caseInfo.CaseId,
+                    MessageEventId = messageTwoId,
+                    Role = "Sender",
+                    ParticipantRaw = "+15551230001",
+                    IdentifierId = phoneIdentifierId,
+                    TargetId = targetId,
+                    CreatedAtUtc = t2,
+                    SourceType = "Derived",
+                    SourceEvidenceItemId = evidenceItemId,
+                    SourceLocator = "xlsx:test#Messages:R2;role=Sender",
+                    IngestModuleVersion = "test"
+                },
+                new MessageParticipantLinkRecord
+                {
+                    ParticipantLinkId = Guid.NewGuid(),
+                    CaseId = caseInfo.CaseId,
+                    MessageEventId = messageTwoId,
+                    Role = "Recipient",
+                    ParticipantRaw = "alpha@example.com",
+                    IdentifierId = emailIdentifierId,
+                    TargetId = targetId,
+                    CreatedAtUtc = t2,
+                    SourceType = "Derived",
+                    SourceEvidenceItemId = evidenceItemId,
+                    SourceLocator = "xlsx:test#Messages:R2;role=Recipient",
+                    IngestModuleVersion = "test"
+                },
+                new MessageParticipantLinkRecord
+                {
+                    ParticipantLinkId = Guid.NewGuid(),
+                    CaseId = caseInfo.CaseId,
+                    MessageEventId = messageThreeId,
+                    Role = "Sender",
+                    ParticipantRaw = "alpha@example.com",
+                    IdentifierId = emailIdentifierId,
+                    TargetId = targetId,
+                    CreatedAtUtc = t2.AddMinutes(1),
+                    SourceType = "Derived",
+                    SourceEvidenceItemId = evidenceItemId,
+                    SourceLocator = "xlsx:test#Messages:R3;role=Sender",
+                    IngestModuleVersion = "test"
+                }
+            );
+
+            await db.SaveChangesAsync();
+        }
+
+        var summary = await search.GetTargetPresenceSummaryAsync(
+            caseInfo.CaseId,
+            targetId,
+            identifierTypeFilter: null,
+            fromUtc: null,
+            toUtc: null,
+            CancellationToken.None
+        );
+
+        Assert.NotNull(summary);
+        Assert.Equal(3, summary.TotalCount);
+        Assert.Equal(t2, summary.LastSeenUtc);
+
+        var phoneSummary = Assert.Single(summary.ByIdentifier.Where(item => item.IdentifierId == phoneIdentifierId));
+        Assert.Equal(2, phoneSummary.Count);
+        Assert.Equal(t2, phoneSummary.LastSeenUtc);
+
+        var emailSummary = Assert.Single(summary.ByIdentifier.Where(item => item.IdentifierId == emailIdentifierId));
+        Assert.Equal(2, emailSummary.Count);
+        Assert.Equal(t2, emailSummary.LastSeenUtc);
+
+        var handleSummary = Assert.Single(summary.ByIdentifier.Where(item => item.IdentifierId == handleIdentifierId));
+        Assert.Equal(0, handleSummary.Count);
+        Assert.Null(handleSummary.LastSeenUtc);
+    }
+
+    [Fact]
+    public async Task SearchAsync_TargetFilter_CanCombineWithKeyword()
+    {
+        await using var fixture = await WorkspaceFixture.CreateAsync();
+        var workspace = fixture.Services.GetRequiredService<ICaseWorkspaceService>();
+        var search = fixture.Services.GetRequiredService<IMessageSearchService>();
+
+        var caseInfo = await workspace.CreateCaseAsync("Target Filter Keyword Case", CancellationToken.None);
+        var evidenceItemId = Guid.NewGuid();
+        var threadId = Guid.NewGuid();
+        var targetId = Guid.NewGuid();
+        var targetIdentifierId = Guid.NewGuid();
+        var otherIdentifierId = Guid.NewGuid();
+        var targetKeywordMessageId = Guid.NewGuid();
+        var targetNonKeywordMessageId = Guid.NewGuid();
+        var otherKeywordMessageId = Guid.NewGuid();
+        var now = new DateTimeOffset(2026, 2, 13, 9, 0, 0, TimeSpan.Zero);
+
+        await using (var db = await fixture.CreateDbContextAsync())
+        {
+            db.EvidenceItems.Add(new EvidenceItemRecord
+            {
+                EvidenceItemId = evidenceItemId,
+                CaseId = caseInfo.CaseId,
+                DisplayName = "Synthetic",
+                OriginalPath = "synthetic",
+                OriginalFileName = "synthetic.txt",
+                AddedAtUtc = DateTimeOffset.UtcNow,
+                SizeBytes = 1,
+                Sha256Hex = "ab",
+                FileExtension = ".txt",
+                SourceType = "OTHER",
+                ManifestRelativePath = "manifest.json",
+                StoredRelativePath = "stored.dat"
+            });
+
+            db.MessageThreads.Add(new MessageThreadRecord
+            {
+                ThreadId = threadId,
+                CaseId = caseInfo.CaseId,
+                EvidenceItemId = evidenceItemId,
+                Platform = "SMS",
+                ThreadKey = "thread-target-filter",
+                CreatedAtUtc = now,
+                SourceLocator = "test:thread:target-filter",
+                IngestModuleVersion = "test"
+            });
+
+            db.MessageEvents.AddRange(
+                new MessageEventRecord
+                {
+                    MessageEventId = targetKeywordMessageId,
+                    ThreadId = threadId,
+                    CaseId = caseInfo.CaseId,
+                    EvidenceItemId = evidenceItemId,
+                    Platform = "SMS",
+                    TimestampUtc = now,
+                    Direction = "Incoming",
+                    Sender = "+15551230001",
+                    Recipients = "+15554440001",
+                    Body = "checkpoint strap detail",
+                    IsDeleted = false,
+                    SourceLocator = "xlsx:test#Messages:R10",
+                    IngestModuleVersion = "test"
+                },
+                new MessageEventRecord
+                {
+                    MessageEventId = targetNonKeywordMessageId,
+                    ThreadId = threadId,
+                    CaseId = caseInfo.CaseId,
+                    EvidenceItemId = evidenceItemId,
+                    Platform = "SMS",
+                    TimestampUtc = now.AddMinutes(1),
+                    Direction = "Incoming",
+                    Sender = "+15551230001",
+                    Recipients = "+15554440002",
+                    Body = "routine ping",
+                    IsDeleted = false,
+                    SourceLocator = "xlsx:test#Messages:R11",
+                    IngestModuleVersion = "test"
+                },
+                new MessageEventRecord
+                {
+                    MessageEventId = otherKeywordMessageId,
+                    ThreadId = threadId,
+                    CaseId = caseInfo.CaseId,
+                    EvidenceItemId = evidenceItemId,
+                    Platform = "SMS",
+                    TimestampUtc = now.AddMinutes(2),
+                    Direction = "Incoming",
+                    Sender = "+15559990000",
+                    Recipients = "+15554440003",
+                    Body = "checkpoint strap detail",
+                    IsDeleted = false,
+                    SourceLocator = "xlsx:test#Messages:R12",
+                    IngestModuleVersion = "test"
+                }
+            );
+
+            db.Targets.Add(new TargetRecord
+            {
+                TargetId = targetId,
+                CaseId = caseInfo.CaseId,
+                DisplayName = "Target Alpha",
+                PrimaryAlias = null,
+                Notes = null,
+                CreatedAtUtc = now,
+                UpdatedAtUtc = now,
+                SourceType = "Manual",
+                SourceEvidenceItemId = null,
+                SourceLocator = "manual:test:target-alpha",
+                IngestModuleVersion = "test"
+            });
+
+            db.Identifiers.AddRange(
+                new IdentifierRecord
+                {
+                    IdentifierId = targetIdentifierId,
+                    CaseId = caseInfo.CaseId,
+                    Type = "Phone",
+                    ValueRaw = "+15551230001",
+                    ValueNormalized = "+15551230001",
+                    Notes = null,
+                    CreatedAtUtc = now,
+                    SourceType = "Manual",
+                    SourceEvidenceItemId = null,
+                    SourceLocator = "manual:test:target-phone",
+                    IngestModuleVersion = "test"
+                },
+                new IdentifierRecord
+                {
+                    IdentifierId = otherIdentifierId,
+                    CaseId = caseInfo.CaseId,
+                    Type = "Phone",
+                    ValueRaw = "+15559990000",
+                    ValueNormalized = "+15559990000",
+                    Notes = null,
+                    CreatedAtUtc = now,
+                    SourceType = "Manual",
+                    SourceEvidenceItemId = null,
+                    SourceLocator = "manual:test:other-phone",
+                    IngestModuleVersion = "test"
+                }
+            );
+
+            db.TargetIdentifierLinks.Add(new TargetIdentifierLinkRecord
+            {
+                LinkId = Guid.NewGuid(),
+                CaseId = caseInfo.CaseId,
+                TargetId = targetId,
+                IdentifierId = targetIdentifierId,
+                IsPrimary = true,
+                CreatedAtUtc = now,
+                SourceType = "Manual",
+                SourceEvidenceItemId = null,
+                SourceLocator = "manual:test:target-link",
+                IngestModuleVersion = "test"
+            });
+
+            db.MessageParticipantLinks.AddRange(
+                new MessageParticipantLinkRecord
+                {
+                    ParticipantLinkId = Guid.NewGuid(),
+                    CaseId = caseInfo.CaseId,
+                    MessageEventId = targetKeywordMessageId,
+                    Role = "Sender",
+                    ParticipantRaw = "+15551230001",
+                    IdentifierId = targetIdentifierId,
+                    TargetId = targetId,
+                    CreatedAtUtc = now,
+                    SourceType = "Derived",
+                    SourceEvidenceItemId = evidenceItemId,
+                    SourceLocator = "xlsx:test#Messages:R10;role=Sender",
+                    IngestModuleVersion = "test"
+                },
+                new MessageParticipantLinkRecord
+                {
+                    ParticipantLinkId = Guid.NewGuid(),
+                    CaseId = caseInfo.CaseId,
+                    MessageEventId = targetNonKeywordMessageId,
+                    Role = "Sender",
+                    ParticipantRaw = "+15551230001",
+                    IdentifierId = targetIdentifierId,
+                    TargetId = targetId,
+                    CreatedAtUtc = now.AddMinutes(1),
+                    SourceType = "Derived",
+                    SourceEvidenceItemId = evidenceItemId,
+                    SourceLocator = "xlsx:test#Messages:R11;role=Sender",
+                    IngestModuleVersion = "test"
+                },
+                new MessageParticipantLinkRecord
+                {
+                    ParticipantLinkId = Guid.NewGuid(),
+                    CaseId = caseInfo.CaseId,
+                    MessageEventId = otherKeywordMessageId,
+                    Role = "Sender",
+                    ParticipantRaw = "+15559990000",
+                    IdentifierId = otherIdentifierId,
+                    TargetId = null,
+                    CreatedAtUtc = now.AddMinutes(2),
+                    SourceType = "Derived",
+                    SourceEvidenceItemId = evidenceItemId,
+                    SourceLocator = "xlsx:test#Messages:R12;role=Sender",
+                    IngestModuleVersion = "test"
+                }
+            );
+
+            await db.SaveChangesAsync();
+        }
+
+        var targetOnlyHits = await search.SearchAsync(
+            new MessageSearchRequest(
+                caseInfo.CaseId,
+                Query: null,
+                PlatformFilter: null,
+                SenderFilter: null,
+                RecipientFilter: null,
+                TargetId: targetId,
+                IdentifierTypeFilter: null,
+                DirectionFilter: MessageDirectionFilter.Any,
+                FromUtc: null,
+                ToUtc: null,
+                Take: 20,
+                Skip: 0
+            ),
+            CancellationToken.None
+        );
+
+        Assert.Equal(2, targetOnlyHits.Count);
+        Assert.DoesNotContain(targetOnlyHits, hit => hit.MessageEventId == otherKeywordMessageId);
+
+        var targetAndKeywordHits = await search.SearchAsync(
+            new MessageSearchRequest(
+                caseInfo.CaseId,
+                Query: "checkpoint",
+                PlatformFilter: null,
+                SenderFilter: null,
+                RecipientFilter: null,
+                TargetId: targetId,
+                IdentifierTypeFilter: null,
+                DirectionFilter: MessageDirectionFilter.Any,
+                FromUtc: null,
+                ToUtc: null,
+                Take: 20,
+                Skip: 0
+            ),
+            CancellationToken.None
+        );
+
+        var single = Assert.Single(targetAndKeywordHits);
+        Assert.Equal(targetKeywordMessageId, single.MessageEventId);
+    }
+
+    [Fact]
+    public async Task SearchAsync_TargetFilter_RespectsDirectionFilter()
+    {
+        await using var fixture = await WorkspaceFixture.CreateAsync();
+        var workspace = fixture.Services.GetRequiredService<ICaseWorkspaceService>();
+        var search = fixture.Services.GetRequiredService<IMessageSearchService>();
+
+        var caseInfo = await workspace.CreateCaseAsync("Target Direction Case", CancellationToken.None);
+        var evidenceItemId = Guid.NewGuid();
+        var threadId = Guid.NewGuid();
+        var targetId = Guid.NewGuid();
+        var identifierId = Guid.NewGuid();
+        var incomingMessageId = Guid.NewGuid();
+        var outgoingMessageId = Guid.NewGuid();
+        var now = new DateTimeOffset(2026, 2, 13, 14, 0, 0, TimeSpan.Zero);
+
+        await using (var db = await fixture.CreateDbContextAsync())
+        {
+            db.EvidenceItems.Add(new EvidenceItemRecord
+            {
+                EvidenceItemId = evidenceItemId,
+                CaseId = caseInfo.CaseId,
+                DisplayName = "Synthetic",
+                OriginalPath = "synthetic",
+                OriginalFileName = "synthetic.txt",
+                AddedAtUtc = DateTimeOffset.UtcNow,
+                SizeBytes = 1,
+                Sha256Hex = "ab",
+                FileExtension = ".txt",
+                SourceType = "OTHER",
+                ManifestRelativePath = "manifest.json",
+                StoredRelativePath = "stored.dat"
+            });
+
+            db.MessageThreads.Add(new MessageThreadRecord
+            {
+                ThreadId = threadId,
+                CaseId = caseInfo.CaseId,
+                EvidenceItemId = evidenceItemId,
+                Platform = "SMS",
+                ThreadKey = "thread-direction",
+                CreatedAtUtc = now,
+                SourceLocator = "test:thread:direction",
+                IngestModuleVersion = "test"
+            });
+
+            db.MessageEvents.AddRange(
+                new MessageEventRecord
+                {
+                    MessageEventId = incomingMessageId,
+                    ThreadId = threadId,
+                    CaseId = caseInfo.CaseId,
+                    EvidenceItemId = evidenceItemId,
+                    Platform = "SMS",
+                    TimestampUtc = now,
+                    Direction = "Incoming",
+                    Sender = "+15550001",
+                    Recipients = "+15551230001",
+                    Body = "direction check",
+                    IsDeleted = false,
+                    SourceLocator = "xlsx:test#Messages:R20",
+                    IngestModuleVersion = "test"
+                },
+                new MessageEventRecord
+                {
+                    MessageEventId = outgoingMessageId,
+                    ThreadId = threadId,
+                    CaseId = caseInfo.CaseId,
+                    EvidenceItemId = evidenceItemId,
+                    Platform = "SMS",
+                    TimestampUtc = now.AddMinutes(1),
+                    Direction = "Outgoing",
+                    Sender = "+15551230001",
+                    Recipients = "+15550001",
+                    Body = "direction check",
+                    IsDeleted = false,
+                    SourceLocator = "xlsx:test#Messages:R21",
+                    IngestModuleVersion = "test"
+                }
+            );
+
+            db.Targets.Add(new TargetRecord
+            {
+                TargetId = targetId,
+                CaseId = caseInfo.CaseId,
+                DisplayName = "Direction Target",
+                PrimaryAlias = null,
+                Notes = null,
+                CreatedAtUtc = now,
+                UpdatedAtUtc = now,
+                SourceType = "Manual",
+                SourceEvidenceItemId = null,
+                SourceLocator = "manual:test:direction-target",
+                IngestModuleVersion = "test"
+            });
+
+            db.Identifiers.Add(new IdentifierRecord
+            {
+                IdentifierId = identifierId,
+                CaseId = caseInfo.CaseId,
+                Type = "Phone",
+                ValueRaw = "+15551230001",
+                ValueNormalized = "+15551230001",
+                Notes = null,
+                CreatedAtUtc = now,
+                SourceType = "Manual",
+                SourceEvidenceItemId = null,
+                SourceLocator = "manual:test:direction-id",
+                IngestModuleVersion = "test"
+            });
+
+            db.TargetIdentifierLinks.Add(new TargetIdentifierLinkRecord
+            {
+                LinkId = Guid.NewGuid(),
+                CaseId = caseInfo.CaseId,
+                TargetId = targetId,
+                IdentifierId = identifierId,
+                IsPrimary = true,
+                CreatedAtUtc = now,
+                SourceType = "Manual",
+                SourceEvidenceItemId = null,
+                SourceLocator = "manual:test:direction-link",
+                IngestModuleVersion = "test"
+            });
+
+            db.MessageParticipantLinks.AddRange(
+                new MessageParticipantLinkRecord
+                {
+                    ParticipantLinkId = Guid.NewGuid(),
+                    CaseId = caseInfo.CaseId,
+                    MessageEventId = incomingMessageId,
+                    Role = "Recipient",
+                    ParticipantRaw = "+15551230001",
+                    IdentifierId = identifierId,
+                    TargetId = targetId,
+                    CreatedAtUtc = now,
+                    SourceType = "Derived",
+                    SourceEvidenceItemId = evidenceItemId,
+                    SourceLocator = "xlsx:test#Messages:R20;role=Recipient",
+                    IngestModuleVersion = "test"
+                },
+                new MessageParticipantLinkRecord
+                {
+                    ParticipantLinkId = Guid.NewGuid(),
+                    CaseId = caseInfo.CaseId,
+                    MessageEventId = outgoingMessageId,
+                    Role = "Sender",
+                    ParticipantRaw = "+15551230001",
+                    IdentifierId = identifierId,
+                    TargetId = targetId,
+                    CreatedAtUtc = now.AddMinutes(1),
+                    SourceType = "Derived",
+                    SourceEvidenceItemId = evidenceItemId,
+                    SourceLocator = "xlsx:test#Messages:R21;role=Sender",
+                    IngestModuleVersion = "test"
+                }
+            );
+
+            await db.SaveChangesAsync();
+        }
+
+        var incomingHits = await search.SearchAsync(
+            new MessageSearchRequest(
+                caseInfo.CaseId,
+                Query: "direction",
+                PlatformFilter: null,
+                SenderFilter: null,
+                RecipientFilter: null,
+                TargetId: targetId,
+                IdentifierTypeFilter: null,
+                DirectionFilter: MessageDirectionFilter.Incoming,
+                FromUtc: null,
+                ToUtc: null,
+                Take: 20,
+                Skip: 0
+            ),
+            CancellationToken.None
+        );
+
+        var incoming = Assert.Single(incomingHits);
+        Assert.Equal(incomingMessageId, incoming.MessageEventId);
+
+        var outgoingHits = await search.SearchAsync(
+            new MessageSearchRequest(
+                caseInfo.CaseId,
+                Query: "direction",
+                PlatformFilter: null,
+                SenderFilter: null,
+                RecipientFilter: null,
+                TargetId: targetId,
+                IdentifierTypeFilter: null,
+                DirectionFilter: MessageDirectionFilter.Outgoing,
+                FromUtc: null,
+                ToUtc: null,
+                Take: 20,
+                Skip: 0
+            ),
+            CancellationToken.None
+        );
+
+        var outgoing = Assert.Single(outgoingHits);
+        Assert.Equal(outgoingMessageId, outgoing.MessageEventId);
+    }
+
+    [Fact]
     public async Task MessagesIngestJob_CreatesRows_AndAuditSummary()
     {
         await using var fixture = await WorkspaceFixture.CreateAsync(startRunner: false);

@@ -50,6 +50,7 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
     private bool _isDisposed;
     private bool _isRefreshingDiagnosticsSnapshot;
     private int _selectedTargetWhereSeenCount;
+    private DateTimeOffset? _selectedTargetWhereSeenLastSeenUtc;
 
     public ObservableCollection<NavigationItem> NavigationItems { get; } = new();
 
@@ -69,6 +70,10 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
 
     public ObservableCollection<TargetIdentifierInfo> SelectedTargetIdentifiers { get; } = new();
 
+    public ObservableCollection<TargetPresenceIdentifierSummary> SelectedTargetWhereSeenIdentifiers { get; } = new();
+
+    public ObservableCollection<SearchTargetFilterOption> MessageSearchTargetFilters { get; } = new();
+
     public IReadOnlyList<string> MessageSearchPlatformFilters { get; } =
     [
         "All",
@@ -78,6 +83,15 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
         "Signal",
         "Instagram",
         "OTHER"
+    ];
+
+    public IReadOnlyList<string> MessageSearchIdentifierTypeFilters { get; } = BuildMessageSearchIdentifierTypeFilters();
+
+    public IReadOnlyList<string> MessageSearchDirectionFilters { get; } =
+    [
+        "Any",
+        "Incoming",
+        "Outgoing"
     ];
 
     [ObservableProperty]
@@ -186,10 +200,25 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
     private string messageSearchRecipientFilter = string.Empty;
 
     [ObservableProperty]
+    private SearchTargetFilterOption? selectedMessageSearchTargetFilter;
+
+    [ObservableProperty]
+    private string selectedMessageSearchIdentifierType = "Any";
+
+    [ObservableProperty]
+    private string selectedMessageSearchDirection = "Any";
+
+    [ObservableProperty]
+    private DateTime? messageSearchFromDateLocal;
+
+    [ObservableProperty]
+    private DateTime? messageSearchToDateLocal;
+
+    [ObservableProperty]
     private MessageSearchHit? selectedMessageSearchResult;
 
     [ObservableProperty]
-    private string messageSearchStatusText = "Enter a query to search messages.";
+    private string messageSearchStatusText = "Enter a query or apply at least one filter.";
 
     [ObservableProperty]
     private bool isMessageSearchInProgress;
@@ -275,13 +304,15 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
 
     public bool ShowIdentifierValueValidationMessage => HasSelectedTarget && !IsIdentifierInputValid();
 
+    public bool HasSelectedTargetWhereSeenIdentifiers => SelectedTargetWhereSeenIdentifiers.Count > 0;
+
     public string IdentifierValueValidationMessage => ShowIdentifierValueValidationMessage
         ? IdentifierValueGuard.RequiredMessage
         : string.Empty;
 
     public string SelectedTargetWhereSeenSummary => SelectedTargetSummary is null
         ? "No target selected."
-        : $"Linked message events: {_selectedTargetWhereSeenCount:0}";
+        : $"Linked message events: {_selectedTargetWhereSeenCount:0} | Last seen (UTC): {FormatLastSeenForUi(_selectedTargetWhereSeenLastSeenUtc)}";
 
     public IReadOnlyList<TargetIdentifierType> AvailableIdentifierTypes { get; } =
         Enum.GetValues<TargetIdentifierType>();
@@ -323,6 +354,8 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
     public IAsyncRelayCommand RemoveIdentifierCommand { get; }
 
     public IAsyncRelayCommand OpenSearchForSelectedTargetCommand { get; }
+
+    public IAsyncRelayCommand<TargetPresenceIdentifierSummary?> OpenSearchForIdentifierCommand { get; }
 
     public IAsyncRelayCommand CreateTargetFromSenderCommand { get; }
 
@@ -429,12 +462,22 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
         AddIdentifierCommand = CreateSafeAsyncCommand("AddIdentifier", AddIdentifierAsync);
         UpdateIdentifierCommand = new AsyncRelayCommand(UpdateIdentifierAsync);
         RemoveIdentifierCommand = new AsyncRelayCommand(RemoveIdentifierAsync);
-        OpenSearchForSelectedTargetCommand = new AsyncRelayCommand(OpenSearchForSelectedTargetAsync);
+        OpenSearchForSelectedTargetCommand = CreateSafeAsyncCommand(
+            "SearchMessagesForTarget",
+            OpenSearchForSelectedTargetAsync,
+            () => HasSelectedTarget
+        );
+        OpenSearchForIdentifierCommand = new AsyncRelayCommand<TargetPresenceIdentifierSummary?>(
+            summary => ExecuteSafeAsync(
+                "SearchMessagesForIdentifier",
+                () => OpenSearchForIdentifierAsync(summary)
+            )
+        );
         CreateTargetFromSenderCommand = new AsyncRelayCommand(CreateTargetFromSenderAsync);
         LinkSenderToExistingTargetCommand = new AsyncRelayCommand(LinkSenderToExistingTargetAsync);
         CreateTargetFromRecipientsCommand = new AsyncRelayCommand(CreateTargetFromRecipientsAsync);
         LinkRecipientsToExistingTargetCommand = new AsyncRelayCommand(LinkRecipientsToExistingTargetAsync);
-        SearchMessagesCommand = new AsyncRelayCommand(SearchMessagesAsync);
+        SearchMessagesCommand = CreateSafeAsyncCommand("SearchMessages", SearchMessagesAsync);
         CopyStoredPathCommand = new RelayCommand(CopyStoredPath);
         CopySha256Command = new RelayCommand(CopySha256);
         CopyMessageCitationCommand = new RelayCommand(CopyMessageCitation);
@@ -448,6 +491,7 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
 
         _jobUpdateSubscription = _jobQueueService.JobUpdates.Subscribe(new JobObserver(OnJobUpdated));
 
+        ResetMessageSearchTargetFilters();
         SelectedNavigationItem = NavigationItems.FirstOrDefault();
     }
 
@@ -565,6 +609,7 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
         OnPropertyChanged(nameof(HasSelectedTarget));
         OnPropertyChanged(nameof(HasSelectedTargetAlias));
         OnPropertyChanged(nameof(HasSelectedTargetIdentifier));
+        OpenSearchForSelectedTargetCommand.NotifyCanExecuteChanged();
         SelectedTargetAlias = null;
         SelectedTargetIdentifier = null;
 
@@ -574,8 +619,11 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
             SelectedTargetPrimaryAlias = string.Empty;
             SelectedTargetNotes = string.Empty;
             _selectedTargetWhereSeenCount = 0;
+            _selectedTargetWhereSeenLastSeenUtc = null;
             SelectedTargetAliases.Clear();
             SelectedTargetIdentifiers.Clear();
+            SelectedTargetWhereSeenIdentifiers.Clear();
+            OnPropertyChanged(nameof(HasSelectedTargetWhereSeenIdentifiers));
             OnPropertyChanged(nameof(SelectedTargetWhereSeenSummary));
             OnIdentifierInputStateChanged();
             return;
@@ -584,6 +632,11 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
         SelectedTargetDisplayName = value.DisplayName;
         SelectedTargetPrimaryAlias = value.PrimaryAlias ?? string.Empty;
         SelectedTargetNotes = value.Notes ?? string.Empty;
+        _selectedTargetWhereSeenCount = 0;
+        _selectedTargetWhereSeenLastSeenUtc = null;
+        SelectedTargetWhereSeenIdentifiers.Clear();
+        OnPropertyChanged(nameof(HasSelectedTargetWhereSeenIdentifiers));
+        OnPropertyChanged(nameof(SelectedTargetWhereSeenSummary));
         OnIdentifierInputStateChanged();
         RefreshSelectedTargetDetailsAsync(CancellationToken.None).Forget(
             "RefreshSelectedTargetDetailsOnTargetSelected",
@@ -627,6 +680,15 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
     partial void OnIdentifierEditorTypeChanged(TargetIdentifierType value)
     {
         OnIdentifierInputStateChanged();
+    }
+
+    partial void OnSelectedMessageSearchTargetFilterChanged(SearchTargetFilterOption? value)
+    {
+        if (value?.TargetId is null
+            && !string.Equals(SelectedMessageSearchIdentifierType, "Any", StringComparison.OrdinalIgnoreCase))
+        {
+            SelectedMessageSearchIdentifierType = "Any";
+        }
     }
 
     partial void OnIsDarkThemeChanged(bool value)
@@ -1137,6 +1199,7 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
         {
             Targets.Clear();
             SelectedTargetSummary = null;
+            ResetMessageSearchTargetFilters();
             return;
         }
 
@@ -1156,6 +1219,40 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
         SelectedTargetSummary = selectedTargetId.HasValue
             ? Targets.FirstOrDefault(t => t.TargetId == selectedTargetId.Value)
             : Targets.FirstOrDefault();
+
+        await RefreshMessageSearchTargetFiltersAsync(ct);
+    }
+
+    private async Task RefreshMessageSearchTargetFiltersAsync(CancellationToken ct)
+    {
+        if (CurrentCaseInfo is null)
+        {
+            ResetMessageSearchTargetFilters();
+            return;
+        }
+
+        var selectedTargetId = SelectedMessageSearchTargetFilter?.TargetId;
+        var searchTargets = await _targetRegistryService.GetTargetsAsync(
+            CurrentCaseInfo.CaseId,
+            search: null,
+            ct
+        );
+
+        MessageSearchTargetFilters.Clear();
+        MessageSearchTargetFilters.Add(SearchTargetFilterOption.AllTargets);
+        foreach (var target in searchTargets)
+        {
+            MessageSearchTargetFilters.Add(new SearchTargetFilterOption(target.TargetId, target.DisplayName));
+        }
+
+        SelectedMessageSearchTargetFilter = selectedTargetId.HasValue
+            ? MessageSearchTargetFilters.FirstOrDefault(option => option.TargetId == selectedTargetId.Value)
+            : SearchTargetFilterOption.AllTargets;
+
+        if (SelectedMessageSearchTargetFilter is null)
+        {
+            SelectedMessageSearchTargetFilter = SearchTargetFilterOption.AllTargets;
+        }
     }
 
     private async Task RefreshSelectedTargetDetailsAsync(CancellationToken ct)
@@ -1163,8 +1260,11 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
         if (CurrentCaseInfo is null || SelectedTargetSummary is null)
         {
             _selectedTargetWhereSeenCount = 0;
+            _selectedTargetWhereSeenLastSeenUtc = null;
             SelectedTargetAliases.Clear();
             SelectedTargetIdentifiers.Clear();
+            SelectedTargetWhereSeenIdentifiers.Clear();
+            OnPropertyChanged(nameof(HasSelectedTargetWhereSeenIdentifiers));
             OnPropertyChanged(nameof(SelectedTargetWhereSeenSummary));
             return;
         }
@@ -1177,14 +1277,14 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
         if (details is null)
         {
             _selectedTargetWhereSeenCount = 0;
+            _selectedTargetWhereSeenLastSeenUtc = null;
             SelectedTargetAliases.Clear();
             SelectedTargetIdentifiers.Clear();
+            SelectedTargetWhereSeenIdentifiers.Clear();
+            OnPropertyChanged(nameof(HasSelectedTargetWhereSeenIdentifiers));
             OnPropertyChanged(nameof(SelectedTargetWhereSeenSummary));
             return;
         }
-
-        _selectedTargetWhereSeenCount = details.WhereSeenMessageCount;
-        OnPropertyChanged(nameof(SelectedTargetWhereSeenSummary));
 
         SelectedTargetAliases.Clear();
         foreach (var alias in details.Aliases)
@@ -1201,6 +1301,42 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
         SelectedTargetDisplayName = details.Summary.DisplayName;
         SelectedTargetPrimaryAlias = details.Summary.PrimaryAlias ?? string.Empty;
         SelectedTargetNotes = details.Summary.Notes ?? string.Empty;
+
+        var presenceSummary = await _messageSearchService.GetTargetPresenceSummaryAsync(
+            CurrentCaseInfo.CaseId,
+            details.Summary.TargetId,
+            identifierTypeFilter: null,
+            fromUtc: null,
+            toUtc: null,
+            ct
+        );
+
+        _selectedTargetWhereSeenCount = presenceSummary?.TotalCount ?? details.WhereSeenMessageCount;
+        _selectedTargetWhereSeenLastSeenUtc = presenceSummary?.LastSeenUtc;
+        SelectedTargetWhereSeenIdentifiers.Clear();
+        if (presenceSummary is not null)
+        {
+            foreach (var identifierSummary in presenceSummary.ByIdentifier)
+            {
+                SelectedTargetWhereSeenIdentifiers.Add(identifierSummary);
+            }
+        }
+        else
+        {
+            foreach (var identifier in details.Identifiers)
+            {
+                SelectedTargetWhereSeenIdentifiers.Add(new TargetPresenceIdentifierSummary(
+                    identifier.IdentifierId,
+                    identifier.Type,
+                    identifier.ValueRaw,
+                    Count: 0,
+                    LastSeenUtc: null
+                ));
+            }
+        }
+
+        OnPropertyChanged(nameof(HasSelectedTargetWhereSeenIdentifiers));
+        OnPropertyChanged(nameof(SelectedTargetWhereSeenSummary));
     }
 
     private async Task CreateTargetAsync()
@@ -1501,18 +1637,22 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
             return;
         }
 
-        var identifier = SelectedTargetIdentifier ?? SelectedTargetIdentifiers.FirstOrDefault();
-        if (identifier is null)
+        ApplySearchFiltersForTarget(SelectedTargetSummary.TargetId, identifierType: null, query: null);
+        SelectedNavigationItem = NavigationItems.FirstOrDefault(item => item.Page == NavigationPage.Search);
+
+        await SearchMessagesAsync();
+    }
+
+    private async Task OpenSearchForIdentifierAsync(TargetPresenceIdentifierSummary? identifierSummary)
+    {
+        if (CurrentCaseInfo is null || SelectedTargetSummary is null || identifierSummary is null)
         {
             OperationText = "Select a target identifier before opening filtered search.";
             return;
         }
 
-        MessageSearchQuery = BuildParticipantSearchQuery(identifier);
-        var participantFilter = BuildParticipantSearchFilter(identifier);
-        MessageSearchSenderFilter = participantFilter;
-        MessageSearchRecipientFilter = participantFilter;
-        SelectedMessageSearchPlatform = "All";
+        var query = BuildParticipantSearchQuery(identifierSummary.Type, identifierSummary.ValueDisplay);
+        ApplySearchFiltersForTarget(SelectedTargetSummary.TargetId, identifierSummary.Type, query);
         SelectedNavigationItem = NavigationItems.FirstOrDefault(item => item.Page == NavigationPage.Search);
 
         await SearchMessagesAsync();
@@ -1745,23 +1885,42 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
         return [hit.Recipients.Trim()];
     }
 
-    private static string BuildParticipantSearchFilter(TargetIdentifierInfo identifier)
+    private void ApplySearchFiltersForTarget(Guid targetId, TargetIdentifierType? identifierType, string? query)
     {
-        if (identifier.Type == TargetIdentifierType.Phone)
+        var option = MessageSearchTargetFilters.FirstOrDefault(item => item.TargetId == targetId);
+        if (option is null)
         {
-            var digitsOnly = new string(identifier.ValueNormalized.Where(char.IsDigit).ToArray());
-            return digitsOnly.Length > 0 ? digitsOnly : identifier.ValueNormalized;
+            var displayName = SelectedTargetSummary?.DisplayName ?? $"Target {targetId:D}";
+            option = new SearchTargetFilterOption(targetId, displayName);
+            MessageSearchTargetFilters.Add(option);
         }
 
-        return string.IsNullOrWhiteSpace(identifier.ValueNormalized)
-            ? identifier.ValueRaw
-            : identifier.ValueNormalized;
+        SelectedMessageSearchTargetFilter = option;
+        SelectedMessageSearchIdentifierType = identifierType?.ToString() ?? "Any";
+        MessageSearchQuery = query ?? string.Empty;
+        MessageSearchSenderFilter = string.Empty;
+        MessageSearchRecipientFilter = string.Empty;
+        SelectedMessageSearchPlatform = "All";
+        SelectedMessageSearchDirection = "Any";
+        MessageSearchFromDateLocal = null;
+        MessageSearchToDateLocal = null;
     }
 
-    private static string BuildParticipantSearchQuery(TargetIdentifierInfo identifier)
+    private static string BuildParticipantSearchFilter(TargetIdentifierType type, string value)
     {
-        var filter = BuildParticipantSearchFilter(identifier);
-        return string.IsNullOrWhiteSpace(filter) ? identifier.ValueRaw : filter;
+        if (type == TargetIdentifierType.Phone)
+        {
+            var digitsOnly = new string(value.Where(char.IsDigit).ToArray());
+            return digitsOnly.Length > 0 ? digitsOnly : value;
+        }
+
+        return value.Trim();
+    }
+
+    private static string BuildParticipantSearchQuery(TargetIdentifierType type, string value)
+    {
+        var filter = BuildParticipantSearchFilter(type, value);
+        return string.IsNullOrWhiteSpace(filter) ? value : filter;
     }
 
     private async Task RefreshRecentActivityAsync(CancellationToken ct)
@@ -1955,10 +2114,33 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
             return;
         }
 
-        var query = MessageSearchQuery?.Trim() ?? string.Empty;
-        if (query.Length == 0)
+        var query = NullIfWhiteSpace(MessageSearchQuery);
+        var selectedTargetId = SelectedMessageSearchTargetFilter?.TargetId;
+        var selectedPlatform = string.Equals(SelectedMessageSearchPlatform, "All", StringComparison.OrdinalIgnoreCase)
+            ? null
+            : SelectedMessageSearchPlatform;
+        var senderFilter = NullIfWhiteSpace(MessageSearchSenderFilter);
+        var recipientFilter = NullIfWhiteSpace(MessageSearchRecipientFilter);
+        var directionFilter = ParseMessageDirectionFilter(SelectedMessageSearchDirection);
+        var fromUtc = ConvertLocalDateToStartUtc(MessageSearchFromDateLocal);
+        var toUtc = ConvertLocalDateToInclusiveEndUtc(MessageSearchToDateLocal);
+        var identifierTypeFilter = selectedTargetId.HasValue
+            ? ParseTargetIdentifierTypeFilter(SelectedMessageSearchIdentifierType)
+            : null;
+
+        var hasStructuredFilter =
+            selectedTargetId.HasValue
+            || identifierTypeFilter.HasValue
+            || directionFilter != MessageDirectionFilter.Any
+            || fromUtc.HasValue
+            || toUtc.HasValue
+            || !string.IsNullOrWhiteSpace(selectedPlatform)
+            || !string.IsNullOrWhiteSpace(senderFilter)
+            || !string.IsNullOrWhiteSpace(recipientFilter);
+
+        if (query is null && !hasStructuredFilter)
         {
-            MessageSearchStatusText = "Enter a query to search messages.";
+            MessageSearchStatusText = "Enter a query or apply at least one filter.";
             MessageSearchResults.Clear();
             SelectedMessageSearchResult = null;
             return;
@@ -1971,15 +2153,20 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
         try
         {
             var hits = await _messageSearchService.SearchAsync(
-                CurrentCaseInfo.CaseId,
-                query,
-                string.Equals(SelectedMessageSearchPlatform, "All", StringComparison.OrdinalIgnoreCase)
-                    ? null
-                    : SelectedMessageSearchPlatform,
-                NullIfWhiteSpace(MessageSearchSenderFilter),
-                NullIfWhiteSpace(MessageSearchRecipientFilter),
-                take: 250,
-                skip: 0,
+                new MessageSearchRequest(
+                    CurrentCaseInfo.CaseId,
+                    query,
+                    selectedPlatform,
+                    senderFilter,
+                    recipientFilter,
+                    selectedTargetId,
+                    identifierTypeFilter,
+                    directionFilter,
+                    fromUtc,
+                    toUtc,
+                    Take: 250,
+                    Skip: 0
+                ),
                 searchCts.Token
             );
 
@@ -2098,7 +2285,7 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
         await RefreshRecentJobsAsync(ct);
         MessageSearchResults.Clear();
         SelectedMessageSearchResult = null;
-        MessageSearchStatusText = "Enter a query to search messages.";
+        MessageSearchStatusText = "Enter a query or apply at least one filter.";
         SelectedCase = AvailableCases.FirstOrDefault(c => c.CaseId == openedCase.CaseId) ?? openedCase;
     }
 
@@ -2631,9 +2818,89 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
         return Path.Combine(caseRootPath, item.StoredRelativePath.Replace('/', Path.DirectorySeparatorChar));
     }
 
+    private void ResetMessageSearchTargetFilters()
+    {
+        MessageSearchTargetFilters.Clear();
+        MessageSearchTargetFilters.Add(SearchTargetFilterOption.AllTargets);
+        SelectedMessageSearchTargetFilter = SearchTargetFilterOption.AllTargets;
+        SelectedMessageSearchIdentifierType = "Any";
+        SelectedMessageSearchDirection = "Any";
+        MessageSearchFromDateLocal = null;
+        MessageSearchToDateLocal = null;
+    }
+
+    private static TargetIdentifierType? ParseTargetIdentifierTypeFilter(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value)
+            || string.Equals(value.Trim(), "Any", StringComparison.OrdinalIgnoreCase))
+        {
+            return null;
+        }
+
+        return Enum.TryParse<TargetIdentifierType>(value.Trim(), ignoreCase: true, out var parsed)
+            ? parsed
+            : null;
+    }
+
+    private static MessageDirectionFilter ParseMessageDirectionFilter(string? value)
+    {
+        if (string.Equals(value, "Incoming", StringComparison.OrdinalIgnoreCase))
+        {
+            return MessageDirectionFilter.Incoming;
+        }
+
+        if (string.Equals(value, "Outgoing", StringComparison.OrdinalIgnoreCase))
+        {
+            return MessageDirectionFilter.Outgoing;
+        }
+
+        return MessageDirectionFilter.Any;
+    }
+
+    private static DateTimeOffset? ConvertLocalDateToStartUtc(DateTime? localDate)
+    {
+        if (!localDate.HasValue)
+        {
+            return null;
+        }
+
+        var localUnspecified = DateTime.SpecifyKind(localDate.Value.Date, DateTimeKind.Unspecified);
+        var offset = TimeZoneInfo.Local.GetUtcOffset(localUnspecified);
+        return new DateTimeOffset(localUnspecified, offset).ToUniversalTime();
+    }
+
+    private static DateTimeOffset? ConvertLocalDateToInclusiveEndUtc(DateTime? localDate)
+    {
+        if (!localDate.HasValue)
+        {
+            return null;
+        }
+
+        var localUnspecified = DateTime.SpecifyKind(
+            localDate.Value.Date.AddDays(1).AddTicks(-1),
+            DateTimeKind.Unspecified
+        );
+        var offset = TimeZoneInfo.Local.GetUtcOffset(localUnspecified);
+        return new DateTimeOffset(localUnspecified, offset).ToUniversalTime();
+    }
+
+    private static string FormatLastSeenForUi(DateTimeOffset? timestampUtc)
+    {
+        return timestampUtc.HasValue
+            ? timestampUtc.Value.ToString("u")
+            : "(none)";
+    }
+
     private static string? NullIfWhiteSpace(string? value)
     {
         return string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+    }
+
+    private static IReadOnlyList<string> BuildMessageSearchIdentifierTypeFilters()
+    {
+        var filters = new List<string> { "Any" };
+        filters.AddRange(Enum.GetNames<TargetIdentifierType>());
+        return filters;
     }
 
     private static string FormatJobStatusMessage(JobInfo job)
@@ -2670,6 +2937,14 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
 
         _jobUpdateSubscription.Dispose();
         _jobCompletionRefreshGate.Dispose();
+    }
+
+    public sealed record SearchTargetFilterOption(Guid? TargetId, string DisplayName)
+    {
+        public static SearchTargetFilterOption AllTargets { get; } = new(
+            TargetId: null,
+            DisplayName: "Any target"
+        );
     }
 
     private sealed class OperationScope : IDisposable

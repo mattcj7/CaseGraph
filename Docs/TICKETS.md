@@ -10,12 +10,137 @@ This file tracks planned, active, and completed tickets.
   - **Completed Tickets** (append-only)
 
 ## Upcoming Tickets
-- (none currently queued)
+- (none listed)
 
 ## Active Ticket
 - (none)
 
+## T0019 - Target-centric Search + “Where Seen” (messages) panel
+
+### Goal
+Make Targets immediately useful in investigations by:
+1) Showing **Where Seen** (message presence) for the selected Target.
+2) Adding **Search filters** so investigators can search messages by Target (via linked identifiers), plus common constraints (identifier type, direction, date range).
+3) Providing one-click “Open Search filtered to this Target” from the Target page.
+
+### Context
+We now have:
+- Messages ingest + search
+- People/Targets + identifiers
+- Participant linking (T0014) and identifier validation (T0013)
+- Workspace write-gate + lock resilience (T0018)
+
+Next is the “investigator workflow bridge”: targets → “where they show up in communications” + filtered searching.
+
+### Scope
+
+#### A) Where Seen panel on Target details
+In People/Targets UI, when a Target is selected, add a **Where Seen (Messages)** panel:
+
+Minimum info:
+- Total message hit count for this target (across all linked identifiers)
+- Breakdown by identifier:
+  - Identifier value (display-safe)
+  - Identifier type (Phone/Email/Handle/etc.)
+  - Count of message events where it appears as sender/recipient/participant
+  - “Last seen” timestamp (best-effort, nullable)
+
+Actions:
+- Button: **Search messages for this Target**
+  - Navigates to Search with Target filter pre-set
+- Per-identifier action: **Search for this identifier**
+
+Notes:
+- “Where seen” must be computed per-case (current case).
+- Keep it fast: counts + last-seen only; no heavy joins beyond what’s needed.
+
+#### B) Search filters v2 (Target-aware)
+Extend Search page with filters:
+
+1) Target filter
+- Dropdown or searchable selector of Targets in current case.
+- When selected, search is constrained to messages where any linked identifier appears in participants.
+
+2) Identifier type filter
+- Optional dropdown (Any / Phone / Email / Handle / etc.)
+- Applies only when Target filter is set (or when searching by identifier list).
+
+3) Direction filter (optional but recommended)
+- Any / Incoming / Outgoing
+- Implementation depends on your message schema:
+  - If MessageEvent has Sender/Recipient: Incoming = recipient match; Outgoing = sender match
+  - If multi-participant: use “sender vs others” semantics where available; otherwise treat as Any.
+
+4) Date/time range (optional but recommended)
+- From / To (UTC internally; display local)
+- Applies to MessageEvent timestamp field.
+
+UX:
+- Filters should not require re-parsing; they query existing tables/FTS.
+- Show active filters chips (optional, nice-to-have).
+
+#### C) Query/service changes
+Add/extend Infrastructure query services so UI does not do DB logic:
+
+1) Target presence summary query
+- Input: caseId, targetId, optional identifierType, optional date range
+- Output:
+  - totalCount
+  - byIdentifier: (identifierId, type, valueDisplay, count, lastSeenUtc?)
+
+2) Message search with Target filter
+- If Target filter set:
+  - Resolve target identifiers (normalized)
+  - Constrain search results to message events whose participant(s) match any identifier
+- Preserve existing keyword/body FTS searching; Target filter should combine with it:
+  - Example: Target=“John Doe” + keyword=“strap” + date range
+
+Performance guidance:
+- Prefer set-based constraints (IN on identifier IDs) over string matching.
+- If schema doesn’t have a participant-to-identifier table, implement best-effort matching using stored participant fields, but keep it scoped and indexed where possible.
+
+#### D) Tests (SQLite provider)
+Add Infrastructure tests (deterministic, per-temp workspace DB):
+
+1) WhereSeen summary
+- Seed:
+  - Target + identifiers
+  - Messages with participants matching those identifiers
+- Assert:
+  - totalCount correct
+  - per-identifier counts correct
+  - lastSeen correct (or null if timestamps missing)
+
+2) Search filter by Target
+- Seed:
+  - messages for target identifiers and messages for other people
+- Assert:
+  - target filter returns only matching message events
+  - combining with keyword filter still works
+
+3) Optional: Direction filter
+- If direction implemented, verify incoming/outgoing separation.
+
+#### E) Ticket tracking + workflow
+- Update `Docs/TICKETS.md`:
+  - Add T0019 under Upcoming, set Active = T0019.
+  - Move T0019 to Completed with date when verified.
+- DB tier must run (Infrastructure query changes).
+
+### Acceptance Criteria
+- From People/Targets, selecting a Target shows Where Seen counts quickly.
+- Clicking “Search messages for this Target” opens Search with filter prefilled and results constrained to the target’s identifiers.
+- Search filters (Target/type/direction/date) work together without crashes.
+- Tests pass via `pwsh tools/test-smart.ps1 -ForceDb`.
+
+### Manual Verify
+1) Open case with messages + at least one linked target identifier.
+2) Go People/Targets → select target → confirm Where Seen shows counts.
+3) Click “Search messages for this Target” → confirm results match expected.
+4) Apply keyword + date range + type filter → confirm results update correctly.
+
 ## Completed Tickets (append-only)
+- 2026-02-24 - T0019 - Implemented target-centric search filters (target/type/direction/date), added Where Seen (messages) totals/by-identifier/last-seen panel with target+identifier search actions, and added deterministic SQLite coverage for target presence summary and filtered search combinations.
 - 2026-02-12 - T0002 - Established WPF solution skeleton, app shell, MVVM, and DI baseline.
 - 2026-02-12 - T0003 - Implemented case workspace, immutable evidence vault import, manifests, and integrity verification UI/tests.
 - 2026-02-13 - T0004 - Added SQLite workspace persistence for cases/evidence, append-only audit logging, and recent activity UI.
