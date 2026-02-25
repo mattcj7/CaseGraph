@@ -10,50 +10,145 @@ This file tracks planned, active, and completed tickets.
   - **Completed Tickets** (append-only)
 
 ## Upcoming Tickets
-- (none)
+- T0022 - Association Graph v1 (case graph + global overlay + export)
 
 ## Active Ticket
-- (none)
+- T0022 - Association Graph v1 (case graph + global overlay + export)
 
-## T0021 - Global Person Registry v1 (cross-case targets + identifiers)
+## T0022 - Association Graph v1 (case graph + global overlay + export)
 
 ### Goal
-Allow investigators to re-use identities across cases:
-- A “global person” can be linked to targets in multiple cases.
-- Global identifiers (phones/handles/emails) can be shared across cases.
-- Case-specific target data remains case-scoped.
+Provide a usable relationship visualization that helps investigators quickly see:
+- clusters/crews, connectors/bridges, and high-volume links
+- how identifiers connect to targets
+- optional “global person” overlay so cross-case identity is usable
 
-### Scope
-1) New global tables in workspace.db
-- PersonEntity (GlobalEntityId, DisplayName, CreatedAtUtc, UpdatedAtUtc)
-- PersonAlias (GlobalEntityId, Alias, Notes)
-- PersonIdentifier (GlobalEntityId, Type, ValueNormalized, ValueDisplay, IsPrimary, Notes)
-- CaseTarget.GlobalEntityId nullable FK
+### Context
+We now have:
+- Targets + identifiers
+- Target ↔ message presence indexing (T0020)
+- Global Person Registry cross-case (T0021)
+- SQLite lock resilience (T0018)
 
-2) UI flows
-- Create Target:
-  - “Create new global person” OR “Link to existing global person”
-- Target detail:
-  - “Link to global person…” / “Unlink”
-  - “Other cases where seen” (list of cases referencing same GlobalEntityId)
-- Conflict handling:
-  - If adding identifier that already belongs to another global person, require explicit resolution.
+This ticket turns that into an explorable graph UI.
 
-3) Search
-- Global person search by name/alias/identifier
-- Case search can filter by global person
+---
 
-4) Tests (SQLite)
-- Create two cases
-- Create one global person
-- Link case targets in both cases to same global person
-- Assert identifiers resolve and “other cases” query returns correct list.
+## Scope
 
-### Acceptance Criteria
-- You can link a target in Case A and Case B to the same global person.
-- Identifiers persist at the global level and are visible when linking new case targets.
-- Conflicts are explicit (no silent merges).
-- Tests pass via pwsh tools/test-smart.ps1 -ForceDb.
+### A) New UI page: Association Graph
+Add a new navigation entry and page (WPF):
+- Page: `AssociationGraphView.xaml`
+- ViewModel: `AssociationGraphViewModel`
+- A left panel for filters, a main graph viewport, and a right “Details” panel.
+
+Minimum UI controls:
+- Case selector (current case only is fine; no multi-case browsing yet)
+- Toggle: **Include Identifiers** (default ON)
+- Toggle: **Group by Global Person** (default OFF)
+- Slider/box: **Min Edge Weight** (default 2)
+- Search box: highlights nodes by text match
+- Button: **Rebuild Graph**
+- Button: **Export Graph Snapshot (PNG)**
+
+Interaction:
+- Click node → show details (type, name/value, counts, “last seen” best-effort)
+- From details:
+  - **Open Target** (if node is Target)
+  - **Search messages** filtered to that Target/Identifier
+- Hover edge → show weight + interpretation (e.g., “shared threads: X”, “co-occurrence events: Y”)
+
+### B) Graph definition (v1)
+Node types:
+- Target (case target)
+- Identifier (phone/email/handle) — when Include Identifiers is ON
+- Global Person (optional overlay) — when Group by Global Person is ON
+
+Edge types:
+1) Target ↔ Identifier
+- source: Target’s identifiers table
+- weight: 1 (or optionally “messages matched” count if cheap)
+
+2) Target ↔ Target
+- derived from co-occurrence in communications:
+  - Use `TargetMessagePresence` index to compute: targets that appear in the same **thread** and/or same **message event**
+- Edge weight definition (v1):
+  - `weight = distinctThreadCount` (preferred) OR `distinctMessageEventCount`
+- Optional: store additional metrics (threadCount, eventCount, lastSeenUtc)
+
+3) (Optional) Identifier ↔ Identifier
+- Only if cheap and helpful; otherwise defer to T0022A.
+
+Global overlay behavior:
+- If Group by Global Person is ON:
+  - Collapse multiple case targets that map to the same Global Person into a single “Person” node
+  - Edges merge: weights sum (or max), and details show the contributing targets/identifiers.
+
+### C) Infrastructure: Graph query service
+Add an Infrastructure query/service that builds the graph model from SQLite:
+
+Proposed:
+- `AssociationGraphQueryService.BuildAsync(caseId, options, ct)` → returns:
+  - `GraphNode[]` (Id, Kind, Label, Optional metadata)
+  - `GraphEdge[]` (SourceId, TargetId, Kind, Weight, Optional metadata)
+
+Must:
+- use set-based queries, avoid per-node N+1
+- be deterministic for tests
+- work well with 10k–100k message events (best-effort for v1)
+
+### D) Rendering library (recommended)
+Use a proven offline graph layout renderer for WPF.
+
+Recommendation:
+- MSAGL (WPF control) via NuGet, render nodes/edges + allow pan/zoom
+- Keep styling minimal; focus on correctness + interaction
+
+### E) Export snapshot
+- Export the rendered graph to PNG:
+  - default path: `WorkspaceRoot\session\exports\graph-<caseId>-<timestamp>.png`
+- Log success/failure and include path in UI toast/status.
+
+### F) Tests (DB tier)
+Add deterministic SQLite tests (Infrastructure layer):
+1) Graph build includes expected nodes/edges
+- Seed: targets + identifiers + message presence rows
+- Assert: Target↔Identifier edges exist
+- Assert: Target↔Target edge weights match expected threadCount/eventCount
+
+2) Global overlay grouping
+- Seed: 2 targets in same global person, 1 target in different person
+- Assert: collapsed node count and merged edge weights are correct
+
+3) Export path builder (unit test)
+- Assert file naming + directory creation is correct (no UI automation required)
+
+### Out of Scope
+- Fancy community detection, clustering algorithms, or timeline animation
+- Bulk auto-linking targets/identifiers
+- Multi-case “full enterprise” graph browsing (beyond global overlay)
+
+---
+
+## Acceptance Criteria
+- Graph page loads and renders a meaningful graph for a case.
+- Clicking a Target node can open Target details and can open Search filtered to that target.
+- Including Identifiers shows Target↔Identifier edges.
+- Group-by-global-person collapses correctly and does not lose data (weights merge).
+- Export creates a PNG file and shows the path.
+- `pwsh tools/test-smart.ps1 -ForceDb` passes.
+
+---
+
+## Manual Verify
+1) Open a case with messages + linked targets/identifiers.
+2) Open Association Graph:
+   - verify nodes/edges render
+   - click nodes and open Search filtered to them
+3) Toggle Group by Global Person:
+   - verify nodes collapse and edges re-weight
+4) Export snapshot and open the PNG on disk.
+
 
 ## Completed Tickets (append-only)
 - 2026-02-12 - T0002 - Established WPF solution skeleton, app shell, MVVM, and DI baseline.
