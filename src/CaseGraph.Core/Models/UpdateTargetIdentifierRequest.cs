@@ -9,5 +9,6 @@ public sealed record UpdateTargetIdentifierRequest(
     string? Notes,
     bool IsPrimary,
     IdentifierConflictResolution ConflictResolution = IdentifierConflictResolution.Cancel,
-    string SourceLocator = "manual:targets/identifier-update"
+    string SourceLocator = "manual:targets/identifier-update",
+    GlobalPersonIdentifierConflictResolution GlobalConflictResolution = GlobalPersonIdentifierConflictResolution.Cancel
 );

@@ -32,6 +32,12 @@ public sealed class WorkspaceDbContext : DbContext
 
     public DbSet<MessageParticipantRecord> MessageParticipants => Set<MessageParticipantRecord>();
 
+    public DbSet<PersonEntityRecord> PersonEntities => Set<PersonEntityRecord>();
+
+    public DbSet<PersonAliasRecord> PersonAliases => Set<PersonAliasRecord>();
+
+    public DbSet<PersonIdentifierRecord> PersonIdentifiers => Set<PersonIdentifierRecord>();
+
     public DbSet<TargetRecord> Targets => Set<TargetRecord>();
 
     public DbSet<TargetAliasRecord> TargetAliases => Set<TargetAliasRecord>();
@@ -206,6 +212,44 @@ public sealed class WorkspaceDbContext : DbContext
                 .OnDelete(DeleteBehavior.Cascade);
         });
 
+        modelBuilder.Entity<PersonEntityRecord>(entity =>
+        {
+            entity.ToTable("PersonEntity");
+            entity.HasKey(e => e.GlobalEntityId);
+            entity.Property(e => e.DisplayName).IsRequired();
+            entity.HasIndex(e => e.DisplayName);
+        });
+
+        modelBuilder.Entity<PersonAliasRecord>(entity =>
+        {
+            entity.ToTable("PersonAlias");
+            entity.HasKey(e => e.AliasId);
+            entity.Property(e => e.Alias).IsRequired();
+            entity.Property(e => e.AliasNormalized).IsRequired();
+            entity.HasIndex(e => new { e.GlobalEntityId, e.AliasNormalized }).IsUnique();
+
+            entity.HasOne(e => e.Person)
+                .WithMany(p => p.Aliases)
+                .HasForeignKey(e => e.GlobalEntityId)
+                .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.Entity<PersonIdentifierRecord>(entity =>
+        {
+            entity.ToTable("PersonIdentifier");
+            entity.HasKey(e => e.PersonIdentifierId);
+            entity.Property(e => e.Type).IsRequired();
+            entity.Property(e => e.ValueNormalized).IsRequired();
+            entity.Property(e => e.ValueDisplay).IsRequired();
+            entity.HasIndex(e => new { e.GlobalEntityId, e.Type, e.ValueNormalized }).IsUnique();
+            entity.HasIndex(e => new { e.Type, e.ValueNormalized }).IsUnique();
+
+            entity.HasOne(e => e.Person)
+                .WithMany(p => p.Identifiers)
+                .HasForeignKey(e => e.GlobalEntityId)
+                .OnDelete(DeleteBehavior.Cascade);
+        });
+
         modelBuilder.Entity<TargetRecord>(entity =>
         {
             entity.ToTable("TargetRecord");
@@ -215,11 +259,17 @@ public sealed class WorkspaceDbContext : DbContext
             entity.Property(e => e.SourceLocator).IsRequired();
             entity.Property(e => e.IngestModuleVersion).IsRequired();
             entity.HasIndex(e => new { e.CaseId, e.DisplayName });
+            entity.HasIndex(e => new { e.CaseId, e.GlobalEntityId });
 
             entity.HasOne(e => e.Case)
                 .WithMany()
                 .HasForeignKey(e => e.CaseId)
                 .OnDelete(DeleteBehavior.Cascade);
+
+            entity.HasOne(e => e.GlobalPerson)
+                .WithMany()
+                .HasForeignKey(e => e.GlobalEntityId)
+                .OnDelete(DeleteBehavior.SetNull);
         });
 
         modelBuilder.Entity<TargetAliasRecord>(entity =>

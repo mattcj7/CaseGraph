@@ -5,5 +5,7 @@ public sealed record CreateTargetRequest(
     string DisplayName,
     string? PrimaryAlias,
     string? Notes,
-    string SourceLocator = "manual:targets/create"
+    string SourceLocator = "manual:targets/create",
+    Guid? GlobalEntityId = null,
+    bool CreateGlobalPerson = false
 );

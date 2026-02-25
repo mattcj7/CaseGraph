@@ -34,6 +34,9 @@ public sealed class WorkspaceMigrationSmokeTests
         await connection.OpenAsync();
 
         Assert.True(await TableExistsAsync(connection, "TargetRecord"));
+        Assert.True(await TableExistsAsync(connection, "PersonEntity"));
+        Assert.True(await TableExistsAsync(connection, "PersonAlias"));
+        Assert.True(await TableExistsAsync(connection, "PersonIdentifier"));
         Assert.True(await TableExistsAsync(connection, "IdentifierRecord"));
         Assert.True(await TableExistsAsync(connection, "TargetAliasRecord"));
         Assert.True(await TableExistsAsync(connection, "TargetIdentifierLinkRecord"));

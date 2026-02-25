@@ -15,45 +15,44 @@ This file tracks planned, active, and completed tickets.
 ## Active Ticket
 - (none)
 
-## T0020 - Target message presence indexing (link identifier → match all messages)
+## T0021 - Global Person Registry v1 (cross-case targets + identifiers)
 
 ### Goal
-When an identifier (phone/handle/email) is linked to a Target, the Target must immediately reflect *all* messages where that identifier appears (sender/recipient/participant), not only the message used as provenance.
+Allow investigators to re-use identities across cases:
+- A “global person” can be linked to targets in multiple cases.
+- Global identifiers (phones/handles/emails) can be shared across cases.
+- Case-specific target data remains case-scoped.
 
 ### Scope
-1) Fix semantics
-- Keep provenance: the clicked message is the “source” for the link.
-- Where Seen + Target-filtered search must match across all messages for linked identifiers.
+1) New global tables in workspace.db
+- PersonEntity (GlobalEntityId, DisplayName, CreatedAtUtc, UpdatedAtUtc)
+- PersonAlias (GlobalEntityId, Alias, Notes)
+- PersonIdentifier (GlobalEntityId, Type, ValueNormalized, ValueDisplay, IsPrimary, Notes)
+- CaseTarget.GlobalEntityId nullable FK
 
-2) Add index table (recommended)
-- Add `TargetMessagePresence` (or similar):
-  - CaseId
-  - TargetId
-  - MessageEventId
-  - Role (Sender/Recipient/Participant if supported)
-  - MatchedIdentifierId (optional)
-  - EvidenceItemId / SourceLocator (optional)
-  - FirstSeenUtc / LastSeenUtc (optional)
+2) UI flows
+- Create Target:
+  - “Create new global person” OR “Link to existing global person”
+- Target detail:
+  - “Link to global person…” / “Unlink”
+  - “Other cases where seen” (list of cases referencing same GlobalEntityId)
+- Conflict handling:
+  - If adding identifier that already belongs to another global person, require explicit resolution.
 
-3) Indexing jobs
-- New job: `TargetPresenceIndexRebuild` for a case (rebuild from messages + identifiers)
-- Incremental updates:
-  - After MessagesIngest completes → update presence for identifiers in that case
-  - After LinkIdentifierToTarget → backfill presence for that identifier across existing messages
+3) Search
+- Global person search by name/alias/identifier
+- Case search can filter by global person
 
-4) UI changes
-- Where Seen reads from index table (fast)
-- Add “Rebuild Target Index” button on Diagnostics or Case Tools (optional but helpful)
-
-5) Tests (SQLite)
-- Seed target + identifier + multiple messages containing identifier
-- Link identifier once using provenance message A
-- Assert WhereSeen count includes message A and B, etc.
-- Assert Target-filtered search returns all matching message events.
+4) Tests (SQLite)
+- Create two cases
+- Create one global person
+- Link case targets in both cases to same global person
+- Assert identifiers resolve and “other cases” query returns correct list.
 
 ### Acceptance Criteria
-- Linking identifier from a single message makes Where Seen include every message containing that identifier.
-- Target-filtered search returns all message events for linked identifiers.
+- You can link a target in Case A and Case B to the same global person.
+- Identifiers persist at the global level and are visible when linking new case targets.
+- Conflicts are explicit (no silent merges).
 - Tests pass via pwsh tools/test-smart.ps1 -ForceDb.
 
 ## Completed Tickets (append-only)
@@ -94,3 +93,4 @@ When an identifier (phone/handle/email) is linked to a Target, the Target must i
 - 2026-02-23 - T0018 - Added project-wide workspace write policy via `IWorkspaceWriteGate.ExecuteWrite*` + `SqliteBusyRetry`, routed key write paths (jobs, audit/provenance, case/workspace finalize flows) through the policy, added deterministic gate lock/serialization tests, and documented the enforced write rule.
 - 2026-02-24 - T0019 - Implemented target-centric search filters (target/type/direction/date), added Where Seen (messages) totals/by-identifier/last-seen panel with target+identifier search actions, and added deterministic SQLite coverage for target presence summary and filtered search combinations.
 - 2026-02-25 - T0020 - Added `TargetMessagePresence` indexing with rebuild/incremental refresh on ingest/link changes, moved Where Seen and target-filtered search to the index, and added deterministic SQLite coverage that a single-message link backfills all matching messages while preserving provenance.
+- 2026-02-25 - T0021 - Added global person registry tables and target linkage, enabled create/link/unlink global-person UI flows with cross-case visibility, introduced global-person message search filtering, and added deterministic multi-case SQLite coverage for shared identities and explicit global-identifier conflict handling.

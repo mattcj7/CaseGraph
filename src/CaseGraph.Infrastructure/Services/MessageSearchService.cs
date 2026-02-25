@@ -43,7 +43,8 @@ public sealed class MessageSearchService : IMessageSearchService
                 FromUtc: null,
                 ToUtc: null,
                 Take: take,
-                Skip: skip
+                Skip: skip,
+                GlobalEntityId: null
             ),
             ct
         );
@@ -150,7 +151,10 @@ public sealed class MessageSearchService : IMessageSearchService
         var targetId = request.TargetId.GetValueOrDefault() == Guid.Empty
             ? null
             : request.TargetId;
-        var identifierTypeFilter = targetId.HasValue && request.IdentifierTypeFilter.HasValue
+        var globalEntityId = request.GlobalEntityId.GetValueOrDefault() == Guid.Empty
+            ? null
+            : request.GlobalEntityId;
+        var identifierTypeFilter = (targetId.HasValue || globalEntityId.HasValue) && request.IdentifierTypeFilter.HasValue
             ? ToIdentifierTypeText(request.IdentifierTypeFilter.Value)
             : null;
         var directionFilter = NormalizeDirectionFilter(request.DirectionFilter);
@@ -164,6 +168,7 @@ public sealed class MessageSearchService : IMessageSearchService
             || senderFilter is not null
             || recipientFilter is not null
             || targetId.HasValue
+            || globalEntityId.HasValue
             || identifierTypeFilter is not null
             || directionFilter is not null
             || fromUtc.HasValue
@@ -181,6 +186,7 @@ public sealed class MessageSearchService : IMessageSearchService
             senderFilter,
             recipientFilter,
             targetId,
+            globalEntityId,
             identifierTypeFilter,
             directionFilter,
             fromUtc,
@@ -243,6 +249,23 @@ public sealed class MessageSearchService : IMessageSearchService
                           AND ($identifierTypeFilter IS NULL OR id.Type = $identifierTypeFilter)
                     )
               )
+              AND (
+                    $globalEntityId IS NULL
+                    OR EXISTS (
+                        SELECT 1
+                        FROM TargetMessagePresenceRecord tmp
+                        INNER JOIN TargetRecord tr
+                            ON tr.CaseId = tmp.CaseId
+                           AND tr.TargetId = tmp.TargetId
+                        INNER JOIN IdentifierRecord id
+                            ON id.CaseId = tmp.CaseId
+                           AND id.IdentifierId = tmp.MatchedIdentifierId
+                        WHERE tmp.CaseId = me.CaseId
+                          AND tmp.MessageEventId = me.MessageEventId
+                          AND tr.GlobalEntityId = $globalEntityId
+                          AND ($identifierTypeFilter IS NULL OR id.Type = $identifierTypeFilter)
+                    )
+              )
             ORDER BY bm25(MessageEventFts), me.TimestampUtc DESC
             LIMIT $maxRows;
             """;
@@ -255,6 +278,7 @@ public sealed class MessageSearchService : IMessageSearchService
         AddOptionalStringParameter(command, "$identifierTypeFilter", request.IdentifierTypeFilter);
         AddOptionalStringParameter(command, "$directionFilter", request.DirectionFilter);
         AddOptionalGuidParameter(command, "$targetId", request.TargetId);
+        AddOptionalGuidParameter(command, "$globalEntityId", request.GlobalEntityId);
         AddOptionalDateParameter(command, "$fromUtc", request.FromUtc);
         AddOptionalDateParameter(command, "$toUtc", request.ToUtc);
 
@@ -325,6 +349,23 @@ public sealed class MessageSearchService : IMessageSearchService
                           AND ($identifierTypeFilter IS NULL OR id.Type = $identifierTypeFilter)
                     )
               )
+              AND (
+                    $globalEntityId IS NULL
+                    OR EXISTS (
+                        SELECT 1
+                        FROM TargetMessagePresenceRecord tmp
+                        INNER JOIN TargetRecord tr
+                            ON tr.CaseId = tmp.CaseId
+                           AND tr.TargetId = tmp.TargetId
+                        INNER JOIN IdentifierRecord id
+                            ON id.CaseId = tmp.CaseId
+                           AND id.IdentifierId = tmp.MatchedIdentifierId
+                        WHERE tmp.CaseId = me.CaseId
+                          AND tmp.MessageEventId = me.MessageEventId
+                          AND tr.GlobalEntityId = $globalEntityId
+                          AND ($identifierTypeFilter IS NULL OR id.Type = $identifierTypeFilter)
+                    )
+              )
             ORDER BY me.TimestampUtc DESC
             LIMIT $maxRows;
             """;
@@ -337,6 +378,7 @@ public sealed class MessageSearchService : IMessageSearchService
         AddOptionalStringParameter(command, "$identifierTypeFilter", request.IdentifierTypeFilter);
         AddOptionalStringParameter(command, "$directionFilter", request.DirectionFilter);
         AddOptionalGuidParameter(command, "$targetId", request.TargetId);
+        AddOptionalGuidParameter(command, "$globalEntityId", request.GlobalEntityId);
         AddOptionalDateParameter(command, "$fromUtc", request.FromUtc);
         AddOptionalDateParameter(command, "$toUtc", request.ToUtc);
 
@@ -402,6 +444,23 @@ public sealed class MessageSearchService : IMessageSearchService
                           AND ($identifierTypeFilter IS NULL OR id.Type = $identifierTypeFilter)
                     )
               )
+              AND (
+                    $globalEntityId IS NULL
+                    OR EXISTS (
+                        SELECT 1
+                        FROM TargetMessagePresenceRecord tmp
+                        INNER JOIN TargetRecord tr
+                            ON tr.CaseId = tmp.CaseId
+                           AND tr.TargetId = tmp.TargetId
+                        INNER JOIN IdentifierRecord id
+                            ON id.CaseId = tmp.CaseId
+                           AND id.IdentifierId = tmp.MatchedIdentifierId
+                        WHERE tmp.CaseId = me.CaseId
+                          AND tmp.MessageEventId = me.MessageEventId
+                          AND tr.GlobalEntityId = $globalEntityId
+                          AND ($identifierTypeFilter IS NULL OR id.Type = $identifierTypeFilter)
+                    )
+              )
             ORDER BY me.TimestampUtc DESC
             LIMIT $maxRows;
             """;
@@ -413,6 +472,7 @@ public sealed class MessageSearchService : IMessageSearchService
         AddOptionalStringParameter(command, "$identifierTypeFilter", request.IdentifierTypeFilter);
         AddOptionalStringParameter(command, "$directionFilter", request.DirectionFilter);
         AddOptionalGuidParameter(command, "$targetId", request.TargetId);
+        AddOptionalGuidParameter(command, "$globalEntityId", request.GlobalEntityId);
         AddOptionalDateParameter(command, "$fromUtc", request.FromUtc);
         AddOptionalDateParameter(command, "$toUtc", request.ToUtc);
 
@@ -711,6 +771,7 @@ public sealed class MessageSearchService : IMessageSearchService
         string? SenderFilter,
         string? RecipientFilter,
         Guid? TargetId,
+        Guid? GlobalEntityId,
         string? IdentifierTypeFilter,
         string? DirectionFilter,
         DateTimeOffset? FromUtc,
@@ -728,6 +789,7 @@ public sealed class MessageSearchService : IMessageSearchService
             SenderFilter: null,
             RecipientFilter: null,
             TargetId: null,
+            GlobalEntityId: null,
             IdentifierTypeFilter: null,
             DirectionFilter: null,
             FromUtc: null,

@@ -8,5 +8,6 @@ public sealed record LinkMessageParticipantRequest(
     TargetIdentifierType? RequestedIdentifierType,
     Guid? TargetId,
     string? NewTargetDisplayName,
-    IdentifierConflictResolution ConflictResolution = IdentifierConflictResolution.Cancel
+    IdentifierConflictResolution ConflictResolution = IdentifierConflictResolution.Cancel,
+    GlobalPersonIdentifierConflictResolution GlobalConflictResolution = GlobalPersonIdentifierConflictResolution.Cancel
 );

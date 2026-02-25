@@ -668,6 +668,268 @@ public sealed class TargetRegistryServiceTests
     }
 
     [Fact]
+    public async Task GlobalPerson_CanLinkAcrossCases_ShowOtherCases_AndUnlink()
+    {
+        await using var fixture = await WorkspaceFixture.CreateAsync();
+        var registry = fixture.Services.GetRequiredService<ITargetRegistryService>();
+
+        var caseA = await fixture.CreateCaseAsync("Global Case A");
+        var caseB = await fixture.CreateCaseAsync("Global Case B");
+
+        var targetA = await registry.CreateTargetAsync(
+            new CreateTargetRequest(
+                caseA.CaseId,
+                "Alpha A",
+                "AA",
+                null,
+                CreateGlobalPerson: true
+            ),
+            CancellationToken.None
+        );
+
+        await registry.AddIdentifierAsync(
+            new AddTargetIdentifierRequest(
+                caseA.CaseId,
+                targetA.TargetId,
+                TargetIdentifierType.Phone,
+                "+1 (555) 123-0001",
+                null,
+                IsPrimary: true
+            ),
+            CancellationToken.None
+        );
+
+        var detailsA = await registry.GetTargetDetailsAsync(
+            caseA.CaseId,
+            targetA.TargetId,
+            CancellationToken.None
+        );
+        Assert.NotNull(detailsA);
+        Assert.NotNull(detailsA!.GlobalPerson);
+        var globalEntityId = detailsA.GlobalPerson!.GlobalEntityId;
+
+        var targetB = await registry.CreateTargetAsync(
+            new CreateTargetRequest(
+                caseB.CaseId,
+                "Alpha B",
+                null,
+                null,
+                GlobalEntityId: globalEntityId
+            ),
+            CancellationToken.None
+        );
+
+        var detailsBAfterLink = await registry.GetTargetDetailsAsync(
+            caseB.CaseId,
+            targetB.TargetId,
+            CancellationToken.None
+        );
+        Assert.NotNull(detailsBAfterLink);
+        Assert.NotNull(detailsBAfterLink!.GlobalPerson);
+        Assert.Equal(globalEntityId, detailsBAfterLink.GlobalPerson!.GlobalEntityId);
+        Assert.Contains(
+            detailsBAfterLink.GlobalPerson.Identifiers,
+            identifier => identifier.Type == TargetIdentifierType.Phone
+                && identifier.ValueNormalized == "+15551230001"
+        );
+        Assert.Contains(
+            detailsBAfterLink.GlobalPerson.OtherCases,
+            item => item.CaseId == caseA.CaseId && item.TargetId == targetA.TargetId
+        );
+
+        var globalSearchHits = await registry.SearchGlobalPersonsAsync(
+            "5551230001",
+            take: 10,
+            CancellationToken.None
+        );
+        Assert.Contains(globalSearchHits, person => person.GlobalEntityId == globalEntityId);
+
+        await registry.UnlinkTargetFromGlobalPersonAsync(
+            caseB.CaseId,
+            targetB.TargetId,
+            CancellationToken.None
+        );
+
+        var detailsBAfterUnlink = await registry.GetTargetDetailsAsync(
+            caseB.CaseId,
+            targetB.TargetId,
+            CancellationToken.None
+        );
+        Assert.NotNull(detailsBAfterUnlink);
+        Assert.Null(detailsBAfterUnlink!.GlobalPerson);
+    }
+
+    [Fact]
+    public async Task SearchAsync_GlobalPersonFilter_IsCaseScopedAcrossMultipleCases()
+    {
+        await using var fixture = await WorkspaceFixture.CreateAsync();
+        var registry = fixture.Services.GetRequiredService<ITargetRegistryService>();
+        var search = fixture.Services.GetRequiredService<IMessageSearchService>();
+
+        var caseA = await fixture.CreateCaseAsync("Global Search Case A");
+        var caseB = await fixture.CreateCaseAsync("Global Search Case B");
+
+        var targetA = await registry.CreateTargetAsync(
+            new CreateTargetRequest(caseA.CaseId, "Global Alpha", null, null, CreateGlobalPerson: true),
+            CancellationToken.None
+        );
+        var detailsA = await registry.GetTargetDetailsAsync(caseA.CaseId, targetA.TargetId, CancellationToken.None);
+        Assert.NotNull(detailsA);
+        Assert.NotNull(detailsA!.GlobalPerson);
+        var globalEntityId = detailsA.GlobalPerson!.GlobalEntityId;
+
+        var targetB = await registry.CreateTargetAsync(
+            new CreateTargetRequest(caseB.CaseId, "Global Bravo", null, null, GlobalEntityId: globalEntityId),
+            CancellationToken.None
+        );
+
+        var seededA1 = await fixture.SeedMessageEventAsync(caseA.CaseId, "+1 (555) 123-0001", "+15550000001");
+        var seededA2 = await fixture.SeedMessageEventAsync(caseA.CaseId, "5551230001", "+15550000002");
+        var seededB1 = await fixture.SeedMessageEventAsync(caseB.CaseId, "+15551230001", "+15550000003");
+
+        await registry.LinkMessageParticipantAsync(
+            new LinkMessageParticipantRequest(
+                caseA.CaseId,
+                seededA1.MessageEventId,
+                MessageParticipantRole.Sender,
+                "+1 (555) 123-0001",
+                TargetIdentifierType.Phone,
+                targetA.TargetId,
+                null
+            ),
+            CancellationToken.None
+        );
+
+        await registry.LinkMessageParticipantAsync(
+            new LinkMessageParticipantRequest(
+                caseB.CaseId,
+                seededB1.MessageEventId,
+                MessageParticipantRole.Sender,
+                "+1 (555) 123-0001",
+                TargetIdentifierType.Phone,
+                targetB.TargetId,
+                null
+            ),
+            CancellationToken.None
+        );
+
+        var caseAHits = await search.SearchAsync(
+            new MessageSearchRequest(
+                caseA.CaseId,
+                Query: "synthetic",
+                PlatformFilter: null,
+                SenderFilter: null,
+                RecipientFilter: null,
+                TargetId: null,
+                IdentifierTypeFilter: TargetIdentifierType.Phone,
+                DirectionFilter: MessageDirectionFilter.Any,
+                FromUtc: null,
+                ToUtc: null,
+                Take: 20,
+                Skip: 0,
+                GlobalEntityId: globalEntityId
+            ),
+            CancellationToken.None
+        );
+
+        Assert.Equal(2, caseAHits.Count);
+        Assert.Contains(caseAHits, hit => hit.MessageEventId == seededA1.MessageEventId);
+        Assert.Contains(caseAHits, hit => hit.MessageEventId == seededA2.MessageEventId);
+        Assert.DoesNotContain(caseAHits, hit => hit.MessageEventId == seededB1.MessageEventId);
+
+        var caseBHits = await search.SearchAsync(
+            new MessageSearchRequest(
+                caseB.CaseId,
+                Query: "synthetic",
+                PlatformFilter: null,
+                SenderFilter: null,
+                RecipientFilter: null,
+                TargetId: null,
+                IdentifierTypeFilter: TargetIdentifierType.Phone,
+                DirectionFilter: MessageDirectionFilter.Any,
+                FromUtc: null,
+                ToUtc: null,
+                Take: 20,
+                Skip: 0,
+                GlobalEntityId: globalEntityId
+            ),
+            CancellationToken.None
+        );
+
+        var single = Assert.Single(caseBHits);
+        Assert.Equal(seededB1.MessageEventId, single.MessageEventId);
+    }
+
+    [Fact]
+    public async Task CreateAndLinkGlobalPersonAsync_IdentifierConflict_RequiresExplicitResolution()
+    {
+        await using var fixture = await WorkspaceFixture.CreateAsync();
+        var registry = fixture.Services.GetRequiredService<ITargetRegistryService>();
+
+        var caseA = await fixture.CreateCaseAsync("Global Conflict Case A");
+        var caseB = await fixture.CreateCaseAsync("Global Conflict Case B");
+
+        var targetA = await registry.CreateTargetAsync(
+            new CreateTargetRequest(caseA.CaseId, "Conflict A", null, null, CreateGlobalPerson: true),
+            CancellationToken.None
+        );
+        await registry.AddIdentifierAsync(
+            new AddTargetIdentifierRequest(
+                caseA.CaseId,
+                targetA.TargetId,
+                TargetIdentifierType.Phone,
+                "+1 (555) 123-0001",
+                null,
+                IsPrimary: true
+            ),
+            CancellationToken.None
+        );
+
+        var targetB = await registry.CreateTargetAsync(
+            new CreateTargetRequest(caseB.CaseId, "Conflict B", null, null),
+            CancellationToken.None
+        );
+        await registry.AddIdentifierAsync(
+            new AddTargetIdentifierRequest(
+                caseB.CaseId,
+                targetB.TargetId,
+                TargetIdentifierType.Phone,
+                "5551230001",
+                null,
+                IsPrimary: true
+            ),
+            CancellationToken.None
+        );
+
+        await Assert.ThrowsAsync<GlobalPersonIdentifierConflictException>(() =>
+            registry.CreateAndLinkGlobalPersonAsync(
+                new CreateGlobalPersonForTargetRequest(
+                    caseB.CaseId,
+                    targetB.TargetId,
+                    "Conflict B Person"
+                ),
+                CancellationToken.None
+            )
+        );
+
+        var detailsA = await registry.GetTargetDetailsAsync(caseA.CaseId, targetA.TargetId, CancellationToken.None);
+        Assert.NotNull(detailsA);
+        Assert.NotNull(detailsA!.GlobalPerson);
+
+        var linked = await registry.CreateAndLinkGlobalPersonAsync(
+            new CreateGlobalPersonForTargetRequest(
+                caseB.CaseId,
+                targetB.TargetId,
+                "Conflict B Person",
+                GlobalPersonIdentifierConflictResolution.UseExistingPerson
+            ),
+            CancellationToken.None
+        );
+
+        Assert.Equal(detailsA.GlobalPerson!.GlobalEntityId, linked.GlobalEntityId);
+    }
+
+    [Fact]
     public async Task GetTargetsAsync_UsesSqliteProvider_OrdersInMemoryWithoutDateTimeOffsetOrderByFailure()
     {
         await using var fixture = await WorkspaceFixture.CreateAsync();

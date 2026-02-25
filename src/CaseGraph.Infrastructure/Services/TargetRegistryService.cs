@@ -59,20 +59,29 @@ public sealed class TargetRegistryService : ITargetRegistryService
             query = query.Where(t =>
                 t.DisplayName.ToLower().Contains(lowered)
                 || (t.PrimaryAlias != null && t.PrimaryAlias.ToLower().Contains(lowered))
+                || (t.GlobalPerson != null && t.GlobalPerson.DisplayName.ToLower().Contains(lowered))
             );
         }
 
-        var targets = await query.ToListAsync(ct);
+        var targets = await query
+            .Select(target => new
+            {
+                Target = target,
+                GlobalDisplayName = target.GlobalPerson == null
+                    ? null
+                    : target.GlobalPerson.DisplayName
+            })
+            .ToListAsync(ct);
 
         return targets
-            .OrderByDescending(target =>
-                target.UpdatedAtUtc == default
-                    ? target.CreatedAtUtc
-                    : target.UpdatedAtUtc
+            .OrderByDescending(item =>
+                item.Target.UpdatedAtUtc == default
+                    ? item.Target.CreatedAtUtc
+                    : item.Target.UpdatedAtUtc
             )
-            .ThenBy(target => target.DisplayName, StringComparer.OrdinalIgnoreCase)
-            .ThenBy(target => target.TargetId)
-            .Select(MapSummary)
+            .ThenBy(item => item.Target.DisplayName, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(item => item.Target.TargetId)
+            .Select(item => MapSummary(item.Target, item.GlobalDisplayName))
             .ToList();
     }
 
@@ -111,15 +120,70 @@ public sealed class TargetRegistryService : ITargetRegistryService
             .Distinct()
             .CountAsync(ct);
 
+        var globalPersonInfo = await BuildTargetGlobalPersonInfoAsync(
+            db,
+            caseId,
+            target.GlobalEntityId,
+            ct
+        );
+
+        var globalDisplayName = globalPersonInfo?.DisplayName;
+
         return new TargetDetails(
-            MapSummary(target),
+            MapSummary(target, globalDisplayName),
             aliases.Select(MapAlias).ToList(),
             identifiers
                 .Where(link => link.Identifier is not null)
                 .Select(link => MapIdentifier(link.Identifier!, link.IsPrimary))
                 .ToList(),
-            whereSeenCount
+            whereSeenCount,
+            globalPersonInfo
         );
+    }
+
+    public async Task<IReadOnlyList<GlobalPersonSummary>> SearchGlobalPersonsAsync(
+        string? search,
+        int take,
+        CancellationToken ct
+    )
+    {
+        await _databaseInitializer.EnsureInitializedAsync(ct);
+        await using var db = await _dbContextFactory.CreateDbContextAsync(ct);
+
+        var query = db.PersonEntities.AsNoTracking();
+        var normalized = search?.Trim();
+        if (!string.IsNullOrWhiteSpace(normalized))
+        {
+            var lowered = normalized.ToLowerInvariant();
+            query = query.Where(person =>
+                person.DisplayName.ToLower().Contains(lowered)
+                || db.PersonAliases.Any(alias =>
+                    alias.GlobalEntityId == person.GlobalEntityId
+                    && alias.AliasNormalized.Contains(lowered)
+                )
+                || db.PersonIdentifiers.Any(identifier =>
+                    identifier.GlobalEntityId == person.GlobalEntityId
+                    && (
+                        identifier.ValueNormalized.ToLower().Contains(lowered)
+                        || identifier.ValueDisplay.ToLower().Contains(lowered)
+                    )
+                )
+            );
+        }
+
+        var clampedTake = Math.Clamp(take, 1, 200);
+        var rows = await query.ToListAsync(ct);
+
+        return rows
+            .OrderByDescending(person =>
+                person.UpdatedAtUtc == default
+                    ? person.CreatedAtUtc
+                    : person.UpdatedAtUtc
+            )
+            .ThenBy(person => person.DisplayName, StringComparer.OrdinalIgnoreCase)
+            .Take(clampedTake)
+            .Select(MapGlobalSummary)
+            .ToList();
     }
 
     public async Task<TargetSummary> CreateTargetAsync(CreateTargetRequest request, CancellationToken ct)
@@ -139,11 +203,43 @@ public sealed class TargetRegistryService : ITargetRegistryService
 
         var now = _clock.UtcNow.ToUniversalTime();
         await using var db = await _dbContextFactory.CreateDbContextAsync(ct);
+        if (request.CreateGlobalPerson && request.GlobalEntityId.HasValue)
+        {
+            throw new ArgumentException(
+                "Specify either CreateGlobalPerson or GlobalEntityId, not both.",
+                nameof(request)
+            );
+        }
+
+        PersonEntityRecord? globalPerson = null;
+        if (request.CreateGlobalPerson)
+        {
+            globalPerson = new PersonEntityRecord
+            {
+                GlobalEntityId = Guid.NewGuid(),
+                DisplayName = displayName,
+                CreatedAtUtc = now,
+                UpdatedAtUtc = now
+            };
+            db.PersonEntities.Add(globalPerson);
+        }
+        else if (request.GlobalEntityId.HasValue)
+        {
+            globalPerson = await db.PersonEntities.FirstOrDefaultAsync(
+                person => person.GlobalEntityId == request.GlobalEntityId.Value,
+                ct
+            );
+            if (globalPerson is null)
+            {
+                throw new InvalidOperationException("Global person not found.");
+            }
+        }
 
         var target = new TargetRecord
         {
             TargetId = Guid.NewGuid(),
             CaseId = request.CaseId,
+            GlobalEntityId = globalPerson?.GlobalEntityId,
             DisplayName = displayName,
             PrimaryAlias = NormalizeOptional(request.PrimaryAlias),
             Notes = NormalizeOptional(request.Notes),
@@ -172,6 +268,18 @@ public sealed class TargetRegistryService : ITargetRegistryService
                 IngestModuleVersion = ManualModuleVersion
             };
             db.TargetAliases.Add(aliasRecord);
+
+            if (globalPerson is not null && request.CreateGlobalPerson)
+            {
+                db.PersonAliases.Add(new PersonAliasRecord
+                {
+                    AliasId = Guid.NewGuid(),
+                    GlobalEntityId = globalPerson.GlobalEntityId,
+                    Alias = target.PrimaryAlias,
+                    AliasNormalized = NormalizeAlias(target.PrimaryAlias),
+                    Notes = null
+                });
+            }
         }
 
         await SaveChangesWithWritePolicyAsync(
@@ -212,7 +320,24 @@ public sealed class TargetRegistryService : ITargetRegistryService
             );
         }
 
-        return MapSummary(target);
+        if (globalPerson is not null)
+        {
+            await WriteAuditAsync(
+                actionType: "TargetLinkedToGlobalPerson",
+                caseId: request.CaseId,
+                evidenceItemId: null,
+                summary: $"Target linked to global person: {globalPerson.DisplayName}",
+                payload: new
+                {
+                    target.TargetId,
+                    globalPerson.GlobalEntityId,
+                    globalPerson.DisplayName
+                },
+                ct
+            );
+        }
+
+        return MapSummary(target, globalPerson?.DisplayName);
     }
 
     public async Task<TargetSummary> UpdateTargetAsync(UpdateTargetRequest request, CancellationToken ct)
@@ -259,7 +384,267 @@ public sealed class TargetRegistryService : ITargetRegistryService
             ct
         );
 
-        return MapSummary(target);
+        string? globalDisplayName = null;
+        if (target.GlobalEntityId.HasValue)
+        {
+            globalDisplayName = await db.PersonEntities
+                .AsNoTracking()
+                .Where(person => person.GlobalEntityId == target.GlobalEntityId.Value)
+                .Select(person => person.DisplayName)
+                .FirstOrDefaultAsync(ct);
+        }
+
+        return MapSummary(target, globalDisplayName);
+    }
+
+    public async Task<TargetGlobalPersonInfo> CreateAndLinkGlobalPersonAsync(
+        CreateGlobalPersonForTargetRequest request,
+        CancellationToken ct
+    )
+    {
+        if (request.CaseId == Guid.Empty || request.TargetId == Guid.Empty)
+        {
+            throw new ArgumentException("CaseId and TargetId are required.", nameof(request));
+        }
+
+        await _databaseInitializer.EnsureInitializedAsync(ct);
+        await using var db = await _dbContextFactory.CreateDbContextAsync(ct);
+
+        var target = await db.Targets.FirstOrDefaultAsync(
+            record => record.CaseId == request.CaseId && record.TargetId == request.TargetId,
+            ct
+        );
+        if (target is null)
+        {
+            throw new InvalidOperationException("Target not found.");
+        }
+
+        var now = _clock.UtcNow.ToUniversalTime();
+        var globalPerson = new PersonEntityRecord
+        {
+            GlobalEntityId = Guid.NewGuid(),
+            DisplayName = NormalizeDisplayName(request.DisplayName).Length == 0
+                ? target.DisplayName
+                : NormalizeDisplayName(request.DisplayName),
+            CreatedAtUtc = now,
+            UpdatedAtUtc = now
+        };
+        db.PersonEntities.Add(globalPerson);
+
+        if (!string.IsNullOrWhiteSpace(target.PrimaryAlias))
+        {
+            db.PersonAliases.Add(new PersonAliasRecord
+            {
+                AliasId = Guid.NewGuid(),
+                GlobalEntityId = globalPerson.GlobalEntityId,
+                Alias = target.PrimaryAlias,
+                AliasNormalized = NormalizeAlias(target.PrimaryAlias),
+                Notes = null
+            });
+        }
+
+        target.GlobalEntityId = globalPerson.GlobalEntityId;
+        target.UpdatedAtUtc = now;
+
+        await SyncAllTargetIdentifiersToGlobalAsync(
+            db,
+            request.CaseId,
+            target.TargetId,
+            globalPerson.GlobalEntityId,
+            request.ConflictResolution,
+            request.SourceLocator,
+            ct
+        );
+
+        var createdPersonIsStillLinked = target.GlobalEntityId == globalPerson.GlobalEntityId;
+        if (!createdPersonIsStillLinked)
+        {
+            var orphanAliases = await db.PersonAliases
+                .Where(alias => alias.GlobalEntityId == globalPerson.GlobalEntityId)
+                .ToListAsync(ct);
+            db.PersonAliases.RemoveRange(orphanAliases);
+            db.PersonEntities.Remove(globalPerson);
+        }
+
+        await SaveChangesWithWritePolicyAsync(
+            db,
+            operationName: "TargetRegistry.CreateAndLinkGlobalPerson",
+            caseId: request.CaseId,
+            ct
+        );
+
+        var effectiveGlobalEntityId = target.GlobalEntityId ?? globalPerson.GlobalEntityId;
+        var effectiveGlobalDisplayName = await db.PersonEntities
+            .AsNoTracking()
+            .Where(person => person.GlobalEntityId == effectiveGlobalEntityId)
+            .Select(person => person.DisplayName)
+            .FirstOrDefaultAsync(ct)
+            ?? $"Global Person {effectiveGlobalEntityId:D}";
+
+        if (createdPersonIsStillLinked)
+        {
+            await WriteAuditAsync(
+                actionType: "GlobalPersonCreated",
+                caseId: request.CaseId,
+                evidenceItemId: null,
+                summary: $"Global person created: {globalPerson.DisplayName}",
+                payload: new
+                {
+                    globalPerson.GlobalEntityId,
+                    globalPerson.DisplayName,
+                    target.TargetId
+                },
+                ct
+            );
+        }
+
+        await WriteAuditAsync(
+            actionType: "TargetLinkedToGlobalPerson",
+            caseId: request.CaseId,
+            evidenceItemId: null,
+            summary: $"Target linked to global person: {effectiveGlobalDisplayName}",
+            payload: new
+            {
+                target.TargetId,
+                GlobalEntityId = effectiveGlobalEntityId,
+                DisplayName = effectiveGlobalDisplayName
+            },
+            ct
+        );
+
+        var info = await BuildTargetGlobalPersonInfoAsync(
+            db,
+            request.CaseId,
+            effectiveGlobalEntityId,
+            ct
+        );
+        return info ?? throw new InvalidOperationException("Global person info not found after linking.");
+    }
+
+    public async Task<TargetGlobalPersonInfo> LinkTargetToGlobalPersonAsync(
+        LinkTargetToGlobalPersonRequest request,
+        CancellationToken ct
+    )
+    {
+        if (request.CaseId == Guid.Empty || request.TargetId == Guid.Empty || request.GlobalEntityId == Guid.Empty)
+        {
+            throw new ArgumentException("CaseId, TargetId, and GlobalEntityId are required.", nameof(request));
+        }
+
+        await _databaseInitializer.EnsureInitializedAsync(ct);
+        await using var db = await _dbContextFactory.CreateDbContextAsync(ct);
+
+        var target = await db.Targets.FirstOrDefaultAsync(
+            record => record.CaseId == request.CaseId && record.TargetId == request.TargetId,
+            ct
+        );
+        if (target is null)
+        {
+            throw new InvalidOperationException("Target not found.");
+        }
+
+        var globalPerson = await db.PersonEntities.FirstOrDefaultAsync(
+            person => person.GlobalEntityId == request.GlobalEntityId,
+            ct
+        );
+        if (globalPerson is null)
+        {
+            throw new InvalidOperationException("Global person not found.");
+        }
+
+        target.GlobalEntityId = globalPerson.GlobalEntityId;
+        target.UpdatedAtUtc = _clock.UtcNow.ToUniversalTime();
+
+        await SyncAllTargetIdentifiersToGlobalAsync(
+            db,
+            request.CaseId,
+            request.TargetId,
+            globalPerson.GlobalEntityId,
+            request.ConflictResolution,
+            request.SourceLocator,
+            ct
+        );
+
+        var effectiveGlobalEntityId = target.GlobalEntityId ?? request.GlobalEntityId;
+        var effectiveGlobalDisplayName = await db.PersonEntities
+            .AsNoTracking()
+            .Where(person => person.GlobalEntityId == effectiveGlobalEntityId)
+            .Select(person => person.DisplayName)
+            .FirstOrDefaultAsync(ct)
+            ?? $"Global Person {effectiveGlobalEntityId:D}";
+
+        await SaveChangesWithWritePolicyAsync(
+            db,
+            operationName: "TargetRegistry.LinkTargetToGlobalPerson",
+            caseId: request.CaseId,
+            ct
+        );
+
+        await WriteAuditAsync(
+            actionType: "TargetLinkedToGlobalPerson",
+            caseId: request.CaseId,
+            evidenceItemId: null,
+            summary: $"Target linked to global person: {effectiveGlobalDisplayName}",
+            payload: new
+            {
+                request.TargetId,
+                GlobalEntityId = effectiveGlobalEntityId,
+                DisplayName = effectiveGlobalDisplayName
+            },
+            ct
+        );
+
+        var info = await BuildTargetGlobalPersonInfoAsync(
+            db,
+            request.CaseId,
+            effectiveGlobalEntityId,
+            ct
+        );
+        return info ?? throw new InvalidOperationException("Global person info not found after linking.");
+    }
+
+    public async Task UnlinkTargetFromGlobalPersonAsync(Guid caseId, Guid targetId, CancellationToken ct)
+    {
+        if (caseId == Guid.Empty || targetId == Guid.Empty)
+        {
+            throw new ArgumentException("CaseId and TargetId are required.");
+        }
+
+        await _databaseInitializer.EnsureInitializedAsync(ct);
+        await using var db = await _dbContextFactory.CreateDbContextAsync(ct);
+
+        var target = await db.Targets.FirstOrDefaultAsync(
+            record => record.CaseId == caseId && record.TargetId == targetId,
+            ct
+        );
+        if (target is null || !target.GlobalEntityId.HasValue)
+        {
+            return;
+        }
+
+        var globalEntityId = target.GlobalEntityId.Value;
+        target.GlobalEntityId = null;
+        target.UpdatedAtUtc = _clock.UtcNow.ToUniversalTime();
+
+        await SaveChangesWithWritePolicyAsync(
+            db,
+            operationName: "TargetRegistry.UnlinkTargetFromGlobalPerson",
+            caseId: caseId,
+            ct
+        );
+
+        await WriteAuditAsync(
+            actionType: "TargetUnlinkedFromGlobalPerson",
+            caseId: caseId,
+            evidenceItemId: null,
+            summary: "Target unlinked from global person.",
+            payload: new
+            {
+                targetId,
+                globalEntityId
+            },
+            ct
+        );
     }
 
     public async Task<TargetAliasInfo> AddAliasAsync(AddTargetAliasRequest request, CancellationToken ct)
@@ -391,6 +776,7 @@ public sealed class TargetRegistryService : ITargetRegistryService
             sourceLocator: NormalizeSourceLocator(request.SourceLocator, "manual:targets/identifier-add"),
             ingestModuleVersion: ManualModuleVersion,
             conflictResolution: request.ConflictResolution,
+            globalConflictResolution: request.GlobalConflictResolution,
             isUpdateOperation: false,
             ct: ct
         );
@@ -414,6 +800,7 @@ public sealed class TargetRegistryService : ITargetRegistryService
             sourceLocator: NormalizeSourceLocator(request.SourceLocator, "manual:targets/identifier-update"),
             ingestModuleVersion: ManualModuleVersion,
             conflictResolution: request.ConflictResolution,
+            globalConflictResolution: request.GlobalConflictResolution,
             isUpdateOperation: true,
             ct: ct
         );
@@ -596,6 +983,7 @@ public sealed class TargetRegistryService : ITargetRegistryService
             sourceLocator: linkSourceLocator,
             ingestModuleVersion: ParticipantLinkModuleVersion,
             conflictResolution: request.ConflictResolution,
+            globalConflictResolution: request.GlobalConflictResolution,
             isUpdateOperation: false,
             ct
         );
@@ -738,6 +1126,7 @@ public sealed class TargetRegistryService : ITargetRegistryService
         string sourceLocator,
         string ingestModuleVersion,
         IdentifierConflictResolution conflictResolution,
+        GlobalPersonIdentifierConflictResolution globalConflictResolution,
         bool isUpdateOperation,
         CancellationToken ct
     )
@@ -758,6 +1147,7 @@ public sealed class TargetRegistryService : ITargetRegistryService
             sourceLocator,
             ingestModuleVersion,
             conflictResolution,
+            globalConflictResolution,
             isUpdateOperation,
             ct
         );
@@ -804,6 +1194,7 @@ public sealed class TargetRegistryService : ITargetRegistryService
         string sourceLocator,
         string ingestModuleVersion,
         IdentifierConflictResolution conflictResolution,
+        GlobalPersonIdentifierConflictResolution globalConflictResolution,
         bool isUpdateOperation,
         CancellationToken ct
     )
@@ -1046,6 +1437,17 @@ public sealed class TargetRegistryService : ITargetRegistryService
                 },
                 ct
             );
+
+            await SyncIdentifierToTargetGlobalPersonAsync(
+                db,
+                caseId,
+                targetId,
+                identifier,
+                isPrimary,
+                globalConflictResolution,
+                sourceLocator,
+                ct
+            );
         }
 
         return new TargetIdentifierMutationResult(
@@ -1098,6 +1500,299 @@ public sealed class TargetRegistryService : ITargetRegistryService
         );
 
         return target;
+    }
+
+    private async Task<TargetGlobalPersonInfo?> BuildTargetGlobalPersonInfoAsync(
+        WorkspaceDbContext db,
+        Guid caseId,
+        Guid? globalEntityId,
+        CancellationToken ct
+    )
+    {
+        if (!globalEntityId.HasValue || globalEntityId.Value == Guid.Empty)
+        {
+            return null;
+        }
+
+        var person = await db.PersonEntities
+            .AsNoTracking()
+            .FirstOrDefaultAsync(record => record.GlobalEntityId == globalEntityId.Value, ct);
+        if (person is null)
+        {
+            return null;
+        }
+
+        var aliases = await db.PersonAliases
+            .AsNoTracking()
+            .Where(record => record.GlobalEntityId == person.GlobalEntityId)
+            .OrderBy(record => record.Alias)
+            .ToListAsync(ct);
+
+        var identifiers = await db.PersonIdentifiers
+            .AsNoTracking()
+            .Where(record => record.GlobalEntityId == person.GlobalEntityId)
+            .OrderBy(record => record.IsPrimary ? 0 : 1)
+            .ThenBy(record => record.Type)
+            .ThenBy(record => record.ValueDisplay)
+            .ToListAsync(ct);
+
+        var otherCases = await (
+            from target in db.Targets.AsNoTracking()
+            join caseRecord in db.Cases.AsNoTracking() on target.CaseId equals caseRecord.CaseId
+            where target.GlobalEntityId == person.GlobalEntityId
+                  && target.CaseId != caseId
+            orderby caseRecord.Name, target.DisplayName, target.TargetId
+            select new GlobalPersonCaseReference(
+                target.CaseId,
+                caseRecord.Name,
+                target.TargetId,
+                target.DisplayName
+            )
+        )
+            .ToListAsync(ct);
+
+        return new TargetGlobalPersonInfo(
+            person.GlobalEntityId,
+            person.DisplayName,
+            aliases.Select(MapGlobalAlias).ToList(),
+            identifiers.Select(MapGlobalIdentifier).ToList(),
+            otherCases
+        );
+    }
+
+    private async Task SyncAllTargetIdentifiersToGlobalAsync(
+        WorkspaceDbContext db,
+        Guid caseId,
+        Guid targetId,
+        Guid globalEntityId,
+        GlobalPersonIdentifierConflictResolution conflictResolution,
+        string sourceLocator,
+        CancellationToken ct
+    )
+    {
+        var links = await db.TargetIdentifierLinks
+            .Include(link => link.Identifier)
+            .Where(link => link.CaseId == caseId && link.TargetId == targetId)
+            .ToListAsync(ct);
+
+        foreach (var link in links)
+        {
+            if (link.Identifier is null)
+            {
+                continue;
+            }
+
+            await UpsertGlobalIdentifierAsync(
+                db,
+                caseId,
+                targetId,
+                globalEntityId,
+                link.Identifier,
+                link.IsPrimary,
+                conflictResolution,
+                sourceLocator,
+                ct
+            );
+        }
+    }
+
+    private async Task SyncIdentifierToTargetGlobalPersonAsync(
+        WorkspaceDbContext db,
+        Guid caseId,
+        Guid targetId,
+        IdentifierRecord identifier,
+        bool isPrimary,
+        GlobalPersonIdentifierConflictResolution conflictResolution,
+        string sourceLocator,
+        CancellationToken ct
+    )
+    {
+        var target = db.Targets.Local.FirstOrDefault(
+            item => item.CaseId == caseId && item.TargetId == targetId
+        ) ?? await db.Targets.FirstOrDefaultAsync(
+            item => item.CaseId == caseId && item.TargetId == targetId,
+            ct
+        );
+        if (target is null || !target.GlobalEntityId.HasValue)
+        {
+            return;
+        }
+
+        await UpsertGlobalIdentifierAsync(
+            db,
+            caseId,
+            targetId,
+            target.GlobalEntityId.Value,
+            identifier,
+            isPrimary,
+            conflictResolution,
+            sourceLocator,
+            ct
+        );
+    }
+
+    private async Task UpsertGlobalIdentifierAsync(
+        WorkspaceDbContext db,
+        Guid caseId,
+        Guid targetId,
+        Guid requestedGlobalEntityId,
+        IdentifierRecord identifier,
+        bool isPrimary,
+        GlobalPersonIdentifierConflictResolution conflictResolution,
+        string sourceLocator,
+        CancellationToken ct
+    )
+    {
+        var target = db.Targets.Local.FirstOrDefault(
+            item => item.CaseId == caseId && item.TargetId == targetId
+        ) ?? await db.Targets.FirstOrDefaultAsync(
+            item => item.CaseId == caseId && item.TargetId == targetId,
+            ct
+        );
+        if (target is null)
+        {
+            throw new InvalidOperationException("Target not found.");
+        }
+
+        var now = _clock.UtcNow.ToUniversalTime();
+        var personIdentifier = await db.PersonIdentifiers.FirstOrDefaultAsync(
+            item => item.Type == identifier.Type
+                && item.ValueNormalized == identifier.ValueNormalized,
+            ct
+        );
+
+        Guid effectiveGlobalEntityId = requestedGlobalEntityId;
+        Guid? movedFromGlobalEntityId = null;
+        var createdIdentifier = false;
+
+        if (personIdentifier is null)
+        {
+            personIdentifier = new PersonIdentifierRecord
+            {
+                PersonIdentifierId = Guid.NewGuid(),
+                GlobalEntityId = requestedGlobalEntityId,
+                Type = identifier.Type,
+                ValueNormalized = identifier.ValueNormalized,
+                ValueDisplay = identifier.ValueRaw,
+                IsPrimary = isPrimary,
+                Notes = identifier.Notes,
+                CreatedAtUtc = now
+            };
+            db.PersonIdentifiers.Add(personIdentifier);
+            createdIdentifier = true;
+        }
+        else if (personIdentifier.GlobalEntityId == requestedGlobalEntityId)
+        {
+            personIdentifier.ValueDisplay = identifier.ValueRaw;
+            personIdentifier.Notes = identifier.Notes;
+            personIdentifier.IsPrimary = isPrimary || personIdentifier.IsPrimary;
+        }
+        else
+        {
+            switch (conflictResolution)
+            {
+                case GlobalPersonIdentifierConflictResolution.Cancel:
+                    throw await BuildGlobalPersonIdentifierConflictAsync(db, personIdentifier, ct);
+                case GlobalPersonIdentifierConflictResolution.UseExistingPerson:
+                    effectiveGlobalEntityId = personIdentifier.GlobalEntityId;
+                    target.GlobalEntityId = effectiveGlobalEntityId;
+                    target.UpdatedAtUtc = now;
+                    await WriteAuditAsync(
+                        actionType: "TargetLinkedToGlobalPerson",
+                        caseId: caseId,
+                        evidenceItemId: null,
+                        summary: "Target linked to existing global person due identifier conflict.",
+                        payload: new
+                        {
+                            targetId,
+                            target.GlobalEntityId,
+                            identifier.IdentifierId,
+                            identifier.ValueRaw,
+                            sourceLocator
+                        },
+                        ct
+                    );
+                    break;
+                case GlobalPersonIdentifierConflictResolution.MoveIdentifierToRequestedPerson:
+                    movedFromGlobalEntityId = personIdentifier.GlobalEntityId;
+                    personIdentifier.GlobalEntityId = requestedGlobalEntityId;
+                    personIdentifier.ValueDisplay = identifier.ValueRaw;
+                    personIdentifier.Notes = identifier.Notes;
+                    personIdentifier.IsPrimary = isPrimary;
+                    await WriteAuditAsync(
+                        actionType: "GlobalIdentifierMoved",
+                        caseId: caseId,
+                        evidenceItemId: null,
+                        summary: "Global identifier moved to requested global person.",
+                        payload: new
+                        {
+                            personIdentifier.PersonIdentifierId,
+                            identifier.ValueRaw,
+                            movedFromGlobalEntityId,
+                            requestedGlobalEntityId,
+                            sourceLocator
+                        },
+                        ct
+                    );
+                    break;
+                default:
+                    throw new InvalidOperationException(
+                        $"Unsupported global conflict resolution '{conflictResolution}'."
+                    );
+            }
+        }
+
+        if (isPrimary)
+        {
+            var personIdentifiers = await db.PersonIdentifiers
+                .Where(item => item.GlobalEntityId == effectiveGlobalEntityId)
+                .ToListAsync(ct);
+            foreach (var item in personIdentifiers)
+            {
+                item.IsPrimary = item.PersonIdentifierId == personIdentifier.PersonIdentifierId;
+            }
+        }
+
+        var person = await db.PersonEntities.FirstOrDefaultAsync(
+            item => item.GlobalEntityId == effectiveGlobalEntityId,
+            ct
+        );
+        if (person is not null)
+        {
+            person.UpdatedAtUtc = now;
+        }
+
+        if (movedFromGlobalEntityId.HasValue
+            && movedFromGlobalEntityId.Value != effectiveGlobalEntityId)
+        {
+            var movedFrom = await db.PersonEntities.FirstOrDefaultAsync(
+                item => item.GlobalEntityId == movedFromGlobalEntityId.Value,
+                ct
+            );
+            if (movedFrom is not null)
+            {
+                movedFrom.UpdatedAtUtc = now;
+            }
+        }
+
+        if (createdIdentifier)
+        {
+            await WriteAuditAsync(
+                actionType: "GlobalIdentifierCreated",
+                caseId: caseId,
+                evidenceItemId: null,
+                summary: "Global identifier created.",
+                payload: new
+                {
+                    personIdentifier.PersonIdentifierId,
+                    personIdentifier.GlobalEntityId,
+                    personIdentifier.Type,
+                    personIdentifier.ValueDisplay,
+                    sourceLocator
+                },
+                ct
+            );
+        }
     }
 
     private async Task DeleteIdentifierIfOrphanedAsync(
@@ -1172,6 +1867,34 @@ public sealed class TargetRegistryService : ITargetRegistryService
             existingTargetName
         );
         return new IdentifierConflictException(conflict);
+    }
+
+    private async Task<GlobalPersonIdentifierConflictException> BuildGlobalPersonIdentifierConflictAsync(
+        WorkspaceDbContext db,
+        PersonIdentifierRecord identifier,
+        CancellationToken ct
+    )
+    {
+        var existingDisplayName = await db.PersonEntities
+            .AsNoTracking()
+            .Where(person => person.GlobalEntityId == identifier.GlobalEntityId)
+            .Select(person => person.DisplayName)
+            .FirstOrDefaultAsync(ct);
+
+        if (string.IsNullOrWhiteSpace(existingDisplayName))
+        {
+            existingDisplayName = $"Global Person {identifier.GlobalEntityId:D}";
+        }
+
+        var conflict = new GlobalPersonIdentifierConflictInfo(
+            identifier.PersonIdentifierId,
+            ParseIdentifierType(identifier.Type),
+            identifier.ValueDisplay,
+            identifier.ValueNormalized,
+            identifier.GlobalEntityId,
+            existingDisplayName
+        );
+        return new GlobalPersonIdentifierConflictException(conflict);
     }
 
     private Task SaveChangesWithWritePolicyAsync(
@@ -1253,7 +1976,7 @@ public sealed class TargetRegistryService : ITargetRegistryService
             : TargetIdentifierType.Other;
     }
 
-    private static TargetSummary MapSummary(TargetRecord record)
+    private static TargetSummary MapSummary(TargetRecord record, string? globalDisplayName = null)
     {
         return new TargetSummary(
             record.TargetId,
@@ -1261,6 +1984,18 @@ public sealed class TargetRegistryService : ITargetRegistryService
             record.DisplayName,
             record.PrimaryAlias,
             record.Notes,
+            record.CreatedAtUtc,
+            record.UpdatedAtUtc,
+            record.GlobalEntityId,
+            globalDisplayName
+        );
+    }
+
+    private static GlobalPersonSummary MapGlobalSummary(PersonEntityRecord record)
+    {
+        return new GlobalPersonSummary(
+            record.GlobalEntityId,
+            record.DisplayName,
             record.CreatedAtUtc,
             record.UpdatedAtUtc
         );
@@ -1288,6 +2023,31 @@ public sealed class TargetRegistryService : ITargetRegistryService
             record.Notes,
             record.CreatedAtUtc,
             isPrimary
+        );
+    }
+
+    private static GlobalPersonAliasInfo MapGlobalAlias(PersonAliasRecord record)
+    {
+        return new GlobalPersonAliasInfo(
+            record.AliasId,
+            record.GlobalEntityId,
+            record.Alias,
+            record.AliasNormalized,
+            record.Notes
+        );
+    }
+
+    private static GlobalPersonIdentifierInfo MapGlobalIdentifier(PersonIdentifierRecord record)
+    {
+        return new GlobalPersonIdentifierInfo(
+            record.PersonIdentifierId,
+            record.GlobalEntityId,
+            ParseIdentifierType(record.Type),
+            record.ValueDisplay,
+            record.ValueNormalized,
+            record.IsPrimary,
+            record.Notes,
+            record.CreatedAtUtc
         );
     }
 

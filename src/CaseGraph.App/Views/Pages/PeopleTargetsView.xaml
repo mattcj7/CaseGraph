@@ -74,6 +74,18 @@
                                      AcceptsReturn="True"
                                      Style="{StaticResource TopBarTextBoxStyle}" />
 
+                            <TextBlock Margin="{StaticResource SpaceTop8}"
+                                       Style="{StaticResource SecondaryBodyTextStyle}"
+                                       Text="Global Person (Optional)" />
+                            <CheckBox Margin="{StaticResource SpaceTop8}"
+                                      Content="Create and link a new global person"
+                                      IsChecked="{Binding CreateTargetWithNewGlobalPerson, Mode=TwoWay}" />
+                            <ComboBox Margin="{StaticResource SpaceTop8}"
+                                      ItemsSource="{Binding GlobalPersonSearchResults}"
+                                      SelectedItem="{Binding CreateTargetSelectedGlobalPerson, Mode=TwoWay}"
+                                      DisplayMemberPath="DisplayName"
+                                      Style="{StaticResource TopBarComboBoxStyle}" />
+
                             <Button Margin="{StaticResource SpaceTop12}"
                                     Content="Create Target"
                                     Command="{Binding CreateTargetCommand}"
@@ -111,6 +123,91 @@
                                     Command="{Binding SaveSelectedTargetCommand}"
                                     IsEnabled="{Binding HasSelectedTarget}"
                                     Style="{StaticResource TopBarButtonStyle}" />
+                        </StackPanel>
+                    </Border>
+
+                    <Border Margin="{StaticResource SpaceTop12}" Style="{StaticResource PlaceholderHintBorderStyle}">
+                        <StackPanel>
+                            <TextBlock Text="Global Person" Style="{StaticResource SectionTitleTextStyle}" />
+                            <TextBlock Margin="{StaticResource SpaceTop8}"
+                                       Style="{StaticResource BodyTextStyle}"
+                                       Text="{Binding SelectedTargetGlobalPersonSummary}" />
+
+                            <Grid Margin="{StaticResource SpaceTop8}">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="8" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+                                <TextBox Grid.Column="0"
+                                         Text="{Binding GlobalPersonSearchQuery, UpdateSourceTrigger=PropertyChanged}"
+                                         Style="{StaticResource TopBarTextBoxStyle}"
+                                         ToolTip="Search global person by name, alias, or identifier" />
+                                <Button Grid.Column="2"
+                                        Content="Search"
+                                        Command="{Binding SearchGlobalPersonsCommand}"
+                                        Style="{StaticResource TopBarButtonStyle}" />
+                            </Grid>
+
+                            <ListBox Margin="{StaticResource SpaceTop8}"
+                                     MinHeight="80"
+                                     ItemsSource="{Binding GlobalPersonSearchResults}"
+                                     SelectedItem="{Binding SelectedGlobalPersonSearchResult, Mode=TwoWay}"
+                                     DisplayMemberPath="DisplayName" />
+
+                            <WrapPanel Margin="{StaticResource SpaceTop8}">
+                                <Button Content="Link to Selected Global Person"
+                                        Command="{Binding LinkSelectedTargetToGlobalPersonCommand}"
+                                        IsEnabled="{Binding HasSelectedGlobalPersonSearchResult}"
+                                        Style="{StaticResource TopBarButtonStyle}" />
+                                <Button Margin="{StaticResource SpaceLeft8}"
+                                        Content="Create + Link New Global Person"
+                                        Command="{Binding CreateAndLinkGlobalPersonForSelectedTargetCommand}"
+                                        IsEnabled="{Binding HasSelectedTarget}"
+                                        Style="{StaticResource TopBarButtonStyle}" />
+                                <Button Margin="{StaticResource SpaceLeft8}"
+                                        Content="Unlink Global Person"
+                                        Command="{Binding UnlinkSelectedTargetFromGlobalPersonCommand}"
+                                        IsEnabled="{Binding HasSelectedTargetGlobalPerson}"
+                                        Style="{StaticResource TopBarButtonStyle}" />
+                            </WrapPanel>
+
+                            <TextBlock Margin="{StaticResource SpaceTop8}"
+                                       Style="{StaticResource SecondaryBodyTextStyle}"
+                                       Text="Global Identifiers" />
+                            <DataGrid Margin="{StaticResource SpaceTop8}"
+                                      MinHeight="110"
+                                      ItemsSource="{Binding SelectedTargetGlobalIdentifiers}"
+                                      AutoGenerateColumns="False"
+                                      CanUserAddRows="False"
+                                      CanUserDeleteRows="False"
+                                      IsReadOnly="True"
+                                      Visibility="{Binding HasSelectedTargetGlobalIdentifiers, Converter={StaticResource BoolToVisibilityConverter}}">
+                                <DataGrid.Columns>
+                                    <DataGridTextColumn Header="Type" Binding="{Binding Type}" Width="*" />
+                                    <DataGridTextColumn Header="Display" Binding="{Binding ValueDisplay}" Width="1.8*" />
+                                    <DataGridTextColumn Header="Normalized" Binding="{Binding ValueNormalized}" Width="1.8*" />
+                                    <DataGridCheckBoxColumn Header="Primary" Binding="{Binding IsPrimary}" Width="Auto" />
+                                </DataGrid.Columns>
+                            </DataGrid>
+
+                            <TextBlock Margin="{StaticResource SpaceTop8}"
+                                       Style="{StaticResource SecondaryBodyTextStyle}"
+                                       Text="Other Cases Where Seen" />
+                            <DataGrid Margin="{StaticResource SpaceTop8}"
+                                      MinHeight="110"
+                                      ItemsSource="{Binding SelectedTargetGlobalOtherCases}"
+                                      AutoGenerateColumns="False"
+                                      CanUserAddRows="False"
+                                      CanUserDeleteRows="False"
+                                      IsReadOnly="True"
+                                      Visibility="{Binding HasSelectedTargetGlobalOtherCases, Converter={StaticResource BoolToVisibilityConverter}}">
+                                <DataGrid.Columns>
+                                    <DataGridTextColumn Header="Case" Binding="{Binding CaseName}" Width="1.6*" />
+                                    <DataGridTextColumn Header="Target" Binding="{Binding TargetDisplayName}" Width="1.6*" />
+                                    <DataGridTextColumn Header="Case Id" Binding="{Binding CaseId}" Width="1.8*" />
+                                </DataGrid.Columns>
+                            </DataGrid>
                         </StackPanel>
                     </Border>
 

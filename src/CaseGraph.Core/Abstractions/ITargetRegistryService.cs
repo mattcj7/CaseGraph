@@ -8,9 +8,27 @@ public interface ITargetRegistryService
 
     Task<TargetDetails?> GetTargetDetailsAsync(Guid caseId, Guid targetId, CancellationToken ct);
 
+    Task<IReadOnlyList<GlobalPersonSummary>> SearchGlobalPersonsAsync(
+        string? search,
+        int take,
+        CancellationToken ct
+    );
+
     Task<TargetSummary> CreateTargetAsync(CreateTargetRequest request, CancellationToken ct);
 
     Task<TargetSummary> UpdateTargetAsync(UpdateTargetRequest request, CancellationToken ct);
+
+    Task<TargetGlobalPersonInfo> CreateAndLinkGlobalPersonAsync(
+        CreateGlobalPersonForTargetRequest request,
+        CancellationToken ct
+    );
+
+    Task<TargetGlobalPersonInfo> LinkTargetToGlobalPersonAsync(
+        LinkTargetToGlobalPersonRequest request,
+        CancellationToken ct
+    );
+
+    Task UnlinkTargetFromGlobalPersonAsync(Guid caseId, Guid targetId, CancellationToken ct);
 
     Task<TargetAliasInfo> AddAliasAsync(AddTargetAliasRequest request, CancellationToken ct);
 

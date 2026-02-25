@@ -8,5 +8,6 @@ public sealed record AddTargetIdentifierRequest(
     string? Notes,
     bool IsPrimary,
     IdentifierConflictResolution ConflictResolution = IdentifierConflictResolution.Cancel,
-    string SourceLocator = "manual:targets/identifier-add"
+    string SourceLocator = "manual:targets/identifier-add",
+    GlobalPersonIdentifierConflictResolution GlobalConflictResolution = GlobalPersonIdentifierConflictResolution.Cancel
 );

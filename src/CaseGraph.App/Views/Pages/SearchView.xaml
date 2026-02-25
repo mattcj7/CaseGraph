@@ -56,7 +56,9 @@
 
                 <Grid Margin="{StaticResource SpaceTop8}">
                     <Grid.ColumnDefinitions>
-                        <ColumnDefinition Width="1.5*" />
+                        <ColumnDefinition Width="1.4*" />
+                        <ColumnDefinition Width="12" />
+                        <ColumnDefinition Width="1.4*" />
                         <ColumnDefinition Width="12" />
                         <ColumnDefinition Width="*" />
                         <ColumnDefinition Width="12" />
@@ -75,22 +77,29 @@
                               ToolTip="Target filter" />
 
                     <ComboBox Grid.Column="2"
+                              ItemsSource="{Binding MessageSearchGlobalPersonFilters}"
+                              SelectedItem="{Binding SelectedMessageSearchGlobalPersonFilter, Mode=TwoWay}"
+                              DisplayMemberPath="DisplayName"
+                              Style="{StaticResource TopBarComboBoxStyle}"
+                              ToolTip="Global person filter" />
+
+                    <ComboBox Grid.Column="4"
                               ItemsSource="{Binding MessageSearchIdentifierTypeFilters}"
                               SelectedItem="{Binding SelectedMessageSearchIdentifierType, Mode=TwoWay}"
                               Style="{StaticResource TopBarComboBoxStyle}"
                               ToolTip="Identifier type filter (applies to target filter)" />
 
-                    <ComboBox Grid.Column="4"
+                    <ComboBox Grid.Column="6"
                               ItemsSource="{Binding MessageSearchDirectionFilters}"
                               SelectedItem="{Binding SelectedMessageSearchDirection, Mode=TwoWay}"
                               Style="{StaticResource TopBarComboBoxStyle}"
                               ToolTip="Direction filter" />
 
-                    <DatePicker Grid.Column="6"
+                    <DatePicker Grid.Column="8"
                                 SelectedDate="{Binding MessageSearchFromDateLocal, Mode=TwoWay}"
                                 ToolTip="From date (local)" />
 
-                    <DatePicker Grid.Column="8"
+                    <DatePicker Grid.Column="10"
                                 SelectedDate="{Binding MessageSearchToDateLocal, Mode=TwoWay}"
                                 ToolTip="To date (local)" />
                 </Grid>

@@ -7,5 +7,7 @@ public sealed record TargetSummary(
     string? PrimaryAlias,
     string? Notes,
     DateTimeOffset CreatedAtUtc,
-    DateTimeOffset UpdatedAtUtc
+    DateTimeOffset UpdatedAtUtc,
+    Guid? GlobalEntityId,
+    string? GlobalDisplayName
 );

@@ -12,5 +12,6 @@ public sealed record MessageSearchRequest(
     DateTimeOffset? FromUtc,
     DateTimeOffset? ToUtc,
     int Take,
-    int Skip
+    int Skip,
+    Guid? GlobalEntityId = null
 );

@@ -6,6 +6,8 @@ public sealed class TargetRecord
 
     public Guid CaseId { get; set; }
 
+    public Guid? GlobalEntityId { get; set; }
+
     public string DisplayName { get; set; } = string.Empty;
 
     public string? PrimaryAlias { get; set; }
@@ -25,6 +27,8 @@ public sealed class TargetRecord
     public string IngestModuleVersion { get; set; } = string.Empty;
 
     public CaseRecord? Case { get; set; }
+
+    public PersonEntityRecord? GlobalPerson { get; set; }
 
     public ICollection<TargetAliasRecord> Aliases { get; set; } = new List<TargetAliasRecord>();
 

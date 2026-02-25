@@ -51,6 +51,8 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
     private bool _isRefreshingDiagnosticsSnapshot;
     private int _selectedTargetWhereSeenCount;
     private DateTimeOffset? _selectedTargetWhereSeenLastSeenUtc;
+    private Guid? _selectedTargetGlobalEntityId;
+    private string? _selectedTargetGlobalDisplayName;
 
     public ObservableCollection<NavigationItem> NavigationItems { get; } = new();
 
@@ -72,7 +74,15 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
 
     public ObservableCollection<TargetPresenceIdentifierSummary> SelectedTargetWhereSeenIdentifiers { get; } = new();
 
+    public ObservableCollection<GlobalPersonSummary> GlobalPersonSearchResults { get; } = new();
+
+    public ObservableCollection<GlobalPersonCaseReference> SelectedTargetGlobalOtherCases { get; } = new();
+
+    public ObservableCollection<GlobalPersonIdentifierInfo> SelectedTargetGlobalIdentifiers { get; } = new();
+
     public ObservableCollection<SearchTargetFilterOption> MessageSearchTargetFilters { get; } = new();
+
+    public ObservableCollection<SearchGlobalPersonFilterOption> MessageSearchGlobalPersonFilters { get; } = new();
 
     public IReadOnlyList<string> MessageSearchPlatformFilters { get; } =
     [
@@ -188,6 +198,18 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
     private bool identifierEditorIsPrimary;
 
     [ObservableProperty]
+    private string globalPersonSearchQuery = string.Empty;
+
+    [ObservableProperty]
+    private GlobalPersonSummary? selectedGlobalPersonSearchResult;
+
+    [ObservableProperty]
+    private bool createTargetWithNewGlobalPerson;
+
+    [ObservableProperty]
+    private GlobalPersonSummary? createTargetSelectedGlobalPerson;
+
+    [ObservableProperty]
     private string messageSearchQuery = string.Empty;
 
     [ObservableProperty]
@@ -201,6 +223,9 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
 
     [ObservableProperty]
     private SearchTargetFilterOption? selectedMessageSearchTargetFilter;
+
+    [ObservableProperty]
+    private SearchGlobalPersonFilterOption? selectedMessageSearchGlobalPersonFilter;
 
     [ObservableProperty]
     private string selectedMessageSearchIdentifierType = "Any";
@@ -306,6 +331,14 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
 
     public bool HasSelectedTargetWhereSeenIdentifiers => SelectedTargetWhereSeenIdentifiers.Count > 0;
 
+    public bool HasSelectedTargetGlobalPerson => _selectedTargetGlobalEntityId.HasValue;
+
+    public bool HasSelectedGlobalPersonSearchResult => SelectedGlobalPersonSearchResult is not null;
+
+    public bool HasSelectedTargetGlobalOtherCases => SelectedTargetGlobalOtherCases.Count > 0;
+
+    public bool HasSelectedTargetGlobalIdentifiers => SelectedTargetGlobalIdentifiers.Count > 0;
+
     public string IdentifierValueValidationMessage => ShowIdentifierValueValidationMessage
         ? IdentifierValueGuard.RequiredMessage
         : string.Empty;
@@ -313,6 +346,12 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
     public string SelectedTargetWhereSeenSummary => SelectedTargetSummary is null
         ? "No target selected."
         : $"Linked message events: {_selectedTargetWhereSeenCount:0} | Last seen (UTC): {FormatLastSeenForUi(_selectedTargetWhereSeenLastSeenUtc)}";
+
+    public string SelectedTargetGlobalPersonSummary => !HasSelectedTarget
+        ? "No target selected."
+        : _selectedTargetGlobalEntityId.HasValue
+            ? $"Global person: {_selectedTargetGlobalDisplayName ?? _selectedTargetGlobalEntityId.Value.ToString("D")} ({_selectedTargetGlobalEntityId.Value:D})"
+            : "Global person: (not linked)";
 
     public IReadOnlyList<TargetIdentifierType> AvailableIdentifierTypes { get; } =
         Enum.GetValues<TargetIdentifierType>();
@@ -352,6 +391,14 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
     public IAsyncRelayCommand UpdateIdentifierCommand { get; }
 
     public IAsyncRelayCommand RemoveIdentifierCommand { get; }
+
+    public IAsyncRelayCommand SearchGlobalPersonsCommand { get; }
+
+    public IAsyncRelayCommand LinkSelectedTargetToGlobalPersonCommand { get; }
+
+    public IAsyncRelayCommand CreateAndLinkGlobalPersonForSelectedTargetCommand { get; }
+
+    public IAsyncRelayCommand UnlinkSelectedTargetFromGlobalPersonCommand { get; }
 
     public IAsyncRelayCommand OpenSearchForSelectedTargetCommand { get; }
 
@@ -462,6 +509,22 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
         AddIdentifierCommand = CreateSafeAsyncCommand("AddIdentifier", AddIdentifierAsync);
         UpdateIdentifierCommand = new AsyncRelayCommand(UpdateIdentifierAsync);
         RemoveIdentifierCommand = new AsyncRelayCommand(RemoveIdentifierAsync);
+        SearchGlobalPersonsCommand = CreateSafeAsyncCommand("SearchGlobalPersons", SearchGlobalPersonsAsync);
+        LinkSelectedTargetToGlobalPersonCommand = CreateSafeAsyncCommand(
+            "LinkTargetToGlobalPerson",
+            LinkSelectedTargetToGlobalPersonAsync,
+            () => HasSelectedTarget && HasSelectedGlobalPersonSearchResult
+        );
+        CreateAndLinkGlobalPersonForSelectedTargetCommand = CreateSafeAsyncCommand(
+            "CreateAndLinkGlobalPerson",
+            CreateAndLinkGlobalPersonForSelectedTargetAsync,
+            () => HasSelectedTarget
+        );
+        UnlinkSelectedTargetFromGlobalPersonCommand = CreateSafeAsyncCommand(
+            "UnlinkTargetFromGlobalPerson",
+            UnlinkSelectedTargetFromGlobalPersonAsync,
+            () => HasSelectedTarget && HasSelectedTargetGlobalPerson
+        );
         OpenSearchForSelectedTargetCommand = CreateSafeAsyncCommand(
             "SearchMessagesForTarget",
             OpenSearchForSelectedTargetAsync,
@@ -595,6 +658,10 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
             "RefreshTargetsOnCaseChanged",
             caseId: value?.CaseId
         );
+        SearchGlobalPersonsAsync().Forget(
+            "SearchGlobalPersonsOnCaseChanged",
+            caseId: value?.CaseId
+        );
     }
 
     partial void OnLatestMessagesParseJobChanged(JobInfo? value)
@@ -609,7 +676,14 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
         OnPropertyChanged(nameof(HasSelectedTarget));
         OnPropertyChanged(nameof(HasSelectedTargetAlias));
         OnPropertyChanged(nameof(HasSelectedTargetIdentifier));
+        OnPropertyChanged(nameof(HasSelectedTargetGlobalPerson));
+        OnPropertyChanged(nameof(SelectedTargetGlobalPersonSummary));
+        OnPropertyChanged(nameof(HasSelectedTargetGlobalOtherCases));
+        OnPropertyChanged(nameof(HasSelectedTargetGlobalIdentifiers));
         OpenSearchForSelectedTargetCommand.NotifyCanExecuteChanged();
+        LinkSelectedTargetToGlobalPersonCommand.NotifyCanExecuteChanged();
+        CreateAndLinkGlobalPersonForSelectedTargetCommand.NotifyCanExecuteChanged();
+        UnlinkSelectedTargetFromGlobalPersonCommand.NotifyCanExecuteChanged();
         SelectedTargetAlias = null;
         SelectedTargetIdentifier = null;
 
@@ -620,11 +694,19 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
             SelectedTargetNotes = string.Empty;
             _selectedTargetWhereSeenCount = 0;
             _selectedTargetWhereSeenLastSeenUtc = null;
+            _selectedTargetGlobalEntityId = null;
+            _selectedTargetGlobalDisplayName = null;
             SelectedTargetAliases.Clear();
             SelectedTargetIdentifiers.Clear();
             SelectedTargetWhereSeenIdentifiers.Clear();
+            SelectedTargetGlobalOtherCases.Clear();
+            SelectedTargetGlobalIdentifiers.Clear();
             OnPropertyChanged(nameof(HasSelectedTargetWhereSeenIdentifiers));
             OnPropertyChanged(nameof(SelectedTargetWhereSeenSummary));
+            OnPropertyChanged(nameof(HasSelectedTargetGlobalPerson));
+            OnPropertyChanged(nameof(SelectedTargetGlobalPersonSummary));
+            OnPropertyChanged(nameof(HasSelectedTargetGlobalOtherCases));
+            OnPropertyChanged(nameof(HasSelectedTargetGlobalIdentifiers));
             OnIdentifierInputStateChanged();
             return;
         }
@@ -634,9 +716,17 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
         SelectedTargetNotes = value.Notes ?? string.Empty;
         _selectedTargetWhereSeenCount = 0;
         _selectedTargetWhereSeenLastSeenUtc = null;
+        _selectedTargetGlobalEntityId = value.GlobalEntityId;
+        _selectedTargetGlobalDisplayName = value.GlobalDisplayName;
         SelectedTargetWhereSeenIdentifiers.Clear();
+        SelectedTargetGlobalOtherCases.Clear();
+        SelectedTargetGlobalIdentifiers.Clear();
         OnPropertyChanged(nameof(HasSelectedTargetWhereSeenIdentifiers));
         OnPropertyChanged(nameof(SelectedTargetWhereSeenSummary));
+        OnPropertyChanged(nameof(HasSelectedTargetGlobalPerson));
+        OnPropertyChanged(nameof(SelectedTargetGlobalPersonSummary));
+        OnPropertyChanged(nameof(HasSelectedTargetGlobalOtherCases));
+        OnPropertyChanged(nameof(HasSelectedTargetGlobalIdentifiers));
         OnIdentifierInputStateChanged();
         RefreshSelectedTargetDetailsAsync(CancellationToken.None).Forget(
             "RefreshSelectedTargetDetailsOnTargetSelected",
@@ -685,9 +775,34 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
     partial void OnSelectedMessageSearchTargetFilterChanged(SearchTargetFilterOption? value)
     {
         if (value?.TargetId is null
+            && SelectedMessageSearchGlobalPersonFilter?.GlobalEntityId is null
             && !string.Equals(SelectedMessageSearchIdentifierType, "Any", StringComparison.OrdinalIgnoreCase))
         {
             SelectedMessageSearchIdentifierType = "Any";
+        }
+    }
+
+    partial void OnSelectedMessageSearchGlobalPersonFilterChanged(SearchGlobalPersonFilterOption? value)
+    {
+        if (value?.GlobalEntityId is null
+            && SelectedMessageSearchTargetFilter?.TargetId is null
+            && !string.Equals(SelectedMessageSearchIdentifierType, "Any", StringComparison.OrdinalIgnoreCase))
+        {
+            SelectedMessageSearchIdentifierType = "Any";
+        }
+    }
+
+    partial void OnSelectedGlobalPersonSearchResultChanged(GlobalPersonSummary? value)
+    {
+        OnPropertyChanged(nameof(HasSelectedGlobalPersonSearchResult));
+        LinkSelectedTargetToGlobalPersonCommand.NotifyCanExecuteChanged();
+    }
+
+    partial void OnCreateTargetWithNewGlobalPersonChanged(bool value)
+    {
+        if (value)
+        {
+            CreateTargetSelectedGlobalPerson = null;
         }
     }
 
@@ -1232,6 +1347,7 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
         }
 
         var selectedTargetId = SelectedMessageSearchTargetFilter?.TargetId;
+        var selectedGlobalEntityId = SelectedMessageSearchGlobalPersonFilter?.GlobalEntityId;
         var searchTargets = await _targetRegistryService.GetTargetsAsync(
             CurrentCaseInfo.CaseId,
             search: null,
@@ -1245,6 +1361,24 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
             MessageSearchTargetFilters.Add(new SearchTargetFilterOption(target.TargetId, target.DisplayName));
         }
 
+        MessageSearchGlobalPersonFilters.Clear();
+        MessageSearchGlobalPersonFilters.Add(SearchGlobalPersonFilterOption.AllGlobalPersons);
+        foreach (var globalPerson in searchTargets
+                     .Where(target => target.GlobalEntityId.HasValue)
+                     .GroupBy(target => target.GlobalEntityId!.Value)
+                     .Select(group =>
+                     {
+                         var display = group
+                             .Select(target => target.GlobalDisplayName)
+                             .FirstOrDefault(name => !string.IsNullOrWhiteSpace(name))
+                             ?? $"Global Person {group.Key:D}";
+                         return new SearchGlobalPersonFilterOption(group.Key, display);
+                     })
+                     .OrderBy(option => option.DisplayName, StringComparer.OrdinalIgnoreCase))
+        {
+            MessageSearchGlobalPersonFilters.Add(globalPerson);
+        }
+
         SelectedMessageSearchTargetFilter = selectedTargetId.HasValue
             ? MessageSearchTargetFilters.FirstOrDefault(option => option.TargetId == selectedTargetId.Value)
             : SearchTargetFilterOption.AllTargets;
@@ -1252,6 +1386,17 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
         if (SelectedMessageSearchTargetFilter is null)
         {
             SelectedMessageSearchTargetFilter = SearchTargetFilterOption.AllTargets;
+        }
+
+        SelectedMessageSearchGlobalPersonFilter = selectedGlobalEntityId.HasValue
+            ? MessageSearchGlobalPersonFilters.FirstOrDefault(
+                option => option.GlobalEntityId == selectedGlobalEntityId.Value
+            )
+            : SearchGlobalPersonFilterOption.AllGlobalPersons;
+
+        if (SelectedMessageSearchGlobalPersonFilter is null)
+        {
+            SelectedMessageSearchGlobalPersonFilter = SearchGlobalPersonFilterOption.AllGlobalPersons;
         }
     }
 
@@ -1261,11 +1406,20 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
         {
             _selectedTargetWhereSeenCount = 0;
             _selectedTargetWhereSeenLastSeenUtc = null;
+            _selectedTargetGlobalEntityId = null;
+            _selectedTargetGlobalDisplayName = null;
             SelectedTargetAliases.Clear();
             SelectedTargetIdentifiers.Clear();
             SelectedTargetWhereSeenIdentifiers.Clear();
+            SelectedTargetGlobalOtherCases.Clear();
+            SelectedTargetGlobalIdentifiers.Clear();
             OnPropertyChanged(nameof(HasSelectedTargetWhereSeenIdentifiers));
             OnPropertyChanged(nameof(SelectedTargetWhereSeenSummary));
+            OnPropertyChanged(nameof(HasSelectedTargetGlobalPerson));
+            OnPropertyChanged(nameof(SelectedTargetGlobalPersonSummary));
+            OnPropertyChanged(nameof(HasSelectedTargetGlobalOtherCases));
+            OnPropertyChanged(nameof(HasSelectedTargetGlobalIdentifiers));
+            UnlinkSelectedTargetFromGlobalPersonCommand.NotifyCanExecuteChanged();
             return;
         }
 
@@ -1278,11 +1432,20 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
         {
             _selectedTargetWhereSeenCount = 0;
             _selectedTargetWhereSeenLastSeenUtc = null;
+            _selectedTargetGlobalEntityId = null;
+            _selectedTargetGlobalDisplayName = null;
             SelectedTargetAliases.Clear();
             SelectedTargetIdentifiers.Clear();
             SelectedTargetWhereSeenIdentifiers.Clear();
+            SelectedTargetGlobalOtherCases.Clear();
+            SelectedTargetGlobalIdentifiers.Clear();
             OnPropertyChanged(nameof(HasSelectedTargetWhereSeenIdentifiers));
             OnPropertyChanged(nameof(SelectedTargetWhereSeenSummary));
+            OnPropertyChanged(nameof(HasSelectedTargetGlobalPerson));
+            OnPropertyChanged(nameof(SelectedTargetGlobalPersonSummary));
+            OnPropertyChanged(nameof(HasSelectedTargetGlobalOtherCases));
+            OnPropertyChanged(nameof(HasSelectedTargetGlobalIdentifiers));
+            UnlinkSelectedTargetFromGlobalPersonCommand.NotifyCanExecuteChanged();
             return;
         }
 
@@ -1301,6 +1464,8 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
         SelectedTargetDisplayName = details.Summary.DisplayName;
         SelectedTargetPrimaryAlias = details.Summary.PrimaryAlias ?? string.Empty;
         SelectedTargetNotes = details.Summary.Notes ?? string.Empty;
+        _selectedTargetGlobalEntityId = details.GlobalPerson?.GlobalEntityId;
+        _selectedTargetGlobalDisplayName = details.GlobalPerson?.DisplayName;
 
         var presenceSummary = await _messageSearchService.GetTargetPresenceSummaryAsync(
             CurrentCaseInfo.CaseId,
@@ -1337,6 +1502,155 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
 
         OnPropertyChanged(nameof(HasSelectedTargetWhereSeenIdentifiers));
         OnPropertyChanged(nameof(SelectedTargetWhereSeenSummary));
+        SelectedTargetGlobalIdentifiers.Clear();
+        if (details.GlobalPerson is not null)
+        {
+            foreach (var identifier in details.GlobalPerson.Identifiers)
+            {
+                SelectedTargetGlobalIdentifiers.Add(identifier);
+            }
+        }
+
+        SelectedTargetGlobalOtherCases.Clear();
+        if (details.GlobalPerson is not null)
+        {
+            foreach (var caseReference in details.GlobalPerson.OtherCases)
+            {
+                SelectedTargetGlobalOtherCases.Add(caseReference);
+            }
+        }
+
+        OnPropertyChanged(nameof(HasSelectedTargetGlobalPerson));
+        OnPropertyChanged(nameof(SelectedTargetGlobalPersonSummary));
+        OnPropertyChanged(nameof(HasSelectedTargetGlobalOtherCases));
+        OnPropertyChanged(nameof(HasSelectedTargetGlobalIdentifiers));
+        UnlinkSelectedTargetFromGlobalPersonCommand.NotifyCanExecuteChanged();
+    }
+
+    private async Task SearchGlobalPersonsAsync()
+    {
+        var people = await _targetRegistryService.SearchGlobalPersonsAsync(
+            NullIfWhiteSpace(GlobalPersonSearchQuery),
+            take: 100,
+            CancellationToken.None
+        );
+
+        var selectedGlobalId = SelectedGlobalPersonSearchResult?.GlobalEntityId;
+        GlobalPersonSearchResults.Clear();
+        foreach (var person in people)
+        {
+            GlobalPersonSearchResults.Add(person);
+        }
+
+        if (CreateTargetSelectedGlobalPerson is not null)
+        {
+            CreateTargetSelectedGlobalPerson = GlobalPersonSearchResults.FirstOrDefault(
+                person => person.GlobalEntityId == CreateTargetSelectedGlobalPerson.GlobalEntityId
+            );
+        }
+
+        SelectedGlobalPersonSearchResult = selectedGlobalId.HasValue
+            ? GlobalPersonSearchResults.FirstOrDefault(person => person.GlobalEntityId == selectedGlobalId.Value)
+            : GlobalPersonSearchResults.FirstOrDefault();
+    }
+
+    private async Task LinkSelectedTargetToGlobalPersonAsync()
+    {
+        if (CurrentCaseInfo is null || SelectedTargetSummary is null || SelectedGlobalPersonSearchResult is null)
+        {
+            OperationText = "Select a target and a global person to link.";
+            return;
+        }
+
+        var conflictResolution = GlobalPersonIdentifierConflictResolution.Cancel;
+        while (true)
+        {
+            try
+            {
+                await _targetRegistryService.LinkTargetToGlobalPersonAsync(
+                    new LinkTargetToGlobalPersonRequest(
+                        CurrentCaseInfo.CaseId,
+                        SelectedTargetSummary.TargetId,
+                        SelectedGlobalPersonSearchResult.GlobalEntityId,
+                        conflictResolution
+                    ),
+                    CancellationToken.None
+                );
+                await RefreshTargetsAsync(CancellationToken.None);
+                await RefreshSelectedTargetDetailsAsync(CancellationToken.None);
+                await SearchGlobalPersonsAsync();
+                OperationText = "Target linked to global person.";
+                return;
+            }
+            catch (GlobalPersonIdentifierConflictException ex)
+            {
+                conflictResolution = PromptGlobalPersonConflictResolution(ex.Conflict);
+                if (conflictResolution == GlobalPersonIdentifierConflictResolution.Cancel)
+                {
+                    OperationText = "Global person link canceled.";
+                    return;
+                }
+            }
+        }
+    }
+
+    private async Task CreateAndLinkGlobalPersonForSelectedTargetAsync()
+    {
+        if (CurrentCaseInfo is null || SelectedTargetSummary is null)
+        {
+            OperationText = "Select a target before creating a global person.";
+            return;
+        }
+
+        var conflictResolution = GlobalPersonIdentifierConflictResolution.Cancel;
+        while (true)
+        {
+            try
+            {
+                await _targetRegistryService.CreateAndLinkGlobalPersonAsync(
+                    new CreateGlobalPersonForTargetRequest(
+                        CurrentCaseInfo.CaseId,
+                        SelectedTargetSummary.TargetId,
+                        SelectedTargetDisplayName,
+                        conflictResolution
+                    ),
+                    CancellationToken.None
+                );
+                await RefreshTargetsAsync(CancellationToken.None);
+                await RefreshSelectedTargetDetailsAsync(CancellationToken.None);
+                await SearchGlobalPersonsAsync();
+                OperationText = "Global person created and linked.";
+                return;
+            }
+            catch (GlobalPersonIdentifierConflictException ex)
+            {
+                conflictResolution = PromptGlobalPersonConflictResolution(ex.Conflict);
+                if (conflictResolution == GlobalPersonIdentifierConflictResolution.Cancel)
+                {
+                    OperationText = "Create/link global person canceled.";
+                    return;
+                }
+            }
+        }
+    }
+
+    private async Task UnlinkSelectedTargetFromGlobalPersonAsync()
+    {
+        if (CurrentCaseInfo is null || SelectedTargetSummary is null)
+        {
+            OperationText = "Select a target to unlink.";
+            return;
+        }
+
+        await _targetRegistryService.UnlinkTargetFromGlobalPersonAsync(
+            CurrentCaseInfo.CaseId,
+            SelectedTargetSummary.TargetId,
+            CancellationToken.None
+        );
+
+        await RefreshTargetsAsync(CancellationToken.None);
+        await RefreshSelectedTargetDetailsAsync(CancellationToken.None);
+        OperationText = "Target unlinked from global person.";
     }
 
     private async Task CreateTargetAsync()
@@ -1353,12 +1667,18 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
             return;
         }
 
+        var globalEntityId = CreateTargetWithNewGlobalPerson
+            ? null
+            : CreateTargetSelectedGlobalPerson?.GlobalEntityId;
+
         var created = await _targetRegistryService.CreateTargetAsync(
             new CreateTargetRequest(
                 CurrentCaseInfo.CaseId,
                 NewTargetDisplayName,
                 NewTargetPrimaryAlias,
-                NewTargetNotes
+                NewTargetNotes,
+                GlobalEntityId: globalEntityId,
+                CreateGlobalPerson: CreateTargetWithNewGlobalPerson
             ),
             CancellationToken.None
         );
@@ -1366,7 +1686,10 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
         NewTargetDisplayName = string.Empty;
         NewTargetPrimaryAlias = string.Empty;
         NewTargetNotes = string.Empty;
+        CreateTargetWithNewGlobalPerson = false;
+        CreateTargetSelectedGlobalPerson = null;
         await RefreshTargetsAsync(CancellationToken.None);
+        await SearchGlobalPersonsAsync();
         SelectedTargetSummary = Targets.FirstOrDefault(t => t.TargetId == created.TargetId);
         OperationText = $"Target created: {created.DisplayName}";
     }
@@ -1473,6 +1796,7 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
 
         var targetId = SelectedTargetSummary.TargetId;
         var resolution = IdentifierConflictResolution.Cancel;
+        var globalResolution = GlobalPersonIdentifierConflictResolution.Cancel;
         while (true)
         {
             try
@@ -1485,7 +1809,8 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
                         preparedIdentifierValue,
                         IdentifierEditorNotes,
                         IdentifierEditorIsPrimary,
-                        resolution
+                        resolution,
+                        GlobalConflictResolution: globalResolution
                     ),
                     CancellationToken.None
                 );
@@ -1502,6 +1827,15 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
             {
                 resolution = PromptIdentifierEditorConflictResolution(ex.Conflict);
                 if (resolution == IdentifierConflictResolution.Cancel)
+                {
+                    OperationText = "Identifier add canceled.";
+                    return;
+                }
+            }
+            catch (GlobalPersonIdentifierConflictException ex)
+            {
+                globalResolution = PromptGlobalPersonConflictResolution(ex.Conflict);
+                if (globalResolution == GlobalPersonIdentifierConflictResolution.Cancel)
                 {
                     OperationText = "Identifier add canceled.";
                     return;
@@ -1555,6 +1889,7 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
         var targetId = SelectedTargetSummary.TargetId;
         var identifierId = SelectedTargetIdentifier.IdentifierId;
         var resolution = IdentifierConflictResolution.Cancel;
+        var globalResolution = GlobalPersonIdentifierConflictResolution.Cancel;
         while (true)
         {
             try
@@ -1568,7 +1903,8 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
                         IdentifierEditorValueRaw,
                         IdentifierEditorNotes,
                         IdentifierEditorIsPrimary,
-                        resolution
+                        resolution,
+                        GlobalConflictResolution: globalResolution
                     ),
                     CancellationToken.None
                 );
@@ -1585,6 +1921,15 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
             {
                 resolution = PromptIdentifierEditorConflictResolution(ex.Conflict);
                 if (resolution == IdentifierConflictResolution.Cancel)
+                {
+                    OperationText = "Identifier update canceled.";
+                    return;
+                }
+            }
+            catch (GlobalPersonIdentifierConflictException ex)
+            {
+                globalResolution = PromptGlobalPersonConflictResolution(ex.Conflict);
+                if (globalResolution == GlobalPersonIdentifierConflictResolution.Cancel)
                 {
                     OperationText = "Identifier update canceled.";
                     return;
@@ -1739,6 +2084,7 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
 
             var selection = dialog.Selection;
             var conflictResolution = IdentifierConflictResolution.Cancel;
+            var globalConflictResolution = GlobalPersonIdentifierConflictResolution.Cancel;
             while (true)
             {
                 try
@@ -1752,7 +2098,8 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
                             selection.IdentifierType,
                             selection.TargetId,
                             selection.NewTargetDisplayName,
-                            conflictResolution
+                            conflictResolution,
+                            globalConflictResolution
                         ),
                         CancellationToken.None
                     );
@@ -1763,6 +2110,14 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
                 {
                     conflictResolution = PromptParticipantLinkConflictResolution(ex.Conflict);
                     if (conflictResolution == IdentifierConflictResolution.Cancel)
+                    {
+                        break;
+                    }
+                }
+                catch (GlobalPersonIdentifierConflictException ex)
+                {
+                    globalConflictResolution = PromptGlobalPersonConflictResolution(ex.Conflict);
+                    if (globalConflictResolution == GlobalPersonIdentifierConflictResolution.Cancel)
                     {
                         break;
                     }
@@ -1838,6 +2193,33 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
         };
     }
 
+    private GlobalPersonIdentifierConflictResolution PromptGlobalPersonConflictResolution(
+        GlobalPersonIdentifierConflictInfo conflict
+    )
+    {
+        var choice = MessageBox.Show(
+            Application.Current.MainWindow,
+            $"Global identifier conflict:\n\n" +
+            $"Type: {conflict.Type}\n" +
+            $"Value: {conflict.ValueDisplay}\n" +
+            $"Already linked to: {conflict.ExistingGlobalDisplayName}\n\n" +
+            "Yes = Move identifier to the requested global person\n" +
+            "No = Keep existing global person (and relink target to it)\n" +
+            "Cancel = Stop",
+            "Global Identifier Conflict",
+            MessageBoxButton.YesNoCancel,
+            MessageBoxImage.Warning,
+            MessageBoxResult.Cancel
+        );
+
+        return choice switch
+        {
+            MessageBoxResult.Yes => GlobalPersonIdentifierConflictResolution.MoveIdentifierToRequestedPerson,
+            MessageBoxResult.No => GlobalPersonIdentifierConflictResolution.UseExistingPerson,
+            _ => GlobalPersonIdentifierConflictResolution.Cancel
+        };
+    }
+
     private static TargetIdentifierType? TryInferParticipantIdentifierType(string participantRaw)
     {
         var inferred = IdentifierNormalizer.InferType(participantRaw);
@@ -1896,6 +2278,18 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
         }
 
         SelectedMessageSearchTargetFilter = option;
+        if (SelectedTargetSummary?.GlobalEntityId is Guid globalEntityId)
+        {
+            var globalOption = MessageSearchGlobalPersonFilters.FirstOrDefault(
+                item => item.GlobalEntityId == globalEntityId
+            );
+            SelectedMessageSearchGlobalPersonFilter = globalOption
+                ?? SearchGlobalPersonFilterOption.AllGlobalPersons;
+        }
+        else
+        {
+            SelectedMessageSearchGlobalPersonFilter = SearchGlobalPersonFilterOption.AllGlobalPersons;
+        }
         SelectedMessageSearchIdentifierType = identifierType?.ToString() ?? "Any";
         MessageSearchQuery = query ?? string.Empty;
         MessageSearchSenderFilter = string.Empty;
@@ -2116,6 +2510,7 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
 
         var query = NullIfWhiteSpace(MessageSearchQuery);
         var selectedTargetId = SelectedMessageSearchTargetFilter?.TargetId;
+        var selectedGlobalEntityId = SelectedMessageSearchGlobalPersonFilter?.GlobalEntityId;
         var selectedPlatform = string.Equals(SelectedMessageSearchPlatform, "All", StringComparison.OrdinalIgnoreCase)
             ? null
             : SelectedMessageSearchPlatform;
@@ -2124,12 +2519,13 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
         var directionFilter = ParseMessageDirectionFilter(SelectedMessageSearchDirection);
         var fromUtc = ConvertLocalDateToStartUtc(MessageSearchFromDateLocal);
         var toUtc = ConvertLocalDateToInclusiveEndUtc(MessageSearchToDateLocal);
-        var identifierTypeFilter = selectedTargetId.HasValue
+        var identifierTypeFilter = selectedTargetId.HasValue || selectedGlobalEntityId.HasValue
             ? ParseTargetIdentifierTypeFilter(SelectedMessageSearchIdentifierType)
             : null;
 
         var hasStructuredFilter =
             selectedTargetId.HasValue
+            || selectedGlobalEntityId.HasValue
             || identifierTypeFilter.HasValue
             || directionFilter != MessageDirectionFilter.Any
             || fromUtc.HasValue
@@ -2165,7 +2561,8 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
                     fromUtc,
                     toUtc,
                     Take: 250,
-                    Skip: 0
+                    Skip: 0,
+                    GlobalEntityId: selectedGlobalEntityId
                 ),
                 searchCts.Token
             );
@@ -2823,6 +3220,9 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
         MessageSearchTargetFilters.Clear();
         MessageSearchTargetFilters.Add(SearchTargetFilterOption.AllTargets);
         SelectedMessageSearchTargetFilter = SearchTargetFilterOption.AllTargets;
+        MessageSearchGlobalPersonFilters.Clear();
+        MessageSearchGlobalPersonFilters.Add(SearchGlobalPersonFilterOption.AllGlobalPersons);
+        SelectedMessageSearchGlobalPersonFilter = SearchGlobalPersonFilterOption.AllGlobalPersons;
         SelectedMessageSearchIdentifierType = "Any";
         SelectedMessageSearchDirection = "Any";
         MessageSearchFromDateLocal = null;
@@ -2944,6 +3344,14 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
         public static SearchTargetFilterOption AllTargets { get; } = new(
             TargetId: null,
             DisplayName: "Any target"
+        );
+    }
+
+    public sealed record SearchGlobalPersonFilterOption(Guid? GlobalEntityId, string DisplayName)
+    {
+        public static SearchGlobalPersonFilterOption AllGlobalPersons { get; } = new(
+            GlobalEntityId: null,
+            DisplayName: "Any global person"
         );
     }
 
