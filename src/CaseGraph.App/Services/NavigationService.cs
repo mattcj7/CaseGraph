@@ -18,7 +18,7 @@ public sealed class NavigationService : INavigationService
             [NavigationPage.Timeline] = ("Timeline", "Chronological event analysis placeholder view."),
             [NavigationPage.PeopleTargets] = ("People / Targets", "Manage known people, aliases, identifiers, and message links."),
             [NavigationPage.Locations] = ("Locations", "Geospatial analysis placeholder with map and proximity tools."),
-            [NavigationPage.Associations] = ("Associations", "Association graph placeholder for relationship analysis."),
+            [NavigationPage.Associations] = ("Association Graph", "Relationship graph with filters, overlays, and export."),
             [NavigationPage.Reports] = ("Reports", "Report and export orchestration placeholder."),
             [NavigationPage.ReviewQueue] = ("Review Queue", "Background job history for ingest and verification tasks."),
             [NavigationPage.Diagnostics] = ("Diagnostics", "Workspace health, logs, and runtime diagnostics."),
@@ -62,6 +62,11 @@ public sealed class NavigationService : INavigationService
         if (page == NavigationPage.PeopleTargets)
         {
             return new PeopleTargetsView();
+        }
+
+        if (page == NavigationPage.Associations)
+        {
+            return new AssociationGraphView();
         }
 
         return new PlaceholderView(content.Title, content.Description);

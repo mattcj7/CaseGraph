@@ -60,6 +60,8 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<IMessageIngestService, MessageIngestService>();
         services.AddSingleton<ITargetMessagePresenceIndexService, TargetMessagePresenceIndexService>();
         services.AddSingleton<ITargetRegistryService, TargetRegistryService>();
+        services.AddSingleton<IAssociationGraphQueryService, AssociationGraphQueryService>();
+        services.AddSingleton<IAssociationGraphExportPathBuilder, AssociationGraphExportPathBuilder>();
         services.AddSingleton<IJobQueryService, JobQueryService>();
         services.AddSingleton<JobQueueService>();
         services.AddSingleton<IJobQueueService>(provider => provider.GetRequiredService<JobQueueService>());

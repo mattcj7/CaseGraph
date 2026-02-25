@@ -32,6 +32,8 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
     private readonly IJobQueueService _jobQueueService;
     private readonly IJobQueryService _jobQueryService;
     private readonly ITargetRegistryService _targetRegistryService;
+    private readonly IAssociationGraphQueryService _associationGraphQueryService;
+    private readonly IAssociationGraphExportPathBuilder _associationGraphExportPathBuilder;
     private readonly IWorkspacePathProvider _workspacePathProvider;
     private readonly IUserInteractionService _userInteractionService;
     private readonly IDiagnosticsService _diagnosticsService;
@@ -445,6 +447,8 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
         IJobQueueService jobQueueService,
         IJobQueryService jobQueryService,
         ITargetRegistryService targetRegistryService,
+        IAssociationGraphQueryService associationGraphQueryService,
+        IAssociationGraphExportPathBuilder associationGraphExportPathBuilder,
         IWorkspacePathProvider workspacePathProvider,
         IUserInteractionService userInteractionService,
         IDiagnosticsService diagnosticsService,
@@ -463,6 +467,8 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
         _jobQueueService = jobQueueService;
         _jobQueryService = jobQueryService;
         _targetRegistryService = targetRegistryService;
+        _associationGraphQueryService = associationGraphQueryService;
+        _associationGraphExportPathBuilder = associationGraphExportPathBuilder;
         _workspacePathProvider = workspacePathProvider;
         _userInteractionService = userInteractionService;
         _diagnosticsService = diagnosticsService;
@@ -650,6 +656,7 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
             }
         );
 
+        ResetAssociationGraphStateOnCaseChanged(value?.CaseId);
         OnPropertyChanged(nameof(CurrentCaseSummary));
         OnPropertyChanged(nameof(SelectedStoredAbsolutePath));
         UpdateSelectedEvidenceVerifyStatus();

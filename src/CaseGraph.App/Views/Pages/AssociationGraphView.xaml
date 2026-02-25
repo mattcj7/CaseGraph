@@ -1,0 +1,179 @@
+<UserControl x:Class="CaseGraph.App.Views.Pages.AssociationGraphView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             Background="{DynamicResource ContentBackgroundBrush}">
+    <Grid Margin="{StaticResource Space16}">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+        </Grid.RowDefinitions>
+
+        <DockPanel Grid.Row="0">
+            <TextBlock DockPanel.Dock="Left"
+                       Text="Association Graph"
+                       Style="{StaticResource PageTitleTextStyle}" />
+            <TextBlock DockPanel.Dock="Right"
+                       VerticalAlignment="Center"
+                       Style="{StaticResource SecondaryBodyTextStyle}"
+                       Text="{Binding AssociationGraphStatusText}" />
+        </DockPanel>
+
+        <Grid Grid.Row="1" Margin="{StaticResource SpaceTop12}">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="290" />
+                <ColumnDefinition Width="16" />
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="16" />
+                <ColumnDefinition Width="350" />
+            </Grid.ColumnDefinitions>
+
+            <Border Grid.Column="0" Style="{StaticResource PlaceholderHintBorderStyle}">
+                <ScrollViewer VerticalScrollBarVisibility="Auto">
+                    <StackPanel>
+                        <TextBlock Text="Filters" Style="{StaticResource SectionTitleTextStyle}" />
+
+                        <TextBlock Margin="{StaticResource SpaceTop12}"
+                                   Style="{StaticResource SecondaryBodyTextStyle}"
+                                   Text="Case" />
+                        <TextBlock Style="{StaticResource BodyTextStyle}"
+                                   Text="{Binding CurrentCaseInfo.Name, TargetNullValue=(none)}" />
+
+                        <CheckBox Margin="{StaticResource SpaceTop12}"
+                                  Content="Include Identifiers"
+                                  IsChecked="{Binding AssociationGraphIncludeIdentifiers, Mode=TwoWay}" />
+                        <CheckBox Margin="{StaticResource SpaceTop8}"
+                                  Content="Group by Global Person"
+                                  IsChecked="{Binding AssociationGraphGroupByGlobalPerson, Mode=TwoWay}" />
+
+                        <TextBlock Margin="{StaticResource SpaceTop12}"
+                                   Style="{StaticResource SecondaryBodyTextStyle}"
+                                   Text="Min Edge Weight" />
+                        <Grid Margin="{StaticResource SpaceTop8}">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="8" />
+                                <ColumnDefinition Width="56" />
+                            </Grid.ColumnDefinitions>
+                            <Slider Grid.Column="0"
+                                    Minimum="0"
+                                    Maximum="20"
+                                    TickFrequency="1"
+                                    IsSnapToTickEnabled="True"
+                                    Value="{Binding AssociationGraphMinEdgeWeight, Mode=TwoWay}" />
+                            <TextBox Grid.Column="2"
+                                     Text="{Binding AssociationGraphMinEdgeWeight, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                     VerticalContentAlignment="Center"
+                                     HorizontalContentAlignment="Center"
+                                     Style="{StaticResource TopBarTextBoxStyle}" />
+                        </Grid>
+
+                        <TextBlock Margin="{StaticResource SpaceTop12}"
+                                   Style="{StaticResource SecondaryBodyTextStyle}"
+                                   Text="Node Search Highlight" />
+                        <TextBox Margin="{StaticResource SpaceTop8}"
+                                 Text="{Binding AssociationGraphNodeSearchQuery, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                 Style="{StaticResource TopBarTextBoxStyle}"
+                                 ToolTip="Highlights matching node labels in the current graph." />
+
+                        <Button Margin="{StaticResource SpaceTop12}"
+                                Content="Rebuild Graph"
+                                Command="{Binding RebuildAssociationGraphCommand}"
+                                Style="{StaticResource TopBarButtonStyle}" />
+                        <Button Margin="{StaticResource SpaceTop8}"
+                                Content="Export Graph Snapshot (PNG)"
+                                Command="{Binding ExportAssociationGraphSnapshotCommand}"
+                                Style="{StaticResource TopBarButtonStyle}" />
+
+                        <TextBlock Margin="{StaticResource SpaceTop12}"
+                                   Style="{StaticResource SecondaryBodyTextStyle}"
+                                   Text="Last Export Path" />
+                        <TextBlock Margin="{StaticResource SpaceTop8}"
+                                   Style="{StaticResource BodyTextStyle}"
+                                   Text="{Binding AssociationGraphLastExportPath, TargetNullValue=(none)}"
+                                   TextWrapping="Wrap" />
+                    </StackPanel>
+                </ScrollViewer>
+            </Border>
+
+            <Border Grid.Column="2" Style="{StaticResource ContentPanelBorderStyle}">
+                <Grid>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="*" />
+                        <RowDefinition Height="Auto" />
+                    </Grid.RowDefinitions>
+
+                    <Grid x:Name="GraphViewport"
+                          Grid.Row="0"
+                          ClipToBounds="True"
+                          Background="{DynamicResource ContentBackgroundBrush}">
+                        <Canvas x:Name="GraphCanvas"
+                                SnapsToDevicePixels="True"
+                                RenderTransformOrigin="0.5,0.5">
+                            <Canvas.RenderTransform>
+                                <TransformGroup>
+                                    <ScaleTransform x:Name="GraphScaleTransform" ScaleX="1" ScaleY="1" />
+                                    <TranslateTransform x:Name="GraphTranslateTransform" X="0" Y="0" />
+                                </TransformGroup>
+                            </Canvas.RenderTransform>
+                        </Canvas>
+                    </Grid>
+
+                    <Border Grid.Row="1"
+                            Margin="{StaticResource SpaceTop8}"
+                            Padding="8"
+                            CornerRadius="6"
+                            Background="{DynamicResource ContentBackgroundBrush}">
+                        <TextBlock Style="{StaticResource SecondaryBodyTextStyle}"
+                                   Text="{Binding AssociationGraphEdgeHoverText}"
+                                   TextWrapping="Wrap" />
+                    </Border>
+                </Grid>
+            </Border>
+
+            <Border Grid.Column="4" Style="{StaticResource PlaceholderHintBorderStyle}">
+                <ScrollViewer VerticalScrollBarVisibility="Auto">
+                    <StackPanel>
+                        <TextBlock Text="Details" Style="{StaticResource SectionTitleTextStyle}" />
+
+                        <TextBlock Margin="{StaticResource SpaceTop12}"
+                                   Style="{StaticResource SecondaryBodyTextStyle}"
+                                   Text="Node" />
+                        <TextBlock Style="{StaticResource BodyTextStyle}"
+                                   Text="{Binding AssociationGraphSelectedNodeTitle}" />
+
+                        <TextBlock Margin="{StaticResource SpaceTop12}"
+                                   Style="{StaticResource SecondaryBodyTextStyle}"
+                                   Text="Type" />
+                        <TextBlock Style="{StaticResource BodyTextStyle}"
+                                   Text="{Binding AssociationGraphSelectedNodeKind}" />
+
+                        <TextBlock Margin="{StaticResource SpaceTop12}"
+                                   Style="{StaticResource SecondaryBodyTextStyle}"
+                                   Text="Counts" />
+                        <TextBlock Style="{StaticResource BodyTextStyle}"
+                                   Text="{Binding AssociationGraphSelectedNodeSummary}"
+                                   TextWrapping="Wrap" />
+
+                        <TextBlock Margin="{StaticResource SpaceTop12}"
+                                   Style="{StaticResource SecondaryBodyTextStyle}"
+                                   Text="Last Seen (UTC)" />
+                        <TextBlock Style="{StaticResource BodyTextStyle}"
+                                   Text="{Binding AssociationGraphSelectedNodeLastSeen}" />
+
+                        <Button Margin="{StaticResource SpaceTop16}"
+                                Content="Open Target"
+                                Command="{Binding OpenAssociationGraphSelectedTargetCommand}"
+                                IsEnabled="{Binding CanOpenAssociationGraphSelectedTarget}"
+                                Style="{StaticResource TopBarButtonStyle}" />
+
+                        <Button Margin="{StaticResource SpaceTop8}"
+                                Content="Search Messages (Filtered)"
+                                Command="{Binding SearchAssociationGraphSelectionCommand}"
+                                IsEnabled="{Binding CanSearchAssociationGraphSelection}"
+                                Style="{StaticResource TopBarButtonStyle}" />
+                    </StackPanel>
+                </ScrollViewer>
+            </Border>
+        </Grid>
+    </Grid>
+</UserControl>
