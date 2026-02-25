@@ -22,7 +22,8 @@ public class WorkspaceDbInitializer : IWorkspaceDbInitializer, IWorkspaceDatabas
         "TargetAliasRecord",
         "IdentifierRecord",
         "TargetIdentifierLinkRecord",
-        "MessageParticipantLinkRecord"
+        "MessageParticipantLinkRecord",
+        "TargetMessagePresenceRecord"
     };
 
     private readonly IDbContextFactory<WorkspaceDbContext> _dbContextFactory;

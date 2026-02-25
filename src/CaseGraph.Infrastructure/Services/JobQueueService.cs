@@ -15,6 +15,7 @@ public sealed class JobQueueService : IJobQueueService
     public const string EvidenceImportJobType = "EvidenceImport";
     public const string EvidenceVerifyJobType = "EvidenceVerify";
     public const string MessagesIngestJobType = "MessagesIngest";
+    public const string TargetPresenceIndexRebuildJobType = "TargetPresenceIndexRebuild";
     public const string TestLongRunningJobType = "TestLongRunningDelay";
 
     private static readonly JsonSerializerOptions PayloadSerializerOptions = new()
@@ -30,6 +31,7 @@ public sealed class JobQueueService : IJobQueueService
     private readonly ICaseWorkspaceService _caseWorkspaceService;
     private readonly IEvidenceVaultService _evidenceVaultService;
     private readonly IMessageIngestService _messageIngestService;
+    private readonly ITargetMessagePresenceIndexService? _targetMessagePresenceIndexService;
     private readonly IAuditLogService _auditLogService;
     private readonly IJobQueryService _jobQueryService;
     private readonly IWorkspaceWriteGate _workspaceWriteGate;
@@ -53,7 +55,8 @@ public sealed class JobQueueService : IJobQueueService
         IMessageIngestService messageIngestService,
         IAuditLogService auditLogService,
         IJobQueryService jobQueryService,
-        IWorkspaceWriteGate workspaceWriteGate
+        IWorkspaceWriteGate workspaceWriteGate,
+        ITargetMessagePresenceIndexService? targetMessagePresenceIndexService = null
     )
     {
         _dbContextFactory = dbContextFactory;
@@ -62,6 +65,7 @@ public sealed class JobQueueService : IJobQueueService
         _caseWorkspaceService = caseWorkspaceService;
         _evidenceVaultService = evidenceVaultService;
         _messageIngestService = messageIngestService;
+        _targetMessagePresenceIndexService = targetMessagePresenceIndexService;
         _auditLogService = auditLogService;
         _jobQueryService = jobQueryService;
         _workspaceWriteGate = workspaceWriteGate;
@@ -447,6 +451,12 @@ public sealed class JobQueueService : IJobQueueService
                     await WriteMessagesIngestSummaryAsync(jobToExecute, ingestResult.MessagesExtracted, linkedCts.Token);
                     break;
                 }
+                case TargetPresenceIndexRebuildJobType:
+                    await ExecuteTargetPresenceIndexRebuildAsync(jobToExecute, linkedCts.Token);
+                    terminalStatus = JobStatus.Succeeded;
+                    terminalStatusMessage = "Succeeded: Target presence index rebuilt.";
+                    terminalErrorMessage = null;
+                    break;
                 case TestLongRunningJobType:
                     await ExecuteTestLongRunningAsync(jobToExecute, linkedCts.Token);
                     terminalStatus = JobStatus.Succeeded;
@@ -720,6 +730,22 @@ public sealed class JobQueueService : IJobQueueService
             ct
         );
 
+        if (_targetMessagePresenceIndexService is not null)
+        {
+            await ReportProgressAsync(
+                jobRecord.JobId,
+                0.92,
+                "Refreshing target presence index...",
+                ct
+            );
+
+            await _targetMessagePresenceIndexService.RefreshForEvidenceAsync(
+                payload.CaseId,
+                payload.EvidenceItemId,
+                ct
+            );
+        }
+
         await ReportProgressAsync(
             jobRecord.JobId,
             1,
@@ -741,6 +767,40 @@ public sealed class JobQueueService : IJobQueueService
         );
 
         return ingestResult;
+    }
+
+    private async Task ExecuteTargetPresenceIndexRebuildAsync(JobRecord jobRecord, CancellationToken ct)
+    {
+        if (_targetMessagePresenceIndexService is null)
+        {
+            throw new InvalidOperationException("Target message presence index service is not configured.");
+        }
+
+        var payload = JsonSerializer.Deserialize<TargetPresenceIndexRebuildPayload>(
+            jobRecord.JsonPayload,
+            PayloadSerializerOptions
+        );
+
+        if (payload is null || payload.SchemaVersion != 1 || payload.CaseId == Guid.Empty)
+        {
+            throw new InvalidOperationException("Invalid TargetPresenceIndexRebuild payload.");
+        }
+
+        await ReportProgressAsync(
+            jobRecord.JobId,
+            0.15,
+            "Rebuilding target presence index...",
+            ct
+        );
+
+        await _targetMessagePresenceIndexService.RebuildCaseAsync(payload.CaseId, ct);
+
+        await ReportProgressAsync(
+            jobRecord.JobId,
+            1,
+            "Target presence index rebuilt.",
+            ct
+        );
     }
 
     private async Task ExecuteTestLongRunningAsync(JobRecord jobRecord, CancellationToken ct)
@@ -997,6 +1057,7 @@ public sealed class JobQueueService : IJobQueueService
         return jobType is EvidenceImportJobType
             or EvidenceVerifyJobType
             or MessagesIngestJobType
+            or TargetPresenceIndexRebuildJobType
             or TestLongRunningJobType;
     }
 
@@ -1391,6 +1452,13 @@ public sealed class JobQueueService : IJobQueueService
         public Guid CaseId { get; set; }
 
         public Guid EvidenceItemId { get; set; }
+    }
+
+    private sealed class TargetPresenceIndexRebuildPayload
+    {
+        public int SchemaVersion { get; set; }
+
+        public Guid CaseId { get; set; }
     }
 
     private sealed class TestLongRunningPayload

@@ -233,16 +233,13 @@ public sealed class MessageSearchService : IMessageSearchService
                     $targetId IS NULL
                     OR EXISTS (
                         SELECT 1
-                        FROM MessageParticipantLinkRecord mpl
-                        INNER JOIN TargetIdentifierLinkRecord til
-                            ON til.CaseId = mpl.CaseId
-                           AND til.IdentifierId = mpl.IdentifierId
+                        FROM TargetMessagePresenceRecord tmp
                         INNER JOIN IdentifierRecord id
-                            ON id.CaseId = til.CaseId
-                           AND id.IdentifierId = til.IdentifierId
-                        WHERE mpl.CaseId = me.CaseId
-                          AND mpl.MessageEventId = me.MessageEventId
-                          AND til.TargetId = $targetId
+                            ON id.CaseId = tmp.CaseId
+                           AND id.IdentifierId = tmp.MatchedIdentifierId
+                        WHERE tmp.CaseId = me.CaseId
+                          AND tmp.MessageEventId = me.MessageEventId
+                          AND tmp.TargetId = $targetId
                           AND ($identifierTypeFilter IS NULL OR id.Type = $identifierTypeFilter)
                     )
               )
@@ -318,16 +315,13 @@ public sealed class MessageSearchService : IMessageSearchService
                     $targetId IS NULL
                     OR EXISTS (
                         SELECT 1
-                        FROM MessageParticipantLinkRecord mpl
-                        INNER JOIN TargetIdentifierLinkRecord til
-                            ON til.CaseId = mpl.CaseId
-                           AND til.IdentifierId = mpl.IdentifierId
+                        FROM TargetMessagePresenceRecord tmp
                         INNER JOIN IdentifierRecord id
-                            ON id.CaseId = til.CaseId
-                           AND id.IdentifierId = til.IdentifierId
-                        WHERE mpl.CaseId = me.CaseId
-                          AND mpl.MessageEventId = me.MessageEventId
-                          AND til.TargetId = $targetId
+                            ON id.CaseId = tmp.CaseId
+                           AND id.IdentifierId = tmp.MatchedIdentifierId
+                        WHERE tmp.CaseId = me.CaseId
+                          AND tmp.MessageEventId = me.MessageEventId
+                          AND tmp.TargetId = $targetId
                           AND ($identifierTypeFilter IS NULL OR id.Type = $identifierTypeFilter)
                     )
               )
@@ -398,16 +392,13 @@ public sealed class MessageSearchService : IMessageSearchService
                     $targetId IS NULL
                     OR EXISTS (
                         SELECT 1
-                        FROM MessageParticipantLinkRecord mpl
-                        INNER JOIN TargetIdentifierLinkRecord til
-                            ON til.CaseId = mpl.CaseId
-                           AND til.IdentifierId = mpl.IdentifierId
+                        FROM TargetMessagePresenceRecord tmp
                         INNER JOIN IdentifierRecord id
-                            ON id.CaseId = til.CaseId
-                           AND id.IdentifierId = til.IdentifierId
-                        WHERE mpl.CaseId = me.CaseId
-                          AND mpl.MessageEventId = me.MessageEventId
-                          AND til.TargetId = $targetId
+                            ON id.CaseId = tmp.CaseId
+                           AND id.IdentifierId = tmp.MatchedIdentifierId
+                        WHERE tmp.CaseId = me.CaseId
+                          AND tmp.MessageEventId = me.MessageEventId
+                          AND tmp.TargetId = $targetId
                           AND ($identifierTypeFilter IS NULL OR id.Type = $identifierTypeFilter)
                     )
               )
@@ -477,20 +468,18 @@ public sealed class MessageSearchService : IMessageSearchService
                 id.IdentifierId,
                 id.Type,
                 id.ValueRaw,
-                COUNT(DISTINCT me.MessageEventId) AS MatchCount,
-                MAX(me.TimestampUtc) AS LastSeenUtc
+                COUNT(DISTINCT tmp.MessageEventId) AS MatchCount,
+                MAX(tmp.MessageTimestampUtc) AS LastSeenUtc
             FROM TargetIdentifierLinkRecord til
             INNER JOIN IdentifierRecord id
                 ON id.CaseId = til.CaseId
                AND id.IdentifierId = til.IdentifierId
-            LEFT JOIN MessageParticipantLinkRecord mpl
-                ON mpl.CaseId = til.CaseId
-               AND mpl.IdentifierId = til.IdentifierId
-            LEFT JOIN MessageEventRecord me
-                ON me.CaseId = mpl.CaseId
-               AND me.MessageEventId = mpl.MessageEventId
-               AND ($fromUtc IS NULL OR (me.TimestampUtc IS NOT NULL AND julianday(me.TimestampUtc) >= julianday($fromUtc)))
-               AND ($toUtc IS NULL OR (me.TimestampUtc IS NOT NULL AND julianday(me.TimestampUtc) <= julianday($toUtc)))
+            LEFT JOIN TargetMessagePresenceRecord tmp
+                ON tmp.CaseId = til.CaseId
+               AND tmp.TargetId = til.TargetId
+               AND tmp.MatchedIdentifierId = til.IdentifierId
+               AND ($fromUtc IS NULL OR (tmp.MessageTimestampUtc IS NOT NULL AND julianday(tmp.MessageTimestampUtc) >= julianday($fromUtc)))
+               AND ($toUtc IS NULL OR (tmp.MessageTimestampUtc IS NOT NULL AND julianday(tmp.MessageTimestampUtc) <= julianday($toUtc)))
             WHERE til.CaseId = $caseId
               AND til.TargetId = $targetId
               AND ($identifierTypeFilter IS NULL OR id.Type = $identifierTypeFilter)
@@ -539,20 +528,18 @@ public sealed class MessageSearchService : IMessageSearchService
         command.CommandText =
             """
             SELECT
-                COUNT(DISTINCT me.MessageEventId) AS MatchCount,
-                MAX(me.TimestampUtc) AS LastSeenUtc
+                COUNT(DISTINCT tmp.MessageEventId) AS MatchCount,
+                MAX(tmp.MessageTimestampUtc) AS LastSeenUtc
             FROM TargetIdentifierLinkRecord til
             INNER JOIN IdentifierRecord id
                 ON id.CaseId = til.CaseId
                AND id.IdentifierId = til.IdentifierId
-            LEFT JOIN MessageParticipantLinkRecord mpl
-                ON mpl.CaseId = til.CaseId
-               AND mpl.IdentifierId = til.IdentifierId
-            LEFT JOIN MessageEventRecord me
-                ON me.CaseId = mpl.CaseId
-               AND me.MessageEventId = mpl.MessageEventId
-               AND ($fromUtc IS NULL OR (me.TimestampUtc IS NOT NULL AND julianday(me.TimestampUtc) >= julianday($fromUtc)))
-               AND ($toUtc IS NULL OR (me.TimestampUtc IS NOT NULL AND julianday(me.TimestampUtc) <= julianday($toUtc)))
+            LEFT JOIN TargetMessagePresenceRecord tmp
+                ON tmp.CaseId = til.CaseId
+               AND tmp.TargetId = til.TargetId
+               AND tmp.MatchedIdentifierId = til.IdentifierId
+               AND ($fromUtc IS NULL OR (tmp.MessageTimestampUtc IS NOT NULL AND julianday(tmp.MessageTimestampUtc) >= julianday($fromUtc)))
+               AND ($toUtc IS NULL OR (tmp.MessageTimestampUtc IS NOT NULL AND julianday(tmp.MessageTimestampUtc) <= julianday($toUtc)))
             WHERE til.CaseId = $caseId
               AND til.TargetId = $targetId
               AND ($identifierTypeFilter IS NULL OR id.Type = $identifierTypeFilter);

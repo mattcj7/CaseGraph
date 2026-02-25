@@ -20,13 +20,15 @@ public sealed class TargetRegistryService : ITargetRegistryService
     private readonly IWorkspaceWriteGate _workspaceWriteGate;
     private readonly IAuditLogService _auditLogService;
     private readonly IClock _clock;
+    private readonly ITargetMessagePresenceIndexService? _targetMessagePresenceIndexService;
 
     public TargetRegistryService(
         IDbContextFactory<WorkspaceDbContext> dbContextFactory,
         IWorkspaceDatabaseInitializer databaseInitializer,
         IWorkspaceWriteGate workspaceWriteGate,
         IAuditLogService auditLogService,
-        IClock clock
+        IClock clock,
+        ITargetMessagePresenceIndexService? targetMessagePresenceIndexService = null
     )
     {
         _dbContextFactory = dbContextFactory;
@@ -34,6 +36,7 @@ public sealed class TargetRegistryService : ITargetRegistryService
         _workspaceWriteGate = workspaceWriteGate;
         _auditLogService = auditLogService;
         _clock = clock;
+        _targetMessagePresenceIndexService = targetMessagePresenceIndexService;
     }
 
     public async Task<IReadOnlyList<TargetSummary>> GetTargetsAsync(
@@ -101,10 +104,10 @@ public sealed class TargetRegistryService : ITargetRegistryService
             .ThenBy(link => link.Identifier!.ValueRaw)
             .ToListAsync(ct);
 
-        var whereSeenCount = await db.MessageParticipantLinks
+        var whereSeenCount = await db.TargetMessagePresences
             .AsNoTracking()
-            .Where(link => link.CaseId == caseId && link.TargetId == targetId)
-            .Select(link => link.MessageEventId)
+            .Where(row => row.CaseId == caseId && row.TargetId == targetId)
+            .Select(row => row.MessageEventId)
             .Distinct()
             .CountAsync(ct);
 
@@ -462,6 +465,15 @@ public sealed class TargetRegistryService : ITargetRegistryService
             caseId: request.CaseId,
             ct
         );
+
+        if (_targetMessagePresenceIndexService is not null)
+        {
+            await _targetMessagePresenceIndexService.RefreshForIdentifierAsync(
+                request.CaseId,
+                request.IdentifierId,
+                ct
+            );
+        }
     }
 
     public async Task<MessageParticipantLinkResult> LinkMessageParticipantAsync(
@@ -635,6 +647,15 @@ public sealed class TargetRegistryService : ITargetRegistryService
             ct
         );
 
+        if (_targetMessagePresenceIndexService is not null)
+        {
+            await _targetMessagePresenceIndexService.RefreshForIdentifierAsync(
+                request.CaseId,
+                identifierMutation.Identifier.IdentifierId,
+                ct
+            );
+        }
+
         if (createdTarget)
         {
             await WriteAuditAsync(
@@ -746,6 +767,26 @@ public sealed class TargetRegistryService : ITargetRegistryService
             caseId: caseId,
             ct
         );
+
+        if (_targetMessagePresenceIndexService is not null)
+        {
+            await _targetMessagePresenceIndexService.RefreshForIdentifierAsync(
+                caseId,
+                result.Identifier.IdentifierId,
+                ct
+            );
+
+            if (identifierIdToReplace.HasValue
+                && identifierIdToReplace.Value != result.Identifier.IdentifierId)
+            {
+                await _targetMessagePresenceIndexService.RefreshForIdentifierAsync(
+                    caseId,
+                    identifierIdToReplace.Value,
+                    ct
+                );
+            }
+        }
+
         return result;
     }
 

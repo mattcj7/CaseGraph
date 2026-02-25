@@ -42,6 +42,8 @@ public sealed class WorkspaceDbContext : DbContext
 
     public DbSet<MessageParticipantLinkRecord> MessageParticipantLinks => Set<MessageParticipantLinkRecord>();
 
+    public DbSet<TargetMessagePresenceRecord> TargetMessagePresences => Set<TargetMessagePresenceRecord>();
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         modelBuilder.Entity<CaseRecord>(entity =>
@@ -302,6 +304,34 @@ public sealed class WorkspaceDbContext : DbContext
                 .WithMany()
                 .HasForeignKey(e => e.TargetId)
                 .OnDelete(DeleteBehavior.SetNull);
+        });
+
+        modelBuilder.Entity<TargetMessagePresenceRecord>(entity =>
+        {
+            entity.ToTable("TargetMessagePresenceRecord");
+            entity.HasKey(e => e.PresenceId);
+            entity.Property(e => e.Role).IsRequired();
+            entity.Property(e => e.SourceLocator).IsRequired();
+            entity.HasIndex(e => new { e.CaseId, e.TargetId, e.MessageEventId });
+            entity.HasIndex(e => new { e.CaseId, e.TargetId, e.MatchedIdentifierId });
+            entity.HasIndex(e => new { e.CaseId, e.EvidenceItemId });
+            entity.HasIndex(e => new { e.CaseId, e.TargetId, e.MessageEventId, e.MatchedIdentifierId, e.Role })
+                .IsUnique();
+
+            entity.HasOne(e => e.MessageEvent)
+                .WithMany()
+                .HasForeignKey(e => e.MessageEventId)
+                .OnDelete(DeleteBehavior.Cascade);
+
+            entity.HasOne(e => e.Target)
+                .WithMany()
+                .HasForeignKey(e => e.TargetId)
+                .OnDelete(DeleteBehavior.Cascade);
+
+            entity.HasOne(e => e.MatchedIdentifier)
+                .WithMany()
+                .HasForeignKey(e => e.MatchedIdentifierId)
+                .OnDelete(DeleteBehavior.Cascade);
         });
     }
 }

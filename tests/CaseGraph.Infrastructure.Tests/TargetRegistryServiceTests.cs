@@ -362,6 +362,312 @@ public sealed class TargetRegistryServiceTests
     }
 
     [Fact]
+    public async Task LinkMessageParticipantAsync_FromSingleMessage_BackfillsPresenceAcrossAllMatchingMessages()
+    {
+        await using var fixture = await WorkspaceFixture.CreateAsync();
+        var registry = fixture.Services.GetRequiredService<ITargetRegistryService>();
+        var search = fixture.Services.GetRequiredService<IMessageSearchService>();
+
+        var caseInfo = await fixture.CreateCaseAsync("Presence Backfill Case");
+        var target = await registry.CreateTargetAsync(
+            new CreateTargetRequest(caseInfo.CaseId, "Alpha Target", null, null),
+            CancellationToken.None
+        );
+
+        var evidenceId = Guid.NewGuid();
+        var threadId = Guid.NewGuid();
+        var messageA = Guid.NewGuid();
+        var messageB = Guid.NewGuid();
+        var messageC = Guid.NewGuid();
+        var t1 = new DateTimeOffset(2026, 2, 25, 10, 0, 0, TimeSpan.Zero);
+        var t2 = t1.AddMinutes(5);
+        var t3 = t1.AddMinutes(10);
+
+        await using (var db = await fixture.CreateDbContextAsync())
+        {
+            db.EvidenceItems.Add(new EvidenceItemRecord
+            {
+                EvidenceItemId = evidenceId,
+                CaseId = caseInfo.CaseId,
+                DisplayName = "Synthetic",
+                OriginalPath = "synthetic",
+                OriginalFileName = "synthetic.txt",
+                AddedAtUtc = t1,
+                SizeBytes = 1,
+                Sha256Hex = "ab",
+                FileExtension = ".txt",
+                SourceType = "OTHER",
+                ManifestRelativePath = "manifest.json",
+                StoredRelativePath = "stored.dat"
+            });
+
+            db.MessageThreads.Add(new MessageThreadRecord
+            {
+                ThreadId = threadId,
+                CaseId = caseInfo.CaseId,
+                EvidenceItemId = evidenceId,
+                Platform = "SMS",
+                ThreadKey = "thread-presence-backfill",
+                CreatedAtUtc = t1,
+                SourceLocator = "test:thread:presence-backfill",
+                IngestModuleVersion = "test"
+            });
+
+            db.MessageEvents.AddRange(
+                new MessageEventRecord
+                {
+                    MessageEventId = messageA,
+                    ThreadId = threadId,
+                    CaseId = caseInfo.CaseId,
+                    EvidenceItemId = evidenceId,
+                    Platform = "SMS",
+                    TimestampUtc = t1,
+                    Direction = "Incoming",
+                    Sender = "+1 (555) 123-0001",
+                    Recipients = "+15554440001",
+                    Body = "checkpoint alpha",
+                    IsDeleted = false,
+                    SourceLocator = "xlsx:test#Messages:R10",
+                    IngestModuleVersion = "test"
+                },
+                new MessageEventRecord
+                {
+                    MessageEventId = messageB,
+                    ThreadId = threadId,
+                    CaseId = caseInfo.CaseId,
+                    EvidenceItemId = evidenceId,
+                    Platform = "SMS",
+                    TimestampUtc = t2,
+                    Direction = "Incoming",
+                    Sender = "5551230001",
+                    Recipients = "+15554440002",
+                    Body = "checkpoint bravo",
+                    IsDeleted = false,
+                    SourceLocator = "xlsx:test#Messages:R11",
+                    IngestModuleVersion = "test"
+                },
+                new MessageEventRecord
+                {
+                    MessageEventId = messageC,
+                    ThreadId = threadId,
+                    CaseId = caseInfo.CaseId,
+                    EvidenceItemId = evidenceId,
+                    Platform = "SMS",
+                    TimestampUtc = t3,
+                    Direction = "Incoming",
+                    Sender = "+15550009999",
+                    Recipients = "+15554440003",
+                    Body = "checkpoint charlie",
+                    IsDeleted = false,
+                    SourceLocator = "xlsx:test#Messages:R12",
+                    IngestModuleVersion = "test"
+                }
+            );
+
+            await db.SaveChangesAsync();
+        }
+
+        await registry.LinkMessageParticipantAsync(
+            new LinkMessageParticipantRequest(
+                caseInfo.CaseId,
+                messageA,
+                MessageParticipantRole.Sender,
+                "+1 (555) 123-0001",
+                TargetIdentifierType.Phone,
+                target.TargetId,
+                null
+            ),
+            CancellationToken.None
+        );
+
+        var summary = await search.GetTargetPresenceSummaryAsync(
+            caseInfo.CaseId,
+            target.TargetId,
+            identifierTypeFilter: null,
+            fromUtc: null,
+            toUtc: null,
+            CancellationToken.None
+        );
+
+        Assert.NotNull(summary);
+        Assert.Equal(2, summary.TotalCount);
+        var identifierSummary = Assert.Single(summary.ByIdentifier);
+        Assert.Equal(2, identifierSummary.Count);
+
+        await using var verifyDb = await fixture.CreateDbContextAsync();
+        var identifierId = await verifyDb.Identifiers
+            .AsNoTracking()
+            .Where(record => record.CaseId == caseInfo.CaseId && record.ValueNormalized == "+15551230001")
+            .Select(record => record.IdentifierId)
+            .SingleAsync();
+
+        var indexedEventIds = await verifyDb.TargetMessagePresences
+            .AsNoTracking()
+            .Where(row =>
+                row.CaseId == caseInfo.CaseId
+                && row.TargetId == target.TargetId
+                && row.MatchedIdentifierId == identifierId)
+            .Select(row => row.MessageEventId)
+            .Distinct()
+            .OrderBy(id => id)
+            .ToListAsync();
+
+        Assert.Equal(2, indexedEventIds.Count);
+        Assert.Contains(messageA, indexedEventIds);
+        Assert.Contains(messageB, indexedEventIds);
+        Assert.DoesNotContain(messageC, indexedEventIds);
+    }
+
+    [Fact]
+    public async Task SearchAsync_TargetFilter_AfterSingleMessageLink_ReturnsAllMatchingMessageEvents()
+    {
+        await using var fixture = await WorkspaceFixture.CreateAsync();
+        var registry = fixture.Services.GetRequiredService<ITargetRegistryService>();
+        var search = fixture.Services.GetRequiredService<IMessageSearchService>();
+
+        var caseInfo = await fixture.CreateCaseAsync("Target Search Index Case");
+        var target = await registry.CreateTargetAsync(
+            new CreateTargetRequest(caseInfo.CaseId, "Indexed Target", null, null),
+            CancellationToken.None
+        );
+
+        var evidenceId = Guid.NewGuid();
+        var threadId = Guid.NewGuid();
+        var messageA = Guid.NewGuid();
+        var messageB = Guid.NewGuid();
+        var messageOther = Guid.NewGuid();
+        var t1 = new DateTimeOffset(2026, 2, 25, 11, 0, 0, TimeSpan.Zero);
+
+        await using (var db = await fixture.CreateDbContextAsync())
+        {
+            db.EvidenceItems.Add(new EvidenceItemRecord
+            {
+                EvidenceItemId = evidenceId,
+                CaseId = caseInfo.CaseId,
+                DisplayName = "Synthetic",
+                OriginalPath = "synthetic",
+                OriginalFileName = "synthetic.txt",
+                AddedAtUtc = t1,
+                SizeBytes = 1,
+                Sha256Hex = "ab",
+                FileExtension = ".txt",
+                SourceType = "OTHER",
+                ManifestRelativePath = "manifest.json",
+                StoredRelativePath = "stored.dat"
+            });
+
+            db.MessageThreads.Add(new MessageThreadRecord
+            {
+                ThreadId = threadId,
+                CaseId = caseInfo.CaseId,
+                EvidenceItemId = evidenceId,
+                Platform = "SMS",
+                ThreadKey = "thread-target-search-index",
+                CreatedAtUtc = t1,
+                SourceLocator = "test:thread:target-search-index",
+                IngestModuleVersion = "test"
+            });
+
+            db.MessageEvents.AddRange(
+                new MessageEventRecord
+                {
+                    MessageEventId = messageA,
+                    ThreadId = threadId,
+                    CaseId = caseInfo.CaseId,
+                    EvidenceItemId = evidenceId,
+                    Platform = "SMS",
+                    TimestampUtc = t1,
+                    Direction = "Incoming",
+                    Sender = "+1 (555) 123-0001",
+                    Recipients = "+15554441001",
+                    Body = "checkpoint movement",
+                    IsDeleted = false,
+                    SourceLocator = "xlsx:test#Messages:R20",
+                    IngestModuleVersion = "test"
+                },
+                new MessageEventRecord
+                {
+                    MessageEventId = messageB,
+                    ThreadId = threadId,
+                    CaseId = caseInfo.CaseId,
+                    EvidenceItemId = evidenceId,
+                    Platform = "SMS",
+                    TimestampUtc = t1.AddMinutes(1),
+                    Direction = "Outgoing",
+                    Sender = "5551230001",
+                    Recipients = "+15554441002",
+                    Body = "checkpoint response",
+                    IsDeleted = false,
+                    SourceLocator = "xlsx:test#Messages:R21",
+                    IngestModuleVersion = "test"
+                },
+                new MessageEventRecord
+                {
+                    MessageEventId = messageOther,
+                    ThreadId = threadId,
+                    CaseId = caseInfo.CaseId,
+                    EvidenceItemId = evidenceId,
+                    Platform = "SMS",
+                    TimestampUtc = t1.AddMinutes(2),
+                    Direction = "Incoming",
+                    Sender = "+15550009999",
+                    Recipients = "+15554441003",
+                    Body = "checkpoint movement",
+                    IsDeleted = false,
+                    SourceLocator = "xlsx:test#Messages:R22",
+                    IngestModuleVersion = "test"
+                }
+            );
+
+            await db.SaveChangesAsync();
+        }
+
+        await registry.LinkMessageParticipantAsync(
+            new LinkMessageParticipantRequest(
+                caseInfo.CaseId,
+                messageA,
+                MessageParticipantRole.Sender,
+                "+1 (555) 123-0001",
+                TargetIdentifierType.Phone,
+                target.TargetId,
+                null
+            ),
+            CancellationToken.None
+        );
+
+        var hits = await search.SearchAsync(
+            new MessageSearchRequest(
+                caseInfo.CaseId,
+                Query: "checkpoint",
+                PlatformFilter: null,
+                SenderFilter: null,
+                RecipientFilter: null,
+                TargetId: target.TargetId,
+                IdentifierTypeFilter: null,
+                DirectionFilter: MessageDirectionFilter.Any,
+                FromUtc: null,
+                ToUtc: null,
+                Take: 20,
+                Skip: 0
+            ),
+            CancellationToken.None
+        );
+
+        Assert.Equal(2, hits.Count);
+        Assert.Contains(hits, hit => hit.MessageEventId == messageA);
+        Assert.Contains(hits, hit => hit.MessageEventId == messageB);
+        Assert.DoesNotContain(hits, hit => hit.MessageEventId == messageOther);
+
+        await using var verifyDb = await fixture.CreateDbContextAsync();
+        var provenanceLinks = await verifyDb.MessageParticipantLinks
+            .AsNoTracking()
+            .Where(link => link.CaseId == caseInfo.CaseId && link.TargetId == target.TargetId)
+            .ToListAsync();
+        Assert.Single(provenanceLinks);
+        Assert.Equal(messageA, provenanceLinks[0].MessageEventId);
+    }
+
+    [Fact]
     public async Task GetTargetsAsync_UsesSqliteProvider_OrdersInMemoryWithoutDateTimeOffsetOrderByFailure()
     {
         await using var fixture = await WorkspaceFixture.CreateAsync();
@@ -541,6 +847,8 @@ public sealed class TargetRegistryServiceTests
             services.AddSingleton<IWorkspaceWriteGate, WorkspaceWriteGate>();
             services.AddSingleton<IAuditLogService, AuditLogService>();
             services.AddSingleton<ICaseWorkspaceService, CaseWorkspaceService>();
+            services.AddSingleton<IMessageSearchService, MessageSearchService>();
+            services.AddSingleton<ITargetMessagePresenceIndexService, TargetMessagePresenceIndexService>();
             services.AddSingleton<ITargetRegistryService, TargetRegistryService>();
 
             var provider = services.BuildServiceProvider();

@@ -58,6 +58,7 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<IEvidenceVaultService, EvidenceVaultService>();
         services.AddSingleton<IMessageSearchService, MessageSearchService>();
         services.AddSingleton<IMessageIngestService, MessageIngestService>();
+        services.AddSingleton<ITargetMessagePresenceIndexService, TargetMessagePresenceIndexService>();
         services.AddSingleton<ITargetRegistryService, TargetRegistryService>();
         services.AddSingleton<IJobQueryService, JobQueryService>();
         services.AddSingleton<JobQueueService>();

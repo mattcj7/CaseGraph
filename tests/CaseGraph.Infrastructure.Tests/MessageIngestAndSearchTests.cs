@@ -511,66 +511,62 @@ public sealed class MessageIngestAndSearchTests
                 }
             );
 
-            db.MessageParticipantLinks.AddRange(
-                new MessageParticipantLinkRecord
+            db.TargetMessagePresences.AddRange(
+                new TargetMessagePresenceRecord
                 {
-                    ParticipantLinkId = Guid.NewGuid(),
+                    PresenceId = Guid.NewGuid(),
                     CaseId = caseInfo.CaseId,
+                    TargetId = targetId,
                     MessageEventId = messageOneId,
+                    MatchedIdentifierId = phoneIdentifierId,
                     Role = "Sender",
-                    ParticipantRaw = "+15551230001",
-                    IdentifierId = phoneIdentifierId,
-                    TargetId = targetId,
-                    CreatedAtUtc = t1,
-                    SourceType = "Derived",
-                    SourceEvidenceItemId = evidenceItemId,
-                    SourceLocator = "xlsx:test#Messages:R1;role=Sender",
-                    IngestModuleVersion = "test"
+                    EvidenceItemId = evidenceItemId,
+                    SourceLocator = "xlsx:test#Messages:R1",
+                    MessageTimestampUtc = t1,
+                    FirstSeenUtc = t1,
+                    LastSeenUtc = t1
                 },
-                new MessageParticipantLinkRecord
+                new TargetMessagePresenceRecord
                 {
-                    ParticipantLinkId = Guid.NewGuid(),
+                    PresenceId = Guid.NewGuid(),
                     CaseId = caseInfo.CaseId,
+                    TargetId = targetId,
                     MessageEventId = messageTwoId,
+                    MatchedIdentifierId = phoneIdentifierId,
                     Role = "Sender",
-                    ParticipantRaw = "+15551230001",
-                    IdentifierId = phoneIdentifierId,
-                    TargetId = targetId,
-                    CreatedAtUtc = t2,
-                    SourceType = "Derived",
-                    SourceEvidenceItemId = evidenceItemId,
-                    SourceLocator = "xlsx:test#Messages:R2;role=Sender",
-                    IngestModuleVersion = "test"
+                    EvidenceItemId = evidenceItemId,
+                    SourceLocator = "xlsx:test#Messages:R2",
+                    MessageTimestampUtc = t2,
+                    FirstSeenUtc = t2,
+                    LastSeenUtc = t2
                 },
-                new MessageParticipantLinkRecord
+                new TargetMessagePresenceRecord
                 {
-                    ParticipantLinkId = Guid.NewGuid(),
+                    PresenceId = Guid.NewGuid(),
                     CaseId = caseInfo.CaseId,
+                    TargetId = targetId,
                     MessageEventId = messageTwoId,
+                    MatchedIdentifierId = emailIdentifierId,
                     Role = "Recipient",
-                    ParticipantRaw = "alpha@example.com",
-                    IdentifierId = emailIdentifierId,
-                    TargetId = targetId,
-                    CreatedAtUtc = t2,
-                    SourceType = "Derived",
-                    SourceEvidenceItemId = evidenceItemId,
-                    SourceLocator = "xlsx:test#Messages:R2;role=Recipient",
-                    IngestModuleVersion = "test"
+                    EvidenceItemId = evidenceItemId,
+                    SourceLocator = "xlsx:test#Messages:R2",
+                    MessageTimestampUtc = t2,
+                    FirstSeenUtc = t2,
+                    LastSeenUtc = t2
                 },
-                new MessageParticipantLinkRecord
+                new TargetMessagePresenceRecord
                 {
-                    ParticipantLinkId = Guid.NewGuid(),
+                    PresenceId = Guid.NewGuid(),
                     CaseId = caseInfo.CaseId,
-                    MessageEventId = messageThreeId,
-                    Role = "Sender",
-                    ParticipantRaw = "alpha@example.com",
-                    IdentifierId = emailIdentifierId,
                     TargetId = targetId,
-                    CreatedAtUtc = t2.AddMinutes(1),
-                    SourceType = "Derived",
-                    SourceEvidenceItemId = evidenceItemId,
-                    SourceLocator = "xlsx:test#Messages:R3;role=Sender",
-                    IngestModuleVersion = "test"
+                    MessageEventId = messageThreeId,
+                    MatchedIdentifierId = emailIdentifierId,
+                    Role = "Sender",
+                    EvidenceItemId = evidenceItemId,
+                    SourceLocator = "xlsx:test#Messages:R3",
+                    MessageTimestampUtc = null,
+                    FirstSeenUtc = t2.AddMinutes(1),
+                    LastSeenUtc = t2.AddMinutes(1)
                 }
             );
 
@@ -762,51 +758,34 @@ public sealed class MessageIngestAndSearchTests
                 IngestModuleVersion = "test"
             });
 
-            db.MessageParticipantLinks.AddRange(
-                new MessageParticipantLinkRecord
+            db.TargetMessagePresences.AddRange(
+                new TargetMessagePresenceRecord
                 {
-                    ParticipantLinkId = Guid.NewGuid(),
+                    PresenceId = Guid.NewGuid(),
                     CaseId = caseInfo.CaseId,
+                    TargetId = targetId,
                     MessageEventId = targetKeywordMessageId,
+                    MatchedIdentifierId = targetIdentifierId,
                     Role = "Sender",
-                    ParticipantRaw = "+15551230001",
-                    IdentifierId = targetIdentifierId,
-                    TargetId = targetId,
-                    CreatedAtUtc = now,
-                    SourceType = "Derived",
-                    SourceEvidenceItemId = evidenceItemId,
-                    SourceLocator = "xlsx:test#Messages:R10;role=Sender",
-                    IngestModuleVersion = "test"
+                    EvidenceItemId = evidenceItemId,
+                    SourceLocator = "xlsx:test#Messages:R10",
+                    MessageTimestampUtc = now,
+                    FirstSeenUtc = now,
+                    LastSeenUtc = now
                 },
-                new MessageParticipantLinkRecord
+                new TargetMessagePresenceRecord
                 {
-                    ParticipantLinkId = Guid.NewGuid(),
+                    PresenceId = Guid.NewGuid(),
                     CaseId = caseInfo.CaseId,
+                    TargetId = targetId,
                     MessageEventId = targetNonKeywordMessageId,
+                    MatchedIdentifierId = targetIdentifierId,
                     Role = "Sender",
-                    ParticipantRaw = "+15551230001",
-                    IdentifierId = targetIdentifierId,
-                    TargetId = targetId,
-                    CreatedAtUtc = now.AddMinutes(1),
-                    SourceType = "Derived",
-                    SourceEvidenceItemId = evidenceItemId,
-                    SourceLocator = "xlsx:test#Messages:R11;role=Sender",
-                    IngestModuleVersion = "test"
-                },
-                new MessageParticipantLinkRecord
-                {
-                    ParticipantLinkId = Guid.NewGuid(),
-                    CaseId = caseInfo.CaseId,
-                    MessageEventId = otherKeywordMessageId,
-                    Role = "Sender",
-                    ParticipantRaw = "+15559990000",
-                    IdentifierId = otherIdentifierId,
-                    TargetId = null,
-                    CreatedAtUtc = now.AddMinutes(2),
-                    SourceType = "Derived",
-                    SourceEvidenceItemId = evidenceItemId,
-                    SourceLocator = "xlsx:test#Messages:R12;role=Sender",
-                    IngestModuleVersion = "test"
+                    EvidenceItemId = evidenceItemId,
+                    SourceLocator = "xlsx:test#Messages:R11",
+                    MessageTimestampUtc = now.AddMinutes(1),
+                    FirstSeenUtc = now.AddMinutes(1),
+                    LastSeenUtc = now.AddMinutes(1)
                 }
             );
 
@@ -981,36 +960,34 @@ public sealed class MessageIngestAndSearchTests
                 IngestModuleVersion = "test"
             });
 
-            db.MessageParticipantLinks.AddRange(
-                new MessageParticipantLinkRecord
+            db.TargetMessagePresences.AddRange(
+                new TargetMessagePresenceRecord
                 {
-                    ParticipantLinkId = Guid.NewGuid(),
+                    PresenceId = Guid.NewGuid(),
                     CaseId = caseInfo.CaseId,
+                    TargetId = targetId,
                     MessageEventId = incomingMessageId,
+                    MatchedIdentifierId = identifierId,
                     Role = "Recipient",
-                    ParticipantRaw = "+15551230001",
-                    IdentifierId = identifierId,
-                    TargetId = targetId,
-                    CreatedAtUtc = now,
-                    SourceType = "Derived",
-                    SourceEvidenceItemId = evidenceItemId,
-                    SourceLocator = "xlsx:test#Messages:R20;role=Recipient",
-                    IngestModuleVersion = "test"
+                    EvidenceItemId = evidenceItemId,
+                    SourceLocator = "xlsx:test#Messages:R20",
+                    MessageTimestampUtc = now,
+                    FirstSeenUtc = now,
+                    LastSeenUtc = now
                 },
-                new MessageParticipantLinkRecord
+                new TargetMessagePresenceRecord
                 {
-                    ParticipantLinkId = Guid.NewGuid(),
+                    PresenceId = Guid.NewGuid(),
                     CaseId = caseInfo.CaseId,
-                    MessageEventId = outgoingMessageId,
-                    Role = "Sender",
-                    ParticipantRaw = "+15551230001",
-                    IdentifierId = identifierId,
                     TargetId = targetId,
-                    CreatedAtUtc = now.AddMinutes(1),
-                    SourceType = "Derived",
-                    SourceEvidenceItemId = evidenceItemId,
-                    SourceLocator = "xlsx:test#Messages:R21;role=Sender",
-                    IngestModuleVersion = "test"
+                    MessageEventId = outgoingMessageId,
+                    MatchedIdentifierId = identifierId,
+                    Role = "Sender",
+                    EvidenceItemId = evidenceItemId,
+                    SourceLocator = "xlsx:test#Messages:R21",
+                    MessageTimestampUtc = now.AddMinutes(1),
+                    FirstSeenUtc = now.AddMinutes(1),
+                    LastSeenUtc = now.AddMinutes(1)
                 }
             );
 
@@ -1517,6 +1494,7 @@ public sealed class MessageIngestAndSearchTests
             services.AddSingleton<IEvidenceVaultService, EvidenceVaultService>();
             services.AddSingleton<IMessageSearchService, MessageSearchService>();
             services.AddSingleton<IMessageIngestService, MessageIngestService>();
+            services.AddSingleton<ITargetMessagePresenceIndexService, TargetMessagePresenceIndexService>();
             services.AddSingleton<IJobQueryService, JobQueryService>();
             services.AddSingleton<JobQueueService>();
             services.AddSingleton<IJobQueueService>(provider => provider.GetRequiredService<JobQueueService>());
