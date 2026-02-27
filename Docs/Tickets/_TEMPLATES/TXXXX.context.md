@@ -1,0 +1,19 @@
+# Ticket Context Pack: TXXXX - <Title>
+
+## Purpose
+State what this ticket changes and why it exists.
+
+## Canonical links (do not paste content)
+- [Ticket index](Docs/TICKETS.md)
+- [Invariants](Docs/INVARIANTS.md)
+- [Architecture](Docs/ARCHITECTURE.md)
+- [Data model](Docs/DATA_MODEL.md)
+- [Workflow](Docs/Ticket_Context_Workflow.md)
+
+## Files to open (whitelist)
+- List only the files needed for this ticket.
+- Keep this list short and deterministic.
+
+## Notes and constraints
+- Offline-only implementation.
+- Keep scope constrained to the active ticket.

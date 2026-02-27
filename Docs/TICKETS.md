@@ -9,145 +9,146 @@ This file tracks planned, active, and completed tickets.
   - **Upcoming Tickets** (current and deduplicated)
   - **Completed Tickets** (append-only)
 
-## Upcoming Tickets
-- (none)
+# Ticket: T0023 - Ticket Context Packs + Invariants + Dev Tooling (“TicketKit”)
 
-## Active Ticket
-- (none)
+## Goal
+Bake the context-minimization workflow into the repo so each future ticket is started with a small, deterministic bundle: Ticket + Context Pack + Invariants links—optionally verified by a local tool.
 
-## T0022 - Association Graph v1 (case graph + global overlay + export)
-
-### Goal
-Provide a usable relationship visualization that helps investigators quickly see:
-- clusters/crews, connectors/bridges, and high-volume links
-- how identifiers connect to targets
-- optional “global person” overlay so cross-case identity is usable
-
-### Context
-We now have:
-- Targets + identifiers
-- Target ↔ message presence indexing (T0020)
-- Global Person Registry cross-case (T0021)
-- SQLite lock resilience (T0018)
-
-This ticket turns that into an explorable graph UI.
-
----
+## Context
+As CaseGraph Offline grows, copying global rules and past history into every new ticket bloats LLM/Codex context and increases drift. We want a repo-native, repeatable approach that centralizes invariants once, creates a per-ticket Context Pack, and (optionally) enforces a small “context budget” offline.
 
 ## Scope
+### In scope
+- Add canonical docs to repo:
+  - Docs/INVARIANTS.md
+  - Docs/ARCHITECTURE.md
+  - Docs/DATA_MODEL.md
+  - Docs/DECISIONS/ADR-TEMPLATE.md
+  - Docs/Tickets/_TEMPLATES/TXXXX.context.md
+  - Docs/Tickets/_TEMPLATES/TXXXX.closeout.md
+  - Docs/Ticket_Context_Workflow.md
+- Create an offline local dev tool (C#/.NET console app) Tools/TicketKit that can:
+  - `ticketkit init TXXXX "Title"` → creates:
+    - Docs/Tickets/TXXXX.context.md (from template)
+    - Docs/Tickets/TXXXX.closeout.md (from template)
+    - (optional) an ADR stub from template via flag (e.g., `--adr "Title"`)
+  - `ticketkit verify TXXXX` → checks:
+    - context/closeout files exist
+    - required headings exist (basic validation)
+    - referenced file links exist (basic validation)
+    - optional “context budget” warnings (best-effort):
+      - touched top-level folders count
+      - number of migrations touched
+- Add lightweight docs: “How to start a ticket with Codex using the prompt bundle.”
 
-### A) New UI page: Association Graph
-Add a new navigation entry and page (WPF):
-- Page: `AssociationGraphView.xaml`
-- ViewModel: `AssociationGraphViewModel`
-- A left panel for filters, a main graph viewport, and a right “Details” panel.
+### Out of scope
+- Any runtime CaseGraph product features or UI additions
+- CI/GitHub Actions enforcement (keep it local/offline for now)
+- Automatic AI-generated context packs or code summarization
 
-Minimum UI controls:
-- Case selector (current case only is fine; no multi-case browsing yet)
-- Toggle: **Include Identifiers** (default ON)
-- Toggle: **Group by Global Person** (default OFF)
-- Slider/box: **Min Edge Weight** (default 2)
-- Search box: highlights nodes by text match
-- Button: **Rebuild Graph**
-- Button: **Export Graph Snapshot (PNG)**
+## Acceptance Criteria (Testable)
+- [ ] Repo contains the canonical docs and templates listed in scope.
+- [ ] `dotnet run --project Tools/TicketKit -- init T0023 "Ticket Context Packs"` creates:
+  - [ ] Docs/Tickets/T0023.context.md
+  - [ ] Docs/Tickets/T0023.closeout.md
+- [ ] `init` does not overwrite existing files unless `--force` is provided.
+- [ ] `dotnet run --project Tools/TicketKit -- verify T0023`:
+  - [ ] returns exit code 0 when required files exist and validations pass
+  - [ ] returns non-zero when required files are missing or required headings are missing
+  - [ ] prints clear, actionable messages (what to fix and where)
+- [ ] Tool operates offline (no network access required or attempted).
+- [ ] `verify` handles missing `git` gracefully (budget checks are skipped with a clear message).
+- [ ] Unit tests exist for template rendering, safe writes, and verify exit codes.
 
-Interaction:
-- Click node → show details (type, name/value, counts, “last seen” best-effort)
-- From details:
-  - **Open Target** (if node is Target)
-  - **Search messages** filtered to that Target/Identifier
-- Hover edge → show weight + interpretation (e.g., “shared threads: X”, “co-occurrence events: Y”)
+## Deliverables
+- Code:
+  - Tools/TicketKit/ .NET console app with `init` and `verify` commands
+- UI:
+  - None
+- Database (migrations):
+  - None
+- Tests:
+  - Unit tests for TicketKit (template rendering, safe write, verify rules)
+- Docs:
+  - Canonical docs/templates added
+  - Workflow doc updated with the “Codex prompt bundle” instructions
 
-### B) Graph definition (v1)
-Node types:
-- Target (case target)
-- Identifier (phone/email/handle) — when Include Identifiers is ON
-- Global Person (optional overlay) — when Group by Global Person is ON
+## Data Model Changes
+- None
 
-Edge types:
-1) Target ↔ Identifier
-- source: Target’s identifiers table
-- weight: 1 (or optionally “messages matched” count if cheap)
+## Provenance & Audit Requirements
+### Provenance
+N/A (dev tooling + docs only)
 
-2) Target ↔ Target
-- derived from co-occurrence in communications:
-  - Use `TargetMessagePresence` index to compute: targets that appear in the same **thread** and/or same **message event**
-- Edge weight definition (v1):
-  - `weight = distinctThreadCount` (preferred) OR `distinctMessageEventCount`
-- Optional: store additional metrics (threadCount, eventCount, lastSeenUtc)
+### Audit
+N/A (dev tooling + docs only)
 
-3) (Optional) Identifier ↔ Identifier
-- Only if cheap and helpful; otherwise defer to T0022A.
+## Performance & Resource Management Requirements
+- Use async/await for I/O when beneficial; avoid unnecessary blocking.
+- Use streaming for file reads/writes; avoid loading large files into memory.
+- Dispose all IDisposable resources deterministically.
+- Support CancellationToken for longer operations (verify scans).
+- Tool must remain fast on large repos (avoid heavyweight recursive parsing unless requested).
 
-Global overlay behavior:
-- If Group by Global Person is ON:
-  - Collapse multiple case targets that map to the same Global Person into a single “Person” node
-  - Edges merge: weights sum (or max), and details show the contributing targets/identifiers.
+## Implementation Notes / Edge Cases
+- Templates live in repo under Docs/Tickets/_TEMPLATES/ and are copied/expanded.
+- Safe writes:
+  - Default: do not overwrite existing files
+  - `--force` overwrites existing files
+- Basic validations for `verify`:
+  - TXXXX.context.md contains required headings:
+    - “## Purpose”
+    - “## Canonical links (do not paste content)” (or equivalent)
+    - “## Files to open (whitelist)”
+  - TXXXX.closeout.md contains required headings:
+    - “## What shipped”
+    - “## Files changed (high-level)”
+- Link existence check:
+  - parse obvious `Docs/...` relative paths and confirm files exist
+  - do not require perfect markdown link parsing—keep it resilient
+- Git/budget checks (best-effort):
+  - If `git` is available, use `git diff --name-only HEAD` (or configurable base) to approximate touched files.
+  - If not available, print: “Budget checks skipped (git not available).”
+- Budget checks:
+  - touched top-level folders > 3 → warn (or fail under `--strict`)
+  - migrations touched > 1 → warn (or fail under `--strict`)
+- CLI UX:
+  - `ticketkit help` prints usage examples
+  - errors are actionable and include exit codes
 
-### C) Infrastructure: Graph query service
-Add an Infrastructure query/service that builds the graph model from SQLite:
+## Test Plan
+### Unit tests
+- Template rendering:
+  - replaces TXXXX and <Title> tokens correctly
+- Safe writes:
+  - refuses overwrite by default
+  - overwrites with `--force`
+- Verify:
+  - missing files → non-zero exit code
+  - missing required headings → non-zero exit code
+  - valid files → exit code 0
+  - `--strict` converts budget warnings into failures (if budget checks run)
 
-Proposed:
-- `AssociationGraphQueryService.BuildAsync(caseId, options, ct)` → returns:
-  - `GraphNode[]` (Id, Kind, Label, Optional metadata)
-  - `GraphEdge[]` (SourceId, TargetId, Kind, Weight, Optional metadata)
+### Integration tests (if applicable)
+- Create a temp folder repo layout, run `init`, assert files exist and contain required headings.
+- Run `verify` before and after deleting a required file.
 
-Must:
-- use set-based queries, avoid per-node N+1
-- be deterministic for tests
-- work well with 10k–100k message events (best-effort for v1)
+## How to Verify Manually
+1. Build tool: `dotnet build Tools/TicketKit/TicketKit.csproj`
+2. Run init:
+   - `dotnet run --project Tools/TicketKit -- init T0023 "Ticket Context Packs"`
+3. Confirm created files exist in Docs/Tickets/.
+4. Run verify:
+   - `dotnet run --project Tools/TicketKit -- verify T0023`
+5. Delete Docs/Tickets/T0023.context.md and re-run verify; confirm non-zero exit and actionable output.
+6. Re-run init without --force; confirm it refuses to overwrite.
+7. Re-run init with --force; confirm overwrite occurs.
 
-### D) Rendering library (recommended)
-Use a proven offline graph layout renderer for WPF.
-
-Recommendation:
-- MSAGL (WPF control) via NuGet, render nodes/edges + allow pan/zoom
-- Keep styling minimal; focus on correctness + interaction
-
-### E) Export snapshot
-- Export the rendered graph to PNG:
-  - default path: `WorkspaceRoot\session\exports\graph-<caseId>-<timestamp>.png`
-- Log success/failure and include path in UI toast/status.
-
-### F) Tests (DB tier)
-Add deterministic SQLite tests (Infrastructure layer):
-1) Graph build includes expected nodes/edges
-- Seed: targets + identifiers + message presence rows
-- Assert: Target↔Identifier edges exist
-- Assert: Target↔Target edge weights match expected threadCount/eventCount
-
-2) Global overlay grouping
-- Seed: 2 targets in same global person, 1 target in different person
-- Assert: collapsed node count and merged edge weights are correct
-
-3) Export path builder (unit test)
-- Assert file naming + directory creation is correct (no UI automation required)
-
-### Out of Scope
-- Fancy community detection, clustering algorithms, or timeline animation
-- Bulk auto-linking targets/identifiers
-- Multi-case “full enterprise” graph browsing (beyond global overlay)
-
----
-
-## Acceptance Criteria
-- Graph page loads and renders a meaningful graph for a case.
-- Clicking a Target node can open Target details and can open Search filtered to that target.
-- Including Identifiers shows Target↔Identifier edges.
-- Group-by-global-person collapses correctly and does not lose data (weights merge).
-- Export creates a PNG file and shows the path.
-- `pwsh tools/test-smart.ps1 -ForceDb` passes.
-
----
-
-## Manual Verify
-1) Open a case with messages + linked targets/identifiers.
-2) Open Association Graph:
-   - verify nodes/edges render
-   - click nodes and open Search filtered to them
-3) Toggle Group by Global Person:
-   - verify nodes collapse and edges re-weight
-4) Export snapshot and open the PNG on disk.
+## Codex Instructions
+- Follow offline-only constraints (no network calls/telemetry).
+- Do not touch product runtime behavior; this ticket is docs + dev tooling only.
+- Keep build green; add tests; no migrations expected.
+- End with: summary + files changed + steps to verify.
 
 
 ## Completed Tickets (append-only)
@@ -190,3 +191,4 @@ Add deterministic SQLite tests (Infrastructure layer):
 - 2026-02-25 - T0020 - Added `TargetMessagePresence` indexing with rebuild/incremental refresh on ingest/link changes, moved Where Seen and target-filtered search to the index, and added deterministic SQLite coverage that a single-message link backfills all matching messages while preserving provenance.
 - 2026-02-25 - T0021 - Added global person registry tables and target linkage, enabled create/link/unlink global-person UI flows with cross-case visibility, introduced global-person message search filtering, and added deterministic multi-case SQLite coverage for shared identities and explicit global-identifier conflict handling.
 - 2026-02-25 - T0022 - Added an Association Graph page with filters/pan-zoom/details/actions, implemented Infrastructure graph query + global-person grouping + PNG export path builder, added graph snapshot export UX/logging, and added deterministic SQLite tests for graph correctness/grouping plus export-path unit coverage.
+- 2026-02-27 - T0023 - Added ticket context-pack canonical docs/templates, implemented offline `TicketKit` (`init`/`verify` with safe writes, link/heading checks, budget checks, strict mode, git-missing handling), and added deterministic unit coverage for rendering/write safety/verify behavior.
