@@ -3,152 +3,32 @@
 This file tracks planned, active, and completed tickets.
 
 ## How to use
-- The single source of truth for ticket execution is this file.
-- Codex executes only the ticket listed in **Active Ticket** with scope defined in **Active Ticket Spec**.
-- Every ticket pass must update:
-  - **Upcoming Tickets** (current and deduplicated)
-  - **Completed Tickets** (append-only)
+- This file is the **ticket index** (planned/active/completed). It remains append-only for Completed Tickets.
+- The source of truth for executing a ticket is:
+  - `Docs/Tickets/TXXXX.md` (spec)
+  - `Docs/Tickets/TXXXX.context.md` (context pack; whitelist + links)
+  - `Docs/Tickets/TXXXX.closeout.md` (what shipped + tests run)
+- Standard workflow:
+  1) `dotnet run --project Tools/TicketKit -- init TXXXX "Title"`
+  2) Create/Update `Docs/Tickets/TXXXX.md`
+  3) Fill `Docs/Tickets/TXXXX.context.md` (whitelist + constraints)
+  4) Gate before coding: `dotnet run --project Tools/TicketKit -- verify TXXXX --strict`
+  5) After merge, fill `Docs/Tickets/TXXXX.closeout.md`
+- Codex should be given **only**:
+  - `Docs/Tickets/TXXXX.md`
+  - `Docs/Tickets/TXXXX.context.md`
+  - plus linked headings in Docs/INVARIANTS.md (do not paste global rules)
 
-# Ticket: T0023 - Ticket Context Packs + Invariants + Dev Tooling (“TicketKit”)
+## Active Ticket
+- T0024 - Timeline View v1 (Messages-first)
+  - Spec: Docs/Tickets/T0024.md
+  - Context: Docs/Tickets/T0024.context.md
+  - Closeout: Docs/Tickets/T0024.closeout.md
 
-## Goal
-Bake the context-minimization workflow into the repo so each future ticket is started with a small, deterministic bundle: Ticket + Context Pack + Invariants links—optionally verified by a local tool.
+## Upcoming Tickets (deduplicated)
 
-## Context
-As CaseGraph Offline grows, copying global rules and past history into every new ticket bloats LLM/Codex context and increases drift. We want a repo-native, repeatable approach that centralizes invariants once, creates a per-ticket Context Pack, and (optionally) enforces a small “context budget” offline.
 
-## Scope
-### In scope
-- Add canonical docs to repo:
-  - Docs/INVARIANTS.md
-  - Docs/ARCHITECTURE.md
-  - Docs/DATA_MODEL.md
-  - Docs/DECISIONS/ADR-TEMPLATE.md
-  - Docs/Tickets/_TEMPLATES/TXXXX.context.md
-  - Docs/Tickets/_TEMPLATES/TXXXX.closeout.md
-  - Docs/Ticket_Context_Workflow.md
-- Create an offline local dev tool (C#/.NET console app) Tools/TicketKit that can:
-  - `ticketkit init TXXXX "Title"` → creates:
-    - Docs/Tickets/TXXXX.context.md (from template)
-    - Docs/Tickets/TXXXX.closeout.md (from template)
-    - (optional) an ADR stub from template via flag (e.g., `--adr "Title"`)
-  - `ticketkit verify TXXXX` → checks:
-    - context/closeout files exist
-    - required headings exist (basic validation)
-    - referenced file links exist (basic validation)
-    - optional “context budget” warnings (best-effort):
-      - touched top-level folders count
-      - number of migrations touched
-- Add lightweight docs: “How to start a ticket with Codex using the prompt bundle.”
 
-### Out of scope
-- Any runtime CaseGraph product features or UI additions
-- CI/GitHub Actions enforcement (keep it local/offline for now)
-- Automatic AI-generated context packs or code summarization
-
-## Acceptance Criteria (Testable)
-- [ ] Repo contains the canonical docs and templates listed in scope.
-- [ ] `dotnet run --project Tools/TicketKit -- init T0023 "Ticket Context Packs"` creates:
-  - [ ] Docs/Tickets/T0023.context.md
-  - [ ] Docs/Tickets/T0023.closeout.md
-- [ ] `init` does not overwrite existing files unless `--force` is provided.
-- [ ] `dotnet run --project Tools/TicketKit -- verify T0023`:
-  - [ ] returns exit code 0 when required files exist and validations pass
-  - [ ] returns non-zero when required files are missing or required headings are missing
-  - [ ] prints clear, actionable messages (what to fix and where)
-- [ ] Tool operates offline (no network access required or attempted).
-- [ ] `verify` handles missing `git` gracefully (budget checks are skipped with a clear message).
-- [ ] Unit tests exist for template rendering, safe writes, and verify exit codes.
-
-## Deliverables
-- Code:
-  - Tools/TicketKit/ .NET console app with `init` and `verify` commands
-- UI:
-  - None
-- Database (migrations):
-  - None
-- Tests:
-  - Unit tests for TicketKit (template rendering, safe write, verify rules)
-- Docs:
-  - Canonical docs/templates added
-  - Workflow doc updated with the “Codex prompt bundle” instructions
-
-## Data Model Changes
-- None
-
-## Provenance & Audit Requirements
-### Provenance
-N/A (dev tooling + docs only)
-
-### Audit
-N/A (dev tooling + docs only)
-
-## Performance & Resource Management Requirements
-- Use async/await for I/O when beneficial; avoid unnecessary blocking.
-- Use streaming for file reads/writes; avoid loading large files into memory.
-- Dispose all IDisposable resources deterministically.
-- Support CancellationToken for longer operations (verify scans).
-- Tool must remain fast on large repos (avoid heavyweight recursive parsing unless requested).
-
-## Implementation Notes / Edge Cases
-- Templates live in repo under Docs/Tickets/_TEMPLATES/ and are copied/expanded.
-- Safe writes:
-  - Default: do not overwrite existing files
-  - `--force` overwrites existing files
-- Basic validations for `verify`:
-  - TXXXX.context.md contains required headings:
-    - “## Purpose”
-    - “## Canonical links (do not paste content)” (or equivalent)
-    - “## Files to open (whitelist)”
-  - TXXXX.closeout.md contains required headings:
-    - “## What shipped”
-    - “## Files changed (high-level)”
-- Link existence check:
-  - parse obvious `Docs/...` relative paths and confirm files exist
-  - do not require perfect markdown link parsing—keep it resilient
-- Git/budget checks (best-effort):
-  - If `git` is available, use `git diff --name-only HEAD` (or configurable base) to approximate touched files.
-  - If not available, print: “Budget checks skipped (git not available).”
-- Budget checks:
-  - touched top-level folders > 3 → warn (or fail under `--strict`)
-  - migrations touched > 1 → warn (or fail under `--strict`)
-- CLI UX:
-  - `ticketkit help` prints usage examples
-  - errors are actionable and include exit codes
-
-## Test Plan
-### Unit tests
-- Template rendering:
-  - replaces TXXXX and <Title> tokens correctly
-- Safe writes:
-  - refuses overwrite by default
-  - overwrites with `--force`
-- Verify:
-  - missing files → non-zero exit code
-  - missing required headings → non-zero exit code
-  - valid files → exit code 0
-  - `--strict` converts budget warnings into failures (if budget checks run)
-
-### Integration tests (if applicable)
-- Create a temp folder repo layout, run `init`, assert files exist and contain required headings.
-- Run `verify` before and after deleting a required file.
-
-## How to Verify Manually
-1. Build tool: `dotnet build Tools/TicketKit/TicketKit.csproj`
-2. Run init:
-   - `dotnet run --project Tools/TicketKit -- init T0023 "Ticket Context Packs"`
-3. Confirm created files exist in Docs/Tickets/.
-4. Run verify:
-   - `dotnet run --project Tools/TicketKit -- verify T0023`
-5. Delete Docs/Tickets/T0023.context.md and re-run verify; confirm non-zero exit and actionable output.
-6. Re-run init without --force; confirm it refuses to overwrite.
-7. Re-run init with --force; confirm overwrite occurs.
-
-## Codex Instructions
-- Follow offline-only constraints (no network calls/telemetry).
-- Do not touch product runtime behavior; this ticket is docs + dev tooling only.
-- Keep build green; add tests; no migrations expected.
-- End with: summary + files changed + steps to verify.
 
 
 ## Completed Tickets (append-only)
