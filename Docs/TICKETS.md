@@ -20,10 +20,7 @@ This file tracks planned, active, and completed tickets.
   - plus linked headings in Docs/INVARIANTS.md (do not paste global rules)
 
 ## Active Ticket
-- T0024 - Timeline View v1 (Messages-first)
-  - Spec: Docs/Tickets/T0024.md
-  - Context: Docs/Tickets/T0024.context.md
-  - Closeout: Docs/Tickets/T0024.closeout.md
+
 
 ## Upcoming Tickets (deduplicated)
 
@@ -72,3 +69,4 @@ This file tracks planned, active, and completed tickets.
 - 2026-02-25 - T0021 - Added global person registry tables and target linkage, enabled create/link/unlink global-person UI flows with cross-case visibility, introduced global-person message search filtering, and added deterministic multi-case SQLite coverage for shared identities and explicit global-identifier conflict handling.
 - 2026-02-25 - T0022 - Added an Association Graph page with filters/pan-zoom/details/actions, implemented Infrastructure graph query + global-person grouping + PNG export path builder, added graph snapshot export UX/logging, and added deterministic SQLite tests for graph correctness/grouping plus export-path unit coverage.
 - 2026-02-27 - T0023 - Added ticket context-pack canonical docs/templates, implemented offline `TicketKit` (`init`/`verify` with safe writes, link/heading checks, budget checks, strict mode, git-missing handling), and added deterministic unit coverage for rendering/write safety/verify behavior.
+- 2026-02-28 - T0024 - Added a paged/cancellable Messages-first Timeline view and SQLite query service with target/global-person/date/direction/text filters, provenance actions, audit logging for timeline searches, and deterministic infrastructure coverage for ordering/filter/audit behavior.

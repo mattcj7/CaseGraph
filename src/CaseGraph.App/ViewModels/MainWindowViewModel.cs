@@ -4,6 +4,7 @@ using CaseGraph.App.Views.Dialogs;
 using CaseGraph.Core.Abstractions;
 using CaseGraph.Core.Diagnostics;
 using CaseGraph.Core.Models;
+using CaseGraph.Infrastructure.Timeline;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using Microsoft.Data.Sqlite;
@@ -85,6 +86,8 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
     public ObservableCollection<SearchTargetFilterOption> MessageSearchTargetFilters { get; } = new();
 
     public ObservableCollection<SearchGlobalPersonFilterOption> MessageSearchGlobalPersonFilters { get; } = new();
+
+    public TimelineViewModel Timeline { get; }
 
     public IReadOnlyList<string> MessageSearchPlatformFilters { get; } =
     [
@@ -449,6 +452,7 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
         ITargetRegistryService targetRegistryService,
         IAssociationGraphQueryService associationGraphQueryService,
         IAssociationGraphExportPathBuilder associationGraphExportPathBuilder,
+        TimelineViewModel timelineViewModel,
         IWorkspacePathProvider workspacePathProvider,
         IUserInteractionService userInteractionService,
         IDiagnosticsService diagnosticsService,
@@ -469,12 +473,14 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
         _targetRegistryService = targetRegistryService;
         _associationGraphQueryService = associationGraphQueryService;
         _associationGraphExportPathBuilder = associationGraphExportPathBuilder;
+        Timeline = timelineViewModel;
         _workspacePathProvider = workspacePathProvider;
         _userInteractionService = userInteractionService;
         _diagnosticsService = diagnosticsService;
         _safeAsyncActionRunner = safeAsyncActionRunner;
         _sessionJournal = sessionJournal;
         _appSessionState = appSessionState;
+        Timeline.ViewSourceRequested = OpenTimelineSource;
 
         foreach (var item in _navigationService.GetNavigationItems())
         {
@@ -609,6 +615,19 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
         );
 
         CurrentView = _navigationService.CreateView(value.Page);
+        if (value.Page == NavigationPage.Timeline)
+        {
+            Timeline.ActivateAsync(CancellationToken.None).Forget(
+                "ActivateTimelineOnNavigate",
+                caseId: _appSessionState.CurrentCaseId,
+                evidenceId: _appSessionState.CurrentEvidenceId
+            );
+        }
+        else
+        {
+            Timeline.Deactivate();
+        }
+
         if (value.Page == NavigationPage.Diagnostics)
         {
             RefreshDiagnosticsAsync(CancellationToken.None).Forget(
@@ -663,6 +682,10 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
         ResetLatestMessagesParseJobTracking();
         RefreshTargetsAsync(CancellationToken.None).Forget(
             "RefreshTargetsOnCaseChanged",
+            caseId: value?.CaseId
+        );
+        Timeline.SetCurrentCaseAsync(value?.CaseId, CancellationToken.None).Forget(
+            "RefreshTimelineOnCaseChanged",
             caseId: value?.CaseId
         );
         SearchGlobalPersonsAsync().Forget(
@@ -2642,6 +2665,29 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
 
         _userInteractionService.CopyToClipboard(absolutePath);
         MessageSearchStatusText = "Stored path copied.";
+    }
+
+    private void OpenTimelineSource(TimelineRowDto row)
+    {
+        if (CurrentCaseInfo is null)
+        {
+            OperationText = "Open a case before viewing timeline source.";
+            return;
+        }
+
+        var evidenceItem = EvidenceItems.FirstOrDefault(
+            item => item.EvidenceItemId == row.SourceEvidenceItemId
+        );
+        if (evidenceItem is null)
+        {
+            OperationText =
+                $"Source evidence item {row.SourceEvidenceItemId:D} is not available in the current case.";
+            return;
+        }
+
+        SelectedEvidenceItem = evidenceItem;
+        IsEvidenceDrawerOpen = true;
+        OperationText = $"Opened source evidence: {evidenceItem.DisplayName} | {row.SourceLocator}";
     }
 
     private async Task CancelCurrentOperationAsync()

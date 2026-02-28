@@ -4,6 +4,7 @@ using CaseGraph.Core.Abstractions;
 using CaseGraph.Core.Diagnostics;
 using CaseGraph.Infrastructure.Persistence;
 using CaseGraph.Infrastructure.Services;
+using CaseGraph.Infrastructure.Timeline;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
@@ -62,11 +63,13 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<ITargetRegistryService, TargetRegistryService>();
         services.AddSingleton<IAssociationGraphQueryService, AssociationGraphQueryService>();
         services.AddSingleton<IAssociationGraphExportPathBuilder, AssociationGraphExportPathBuilder>();
+        services.AddSingleton<TimelineQueryService>();
         services.AddSingleton<IJobQueryService, JobQueryService>();
         services.AddSingleton<JobQueueService>();
         services.AddSingleton<IJobQueueService>(provider => provider.GetRequiredService<JobQueueService>());
         services.AddHostedService<JobRunnerHostedService>();
 
+        services.AddSingleton<TimelineViewModel>();
         services.AddSingleton<MainWindowViewModel>();
         services.AddSingleton<MainWindow>();
 
