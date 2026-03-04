@@ -59,6 +59,31 @@ public sealed class UserInteractionService : IUserInteractionService
         return result == true ? fileDialog.FileName : null;
     }
 
+    public string? PickReportOutputPath(string defaultFileName)
+    {
+        var desktopPath = Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory);
+        if (string.IsNullOrWhiteSpace(desktopPath))
+        {
+            desktopPath = Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments);
+        }
+
+        var fileDialog = new SaveFileDialog
+        {
+            AddExtension = true,
+            CheckPathExists = true,
+            DefaultExt = ".html",
+            Filter = "HTML document (*.html)|*.html|All files (*.*)|*.*",
+            FileName = string.IsNullOrWhiteSpace(defaultFileName)
+                ? "casegraph-dossier.html"
+                : defaultFileName,
+            InitialDirectory = desktopPath,
+            OverwritePrompt = true
+        };
+
+        var result = fileDialog.ShowDialog(Application.Current.MainWindow);
+        return result == true ? fileDialog.FileName : null;
+    }
+
     public void CopyToClipboard(string value)
     {
         if (string.IsNullOrWhiteSpace(value))

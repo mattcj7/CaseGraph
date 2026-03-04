@@ -89,6 +89,8 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
 
     public TimelineViewModel Timeline { get; }
 
+    public ReportsViewModel Reports { get; }
+
     public IReadOnlyList<string> MessageSearchPlatformFilters { get; } =
     [
         "All",
@@ -453,6 +455,7 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
         IAssociationGraphQueryService associationGraphQueryService,
         IAssociationGraphExportPathBuilder associationGraphExportPathBuilder,
         TimelineViewModel timelineViewModel,
+        ReportsViewModel reportsViewModel,
         IWorkspacePathProvider workspacePathProvider,
         IUserInteractionService userInteractionService,
         IDiagnosticsService diagnosticsService,
@@ -474,6 +477,7 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
         _associationGraphQueryService = associationGraphQueryService;
         _associationGraphExportPathBuilder = associationGraphExportPathBuilder;
         Timeline = timelineViewModel;
+        Reports = reportsViewModel;
         _workspacePathProvider = workspacePathProvider;
         _userInteractionService = userInteractionService;
         _diagnosticsService = diagnosticsService;
@@ -628,6 +632,19 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
             Timeline.Deactivate();
         }
 
+        if (value.Page == NavigationPage.Reports)
+        {
+            Reports.ActivateAsync(CancellationToken.None).Forget(
+                "ActivateReportsOnNavigate",
+                caseId: _appSessionState.CurrentCaseId,
+                evidenceId: _appSessionState.CurrentEvidenceId
+            );
+        }
+        else
+        {
+            Reports.Deactivate();
+        }
+
         if (value.Page == NavigationPage.Diagnostics)
         {
             RefreshDiagnosticsAsync(CancellationToken.None).Forget(
@@ -686,6 +703,10 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
         );
         Timeline.SetCurrentCaseAsync(value?.CaseId, CancellationToken.None).Forget(
             "RefreshTimelineOnCaseChanged",
+            caseId: value?.CaseId
+        );
+        Reports.SetCurrentCaseAsync(value?.CaseId, CancellationToken.None).Forget(
+            "RefreshReportsOnCaseChanged",
             caseId: value?.CaseId
         );
         SearchGlobalPersonsAsync().Forget(
@@ -3390,6 +3411,7 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
 
         _jobUpdateSubscription.Dispose();
         _jobCompletionRefreshGate.Dispose();
+        Reports.Dispose();
     }
 
     public sealed record SearchTargetFilterOption(Guid? TargetId, string DisplayName)

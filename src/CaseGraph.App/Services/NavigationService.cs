@@ -19,7 +19,7 @@ public sealed class NavigationService : INavigationService
             [NavigationPage.PeopleTargets] = ("People / Targets", "Manage known people, aliases, identifiers, and message links."),
             [NavigationPage.Locations] = ("Locations", "Geospatial analysis placeholder with map and proximity tools."),
             [NavigationPage.Associations] = ("Association Graph", "Relationship graph with filters, overlays, and export."),
-            [NavigationPage.Reports] = ("Reports", "Report and export orchestration placeholder."),
+            [NavigationPage.Reports] = ("Reports", "Create dossier exports with evidence citations, progress, and cancellation."),
             [NavigationPage.ReviewQueue] = ("Review Queue", "Background job history for ingest and verification tasks."),
             [NavigationPage.Diagnostics] = ("Diagnostics", "Workspace health, logs, and runtime diagnostics."),
             [NavigationPage.Settings] = ("Settings", "Application settings placeholder and environment controls.")
@@ -72,6 +72,11 @@ public sealed class NavigationService : INavigationService
         if (page == NavigationPage.Associations)
         {
             return new AssociationGraphView();
+        }
+
+        if (page == NavigationPage.Reports)
+        {
+            return new ReportsView();
         }
 
         return new PlaceholderView(content.Title, content.Description);

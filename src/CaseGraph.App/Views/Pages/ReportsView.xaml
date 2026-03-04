@@ -1,0 +1,168 @@
+<UserControl x:Class="CaseGraph.App.Views.Pages.ReportsView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             Background="{DynamicResource ContentBackgroundBrush}">
+    <ScrollViewer VerticalScrollBarVisibility="Auto"
+                  Background="{DynamicResource ContentBackgroundBrush}">
+        <Grid Margin="{StaticResource Space16}"
+              DataContext="{Binding Reports}">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="*" />
+            </Grid.RowDefinitions>
+
+            <DockPanel Grid.Row="0">
+                <StackPanel DockPanel.Dock="Left">
+                    <TextBlock Text="Reports"
+                               Style="{StaticResource PageTitleTextStyle}" />
+                    <TextBlock Margin="{StaticResource SpaceTop8}"
+                               Style="{StaticResource SecondaryBodyTextStyle}"
+                               Text="Create a court-ready dossier export with citations for every evidence-derived section." />
+                </StackPanel>
+
+                <StackPanel DockPanel.Dock="Right"
+                            Orientation="Horizontal"
+                            VerticalAlignment="Center">
+                    <Button Content="Create Dossier"
+                            Margin="{StaticResource SpaceRight12}"
+                            Command="{Binding CreateDossierCommand}"
+                            Style="{StaticResource TopBarButtonStyle}" />
+                    <Button Content="Cancel Export"
+                            Margin="{StaticResource SpaceRight12}"
+                            Command="{Binding CancelExportCommand}"
+                            IsEnabled="{Binding CanCancelExport}"
+                            Style="{StaticResource TopBarButtonStyle}" />
+                    <Button Content="Open Folder"
+                            Command="{Binding OpenFolderCommand}"
+                            IsEnabled="{Binding CanOpenFolder}"
+                            Style="{StaticResource TopBarButtonStyle}" />
+                </StackPanel>
+            </DockPanel>
+
+            <Border Grid.Row="1"
+                    Margin="{StaticResource SpaceTop12}"
+                    Style="{StaticResource PlaceholderHintBorderStyle}">
+                <StackPanel>
+                    <TextBlock Text="Export Status"
+                               Style="{StaticResource SectionTitleTextStyle}" />
+                    <TextBlock Margin="{StaticResource SpaceTop8}"
+                               Style="{StaticResource BodyTextStyle}"
+                               Text="{Binding ExportStatusText}" />
+                    <ProgressBar Margin="{StaticResource SpaceTop12}"
+                                 Height="14"
+                                 Minimum="0"
+                                 Maximum="1"
+                                 Value="{Binding ExportProgress}" />
+                    <TextBlock Margin="{StaticResource SpaceTop8}"
+                               Style="{StaticResource SecondaryBodyTextStyle}"
+                               Text="{Binding ExportProgress, StringFormat=Progress {0:P0}}" />
+                </StackPanel>
+            </Border>
+
+            <Border Grid.Row="2"
+                    Margin="{StaticResource SpaceTop12}"
+                    Style="{StaticResource PlaceholderHintBorderStyle}">
+                <StackPanel>
+                    <TextBlock Text="Create Dossier"
+                               Style="{StaticResource SectionTitleTextStyle}" />
+
+                    <Grid Margin="{StaticResource SpaceTop12}">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="220" />
+                            <ColumnDefinition Width="12" />
+                            <ColumnDefinition Width="*" />
+                        </Grid.ColumnDefinitions>
+
+                        <ComboBox Grid.Column="0"
+                                  ItemsSource="{Binding AvailableSubjectKinds}"
+                                  SelectedItem="{Binding SelectedSubjectKind, Mode=TwoWay}"
+                                  DisplayMemberPath="DisplayName"
+                                  Style="{StaticResource TopBarComboBoxStyle}" />
+                        <ComboBox Grid.Column="2"
+                                  ItemsSource="{Binding SubjectOptions}"
+                                  SelectedItem="{Binding SelectedSubject, Mode=TwoWay}"
+                                  DisplayMemberPath="Summary"
+                                  Style="{StaticResource TopBarComboBoxStyle}" />
+                    </Grid>
+
+                    <Grid Margin="{StaticResource SpaceTop12}">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="220" />
+                            <ColumnDefinition Width="12" />
+                            <ColumnDefinition Width="220" />
+                            <ColumnDefinition Width="12" />
+                            <ColumnDefinition Width="*" />
+                        </Grid.ColumnDefinitions>
+
+                        <DatePicker Grid.Column="0"
+                                    SelectedDate="{Binding FromDateLocal, Mode=TwoWay}" />
+                        <DatePicker Grid.Column="2"
+                                    SelectedDate="{Binding ToDateLocal, Mode=TwoWay}" />
+                        <TextBlock Grid.Column="4"
+                                   VerticalAlignment="Center"
+                                   Style="{StaticResource SecondaryBodyTextStyle}"
+                                   Text="Print-ready HTML export (PDF can be produced with the browser print dialog)." />
+                    </Grid>
+
+                    <WrapPanel Margin="{StaticResource SpaceTop12}">
+                        <CheckBox Content="Subject Identifiers"
+                                  IsChecked="{Binding IncludeSubjectIdentifiers, Mode=TwoWay}" />
+                        <CheckBox Margin="{StaticResource SpaceLeft12}"
+                                  Content="Where Seen Summary"
+                                  IsChecked="{Binding IncludeWhereSeenSummary, Mode=TwoWay}" />
+                        <CheckBox Margin="{StaticResource SpaceLeft12}"
+                                  Content="Timeline Excerpt"
+                                  IsChecked="{Binding IncludeTimelineExcerpt, Mode=TwoWay}" />
+                        <CheckBox Margin="{StaticResource SpaceLeft12}"
+                                  Content="Notable Excerpts"
+                                  IsChecked="{Binding IncludeNotableMessageExcerpts, Mode=TwoWay}" />
+                        <CheckBox Margin="{StaticResource SpaceLeft12}"
+                                  Content="Appendix"
+                                  IsChecked="{Binding IncludeAppendix, Mode=TwoWay}" />
+                    </WrapPanel>
+
+                    <Grid Margin="{StaticResource SpaceTop12}">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="12" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+
+                        <TextBox Grid.Column="0"
+                                 Text="{Binding OutputPath, UpdateSourceTrigger=PropertyChanged}"
+                                 Style="{StaticResource TopBarTextBoxStyle}" />
+                        <Button Grid.Column="2"
+                                Content="Browse..."
+                                Command="{Binding BrowseOutputPathCommand}"
+                                Style="{StaticResource TopBarButtonStyle}" />
+                    </Grid>
+                </StackPanel>
+            </Border>
+
+            <Border Grid.Row="3"
+                    Margin="{StaticResource SpaceTop12}"
+                    Style="{StaticResource PlaceholderHintBorderStyle}">
+                <StackPanel>
+                    <TextBlock Text="Latest Export Job"
+                               Style="{StaticResource SectionTitleTextStyle}" />
+                    <TextBlock Margin="{StaticResource SpaceTop8}"
+                               Style="{StaticResource BodyTextStyle}"
+                               Text="{Binding LatestExportJob.StatusMessage, TargetNullValue=No report export has been queued for this case yet.}" />
+                    <TextBlock Margin="{StaticResource SpaceTop8}"
+                               Style="{StaticResource SecondaryBodyTextStyle}"
+                               Text="{Binding LatestExportJob.CreatedAtUtc, StringFormat=Queued {0:u}, TargetNullValue=Queued (none)}" />
+                    <TextBlock Margin="{StaticResource SpaceTop8}"
+                               Style="{StaticResource SecondaryBodyTextStyle}"
+                               Text="{Binding LatestExportJob.CompletedAtUtc, StringFormat=Completed {0:u}, TargetNullValue=Completed (none)}" />
+                    <TextBlock Margin="{StaticResource SpaceTop8}"
+                               Style="{StaticResource SecondaryBodyTextStyle}"
+                               Text="{Binding ResolvedOutputPath, TargetNullValue=(none)}"
+                               TextWrapping="Wrap" />
+                </StackPanel>
+            </Border>
+        </Grid>
+    </ScrollViewer>
+</UserControl>

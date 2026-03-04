@@ -1,6 +1,7 @@
 using CaseGraph.Core.Abstractions;
 using CaseGraph.Core.Diagnostics;
 using CaseGraph.Core.Models;
+using CaseGraph.Infrastructure.Reports;
 using CaseGraph.Infrastructure.Persistence;
 using CaseGraph.Infrastructure.Persistence.Entities;
 using Microsoft.EntityFrameworkCore;
@@ -16,6 +17,7 @@ public sealed class JobQueueService : IJobQueueService
     public const string EvidenceVerifyJobType = "EvidenceVerify";
     public const string MessagesIngestJobType = "MessagesIngest";
     public const string TargetPresenceIndexRebuildJobType = "TargetPresenceIndexRebuild";
+    public const string ReportExportJobType = "ReportExport";
     public const string TestLongRunningJobType = "TestLongRunningDelay";
 
     private static readonly JsonSerializerOptions PayloadSerializerOptions = new()
@@ -32,6 +34,8 @@ public sealed class JobQueueService : IJobQueueService
     private readonly IEvidenceVaultService _evidenceVaultService;
     private readonly IMessageIngestService _messageIngestService;
     private readonly ITargetMessagePresenceIndexService? _targetMessagePresenceIndexService;
+    private readonly DossierBuilder? _dossierBuilder;
+    private readonly ReportExportService? _reportExportService;
     private readonly IAuditLogService _auditLogService;
     private readonly IJobQueryService _jobQueryService;
     private readonly IWorkspaceWriteGate _workspaceWriteGate;
@@ -56,7 +60,9 @@ public sealed class JobQueueService : IJobQueueService
         IAuditLogService auditLogService,
         IJobQueryService jobQueryService,
         IWorkspaceWriteGate workspaceWriteGate,
-        ITargetMessagePresenceIndexService? targetMessagePresenceIndexService = null
+        ITargetMessagePresenceIndexService? targetMessagePresenceIndexService = null,
+        DossierBuilder? dossierBuilder = null,
+        ReportExportService? reportExportService = null
     )
     {
         _dbContextFactory = dbContextFactory;
@@ -66,6 +72,8 @@ public sealed class JobQueueService : IJobQueueService
         _evidenceVaultService = evidenceVaultService;
         _messageIngestService = messageIngestService;
         _targetMessagePresenceIndexService = targetMessagePresenceIndexService;
+        _dossierBuilder = dossierBuilder;
+        _reportExportService = reportExportService;
         _auditLogService = auditLogService;
         _jobQueryService = jobQueryService;
         _workspaceWriteGate = workspaceWriteGate;
@@ -457,6 +465,14 @@ public sealed class JobQueueService : IJobQueueService
                     terminalStatusMessage = "Succeeded: Target presence index rebuilt.";
                     terminalErrorMessage = null;
                     break;
+                case ReportExportJobType:
+                {
+                    var exportResult = await ExecuteReportExportAsync(jobToExecute, linkedCts.Token);
+                    terminalStatus = JobStatus.Succeeded;
+                    terminalStatusMessage = $"Succeeded: Report exported to {Path.GetFileName(exportResult.OutputPath)}.";
+                    terminalErrorMessage = null;
+                    break;
+                }
                 case TestLongRunningJobType:
                     await ExecuteTestLongRunningAsync(jobToExecute, linkedCts.Token);
                     terminalStatus = JobStatus.Succeeded;
@@ -803,6 +819,109 @@ public sealed class JobQueueService : IJobQueueService
         );
     }
 
+    private async Task<ReportExportResult> ExecuteReportExportAsync(JobRecord jobRecord, CancellationToken ct)
+    {
+        if (_dossierBuilder is null || _reportExportService is null)
+        {
+            throw new InvalidOperationException("Report export services are not configured.");
+        }
+
+        var payload = JsonSerializer.Deserialize<DossierExportJobPayload>(
+            jobRecord.JsonPayload,
+            PayloadSerializerOptions
+        );
+
+        if (payload is null
+            || payload.SchemaVersion != 1
+            || payload.CaseId == Guid.Empty
+            || payload.SubjectId == Guid.Empty
+            || string.IsNullOrWhiteSpace(payload.OutputPath))
+        {
+            throw new InvalidOperationException("Invalid ReportExport payload.");
+        }
+
+        await ReportProgressAsync(
+            jobRecord.JobId,
+            0.10,
+            "Building dossier report model...",
+            ct
+        );
+
+        var report = await _dossierBuilder.BuildAsync(
+            new DossierBuildRequest(
+                payload.CaseId,
+                payload.NormalizedSubjectType,
+                payload.SubjectId,
+                payload.FromUtc,
+                payload.ToUtc,
+                payload.Sections,
+                string.IsNullOrWhiteSpace(payload.RequestedBy)
+                    ? jobRecord.Operator
+                    : payload.RequestedBy
+            ),
+            ct
+        );
+
+        await ReportProgressAsync(
+            jobRecord.JobId,
+            0.65,
+            "Writing dossier export...",
+            ct
+        );
+
+        var result = await _reportExportService.ExportHtmlAsync(
+            report,
+            payload.OutputPath,
+            ct
+        );
+
+        await ReportProgressAsync(
+            jobRecord.JobId,
+            0.90,
+            "Writing report export audit...",
+            ct
+        );
+
+        await _auditLogService.AddAsync(
+            new AuditEvent
+            {
+                TimestampUtc = _clock.UtcNow.ToUniversalTime(),
+                Operator = string.IsNullOrWhiteSpace(payload.RequestedBy)
+                    ? jobRecord.Operator
+                    : payload.RequestedBy,
+                ActionType = "ReportExported",
+                CaseId = payload.CaseId,
+                EvidenceItemId = null,
+                Summary = $"Dossier exported for {report.SubjectDisplayName} to {result.OutputPath}.",
+                JsonPayload = JsonSerializer.Serialize(new
+                {
+                    payload.CaseId,
+                    SubjectType = payload.NormalizedSubjectType,
+                    payload.SubjectId,
+                    report.SubjectDisplayName,
+                    DateRange = new
+                    {
+                        FromUtc = payload.FromUtc?.ToUniversalTime(),
+                        ToUtc = payload.ToUtc?.ToUniversalTime()
+                    },
+                    IncludedSections = payload.Sections.ToIncludedSectionNames(),
+                    OutputPath = result.OutputPath,
+                    jobRecord.CorrelationId
+                })
+            },
+            ct
+        );
+
+        await ReportProgressAsync(
+            jobRecord.JobId,
+            1,
+            $"Report exported to {result.OutputPath}",
+            ct
+        );
+
+        return result;
+    }
+
     private async Task ExecuteTestLongRunningAsync(JobRecord jobRecord, CancellationToken ct)
     {
         var payload = JsonSerializer.Deserialize<TestLongRunningPayload>(
@@ -1058,6 +1177,7 @@ public sealed class JobQueueService : IJobQueueService
             or EvidenceVerifyJobType
             or MessagesIngestJobType
             or TargetPresenceIndexRebuildJobType
+            or ReportExportJobType
             or TestLongRunningJobType;
     }
 

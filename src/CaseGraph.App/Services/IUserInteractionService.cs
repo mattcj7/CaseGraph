@@ -8,5 +8,7 @@ public interface IUserInteractionService
 
     string? PickDebugBundleOutputPath(string defaultFileName);
 
+    string? PickReportOutputPath(string defaultFileName);
+
     void CopyToClipboard(string value);
 }

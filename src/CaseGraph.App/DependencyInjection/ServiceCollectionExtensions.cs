@@ -2,6 +2,7 @@ using CaseGraph.App.Services;
 using CaseGraph.App.ViewModels;
 using CaseGraph.Core.Abstractions;
 using CaseGraph.Core.Diagnostics;
+using CaseGraph.Infrastructure.Reports;
 using CaseGraph.Infrastructure.Persistence;
 using CaseGraph.Infrastructure.Services;
 using CaseGraph.Infrastructure.Timeline;
@@ -63,6 +64,8 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<ITargetRegistryService, TargetRegistryService>();
         services.AddSingleton<IAssociationGraphQueryService, AssociationGraphQueryService>();
         services.AddSingleton<IAssociationGraphExportPathBuilder, AssociationGraphExportPathBuilder>();
+        services.AddSingleton<DossierBuilder>();
+        services.AddSingleton<ReportExportService>();
         services.AddSingleton<TimelineQueryService>();
         services.AddSingleton<IJobQueryService, JobQueryService>();
         services.AddSingleton<JobQueueService>();
@@ -70,6 +73,7 @@ public static class ServiceCollectionExtensions
         services.AddHostedService<JobRunnerHostedService>();
 
         services.AddSingleton<TimelineViewModel>();
+        services.AddSingleton<ReportsViewModel>();
         services.AddSingleton<MainWindowViewModel>();
         services.AddSingleton<MainWindow>();
 
