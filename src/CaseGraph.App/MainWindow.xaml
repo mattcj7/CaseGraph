@@ -188,6 +188,12 @@
                                 Command="{Binding ParseMessagesFromEvidenceCommand}"
                                 Style="{StaticResource TopBarButtonStyle}" />
 
+                        <Button Margin="{StaticResource SpaceTop12}"
+                                Content="Parse Locations"
+                                IsEnabled="{Binding HasSelectedEvidenceItem}"
+                                Command="{Binding ParseLocationsFromEvidenceCommand}"
+                                Style="{StaticResource TopBarButtonStyle}" />
+
                         <TextBlock Margin="{StaticResource SpaceTop12}"
                                    Style="{StaticResource SecondaryBodyTextStyle}"
                                    Text="Latest Verify Job" />

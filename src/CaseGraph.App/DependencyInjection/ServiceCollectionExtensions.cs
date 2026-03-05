@@ -2,6 +2,7 @@ using CaseGraph.App.Services;
 using CaseGraph.App.ViewModels;
 using CaseGraph.Core.Abstractions;
 using CaseGraph.Core.Diagnostics;
+using CaseGraph.Infrastructure.Locations;
 using CaseGraph.Infrastructure.Reports;
 using CaseGraph.Infrastructure.Persistence;
 using CaseGraph.Infrastructure.Services;
@@ -60,6 +61,10 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<IEvidenceVaultService, EvidenceVaultService>();
         services.AddSingleton<IMessageSearchService, MessageSearchService>();
         services.AddSingleton<IMessageIngestService, MessageIngestService>();
+        services.AddSingleton<LocationCsvParser>();
+        services.AddSingleton<LocationJsonParser>();
+        services.AddSingleton<LocationPlistParser>();
+        services.AddSingleton<LocationsIngestJob>();
         services.AddSingleton<ITargetMessagePresenceIndexService, TargetMessagePresenceIndexService>();
         services.AddSingleton<ITargetRegistryService, TargetRegistryService>();
         services.AddSingleton<IAssociationGraphQueryService, AssociationGraphQueryService>();
@@ -67,12 +72,14 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<DossierBuilder>();
         services.AddSingleton<ReportExportService>();
         services.AddSingleton<TimelineQueryService>();
+        services.AddSingleton<LocationQueryService>();
         services.AddSingleton<IJobQueryService, JobQueryService>();
         services.AddSingleton<JobQueueService>();
         services.AddSingleton<IJobQueueService>(provider => provider.GetRequiredService<JobQueueService>());
         services.AddHostedService<JobRunnerHostedService>();
 
         services.AddSingleton<TimelineViewModel>();
+        services.AddSingleton<LocationsViewModel>();
         services.AddSingleton<ReportsViewModel>();
         services.AddSingleton<MainWindowViewModel>();
         services.AddSingleton<MainWindow>();

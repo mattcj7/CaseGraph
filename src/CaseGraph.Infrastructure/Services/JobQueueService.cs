@@ -1,6 +1,7 @@
 using CaseGraph.Core.Abstractions;
 using CaseGraph.Core.Diagnostics;
 using CaseGraph.Core.Models;
+using CaseGraph.Infrastructure.Locations;
 using CaseGraph.Infrastructure.Reports;
 using CaseGraph.Infrastructure.Persistence;
 using CaseGraph.Infrastructure.Persistence.Entities;
@@ -16,6 +17,7 @@ public sealed class JobQueueService : IJobQueueService
     public const string EvidenceImportJobType = "EvidenceImport";
     public const string EvidenceVerifyJobType = "EvidenceVerify";
     public const string MessagesIngestJobType = "MessagesIngest";
+    public const string LocationsIngestJobType = "LocationsIngest";
     public const string TargetPresenceIndexRebuildJobType = "TargetPresenceIndexRebuild";
     public const string ReportExportJobType = "ReportExport";
     public const string TestLongRunningJobType = "TestLongRunningDelay";
@@ -33,6 +35,7 @@ public sealed class JobQueueService : IJobQueueService
     private readonly ICaseWorkspaceService _caseWorkspaceService;
     private readonly IEvidenceVaultService _evidenceVaultService;
     private readonly IMessageIngestService _messageIngestService;
+    private readonly LocationsIngestJob? _locationsIngestJob;
     private readonly ITargetMessagePresenceIndexService? _targetMessagePresenceIndexService;
     private readonly DossierBuilder? _dossierBuilder;
     private readonly ReportExportService? _reportExportService;
@@ -60,6 +63,7 @@ public sealed class JobQueueService : IJobQueueService
         IAuditLogService auditLogService,
         IJobQueryService jobQueryService,
         IWorkspaceWriteGate workspaceWriteGate,
+        LocationsIngestJob? locationsIngestJob = null,
         ITargetMessagePresenceIndexService? targetMessagePresenceIndexService = null,
         DossierBuilder? dossierBuilder = null,
         ReportExportService? reportExportService = null
@@ -71,6 +75,7 @@ public sealed class JobQueueService : IJobQueueService
         _caseWorkspaceService = caseWorkspaceService;
         _evidenceVaultService = evidenceVaultService;
         _messageIngestService = messageIngestService;
+        _locationsIngestJob = locationsIngestJob;
         _targetMessagePresenceIndexService = targetMessagePresenceIndexService;
         _dossierBuilder = dossierBuilder;
         _reportExportService = reportExportService;
@@ -459,6 +464,14 @@ public sealed class JobQueueService : IJobQueueService
                     await WriteMessagesIngestSummaryAsync(jobToExecute, ingestResult.MessagesExtracted, linkedCts.Token);
                     break;
                 }
+                case LocationsIngestJobType:
+                {
+                    var ingestResult = await ExecuteLocationsIngestAsync(jobToExecute, linkedCts.Token);
+                    terminalStatus = JobStatus.Succeeded;
+                    terminalStatusMessage = $"Succeeded: {ingestResult.Summary}";
+                    terminalErrorMessage = null;
+                    break;
+                }
                 case TargetPresenceIndexRebuildJobType:
                     await ExecuteTargetPresenceIndexRebuildAsync(jobToExecute, linkedCts.Token);
                     terminalStatus = JobStatus.Succeeded;
@@ -779,6 +792,150 @@ public sealed class JobQueueService : IJobQueueService
                 ["messagesExtracted"] = ingestResult.MessagesExtracted,
                 ["threadsCreated"] = ingestResult.ThreadsCreated,
                 ["elapsedMs"] = ingestStopwatch.ElapsedMilliseconds
+            }
+        );
+
+        return ingestResult;
+    }
+
+    private async Task<LocationsIngestResult> ExecuteLocationsIngestAsync(
+        JobRecord jobRecord,
+        CancellationToken ct
+    )
+    {
+        if (_locationsIngestJob is null)
+        {
+            throw new InvalidOperationException("Locations ingest service is not configured.");
+        }
+
+        var payload = JsonSerializer.Deserialize<LocationsIngestPayload>(
+            jobRecord.JsonPayload,
+            PayloadSerializerOptions
+        );
+
+        if (payload is null
+            || payload.SchemaVersion != 1
+            || payload.CaseId == Guid.Empty
+            || payload.EvidenceItemId == Guid.Empty)
+        {
+            throw new InvalidOperationException("Invalid LocationsIngest payload.");
+        }
+
+        await _auditLogService.AddAsync(
+            new AuditEvent
+            {
+                TimestampUtc = _clock.UtcNow.ToUniversalTime(),
+                Operator = Environment.UserName,
+                ActionType = "LocationsIngestStarted",
+                CaseId = payload.CaseId,
+                EvidenceItemId = payload.EvidenceItemId,
+                Summary = "Locations ingest started.",
+                JsonPayload = JsonSerializer.Serialize(new
+                {
+                    jobRecord.JobId,
+                    payload.CaseId,
+                    EvidenceItemIds = new[] { payload.EvidenceItemId },
+                    jobRecord.CorrelationId
+                })
+            },
+            ct
+        );
+
+        await ReportProgressAsync(
+            jobRecord.JobId,
+            0.05,
+            "Preparing locations ingest...",
+            ct
+        );
+
+        var lastLoggedPercent = -1;
+        var lastLoggedAt = DateTimeOffset.MinValue;
+        var ingestProgress = new Progress<LocationsIngestProgress>(update =>
+        {
+            var clampedProgress = Math.Clamp(update.FractionComplete, 0, 1);
+            var statusMessage = BuildLocationsIngestStatusMessage(update);
+            SafeReportProgressAsync(
+                jobRecord.JobId,
+                clampedProgress,
+                statusMessage,
+                ct
+            ).Forget(
+                "ReportLocationsIngestProgress",
+                caseId: jobRecord.CaseId,
+                evidenceId: jobRecord.EvidenceItemId
+            );
+
+            var percent = (int)Math.Round(clampedProgress * 100, MidpointRounding.AwayFromZero);
+            var now = DateTimeOffset.UtcNow;
+            if (percent >= lastLoggedPercent + 5 || (now - lastLoggedAt).TotalSeconds >= 2)
+            {
+                lastLoggedPercent = percent;
+                lastLoggedAt = now;
+                LogJobEvent(
+                    jobRecord,
+                    eventName: "LocationsIngestProgress",
+                    level: "INFO",
+                    message: statusMessage,
+                    fields: new Dictionary<string, object?>
+                    {
+                        ["progressPercent"] = percent
+                    }
+                );
+            }
+        });
+
+        var ingestResult = await _locationsIngestJob.IngestAsync(
+            payload.CaseId,
+            payload.EvidenceItemId,
+            ingestProgress,
+            ct
+        );
+
+        await ReportProgressAsync(
+            jobRecord.JobId,
+            1,
+            ingestResult.Summary,
+            ct
+        );
+
+        await _auditLogService.AddAsync(
+            new AuditEvent
+            {
+                TimestampUtc = _clock.UtcNow.ToUniversalTime(),
+                Operator = Environment.UserName,
+                ActionType = "LocationsIngestCompleted",
+                CaseId = payload.CaseId,
+                EvidenceItemId = payload.EvidenceItemId,
+                Summary = ingestResult.Summary,
+                JsonPayload = JsonSerializer.Serialize(new
+                {
+                    jobRecord.JobId,
+                    payload.CaseId,
+                    EvidenceItemIds = new[] { payload.EvidenceItemId },
+                    ingestResult.ProcessedCount,
+                    ingestResult.InsertedCount,
+                    ingestResult.SkippedCount,
+                    ingestResult.ReplacedCount,
+                    ingestResult.FileErrorCount,
+                    UnknownFields = ingestResult.UnknownFieldNames,
+                    jobRecord.CorrelationId
+                })
+            },
+            ct
+        );
+
+        LogJobEvent(
+            jobRecord,
+            eventName: "LocationsIngestCompleted",
+            level: "INFO",
+            message: ingestResult.Summary,
+            fields: new Dictionary<string, object?>
+            {
+                ["processedCount"] = ingestResult.ProcessedCount,
+                ["insertedCount"] = ingestResult.InsertedCount,
+                ["skippedCount"] = ingestResult.SkippedCount,
+                ["replacedCount"] = ingestResult.ReplacedCount,
+                ["fileErrorCount"] = ingestResult.FileErrorCount
             }
         );
 
@@ -1176,6 +1333,7 @@ public sealed class JobQueueService : IJobQueueService
         return jobType is EvidenceImportJobType
             or EvidenceVerifyJobType
             or MessagesIngestJobType
+            or LocationsIngestJobType
             or TargetPresenceIndexRebuildJobType
             or ReportExportJobType
             or TestLongRunningJobType;
@@ -1216,6 +1374,7 @@ public sealed class JobQueueService : IJobQueueService
         }
 
         return message.StartsWith("Extracted ", StringComparison.Ordinal)
+            || message.StartsWith("Ingested ", StringComparison.Ordinal)
             || message.StartsWith("No message sheets found;", StringComparison.Ordinal)
             || message.StartsWith("UFDR ", StringComparison.Ordinal)
             || message.StartsWith("Succeeded:", StringComparison.Ordinal)
@@ -1285,6 +1444,22 @@ public sealed class JobQueueService : IJobQueueService
         if (progress.Processed.HasValue && progress.Total.HasValue && progress.Total.Value > 0)
         {
             return $"{phase} ({progress.Processed.Value} / {progress.Total.Value})";
+        }
+
+        return phase;
+    }
+
+    private static string BuildLocationsIngestStatusMessage(LocationsIngestProgress progress)
+    {
+        var phase = string.IsNullOrWhiteSpace(progress.Phase)
+            ? "Parsing location observations..."
+            : progress.Phase.Trim();
+
+        if (progress.Processed.HasValue
+            || progress.Accepted.HasValue
+            || progress.Skipped.HasValue)
+        {
+            return $"{phase} (processed={progress.Processed ?? 0}, accepted={progress.Accepted ?? 0}, skipped={progress.Skipped ?? 0})";
         }
 
         return phase;
@@ -1566,6 +1741,15 @@ public sealed class JobQueueService : IJobQueueService
     }
 
     private sealed class MessagesIngestPayload
+    {
+        public int SchemaVersion { get; set; }
+
+        public Guid CaseId { get; set; }
+
+        public Guid EvidenceItemId { get; set; }
+    }
+
+    private sealed class LocationsIngestPayload
     {
         public int SchemaVersion { get; set; }
 

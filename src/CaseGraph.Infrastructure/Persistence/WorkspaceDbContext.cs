@@ -50,6 +50,8 @@ public sealed class WorkspaceDbContext : DbContext
 
     public DbSet<TargetMessagePresenceRecord> TargetMessagePresences => Set<TargetMessagePresenceRecord>();
 
+    public DbSet<LocationObservationRecord> LocationObservations => Set<LocationObservationRecord>();
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         modelBuilder.Entity<CaseRecord>(entity =>
@@ -381,6 +383,31 @@ public sealed class WorkspaceDbContext : DbContext
             entity.HasOne(e => e.MatchedIdentifier)
                 .WithMany()
                 .HasForeignKey(e => e.MatchedIdentifierId)
+                .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.Entity<LocationObservationRecord>(entity =>
+        {
+            entity.ToTable("LocationObservationRecord");
+            entity.HasKey(e => e.LocationObservationId);
+            entity.Property(e => e.SourceType).IsRequired();
+            entity.Property(e => e.SourceLocator).IsRequired();
+            entity.Property(e => e.IngestModuleVersion).IsRequired();
+            entity.HasIndex(e => new { e.CaseId, e.ObservedUtc })
+                .HasDatabaseName("IX_LocationObservationRecord_CaseId_ObservedUtc_Desc");
+            entity.HasIndex(e => new { e.CaseId, e.Latitude, e.Longitude });
+            entity.HasIndex(e => new { e.CaseId, e.SubjectType, e.SubjectId, e.ObservedUtc })
+                .HasDatabaseName("IX_LocationObservationRecord_CaseId_SubjectType_SubjectId_ObservedUtc_Desc");
+            entity.HasIndex(e => e.SourceEvidenceItemId);
+
+            entity.HasOne<CaseRecord>()
+                .WithMany()
+                .HasForeignKey(e => e.CaseId)
+                .OnDelete(DeleteBehavior.Cascade);
+
+            entity.HasOne<EvidenceItemRecord>()
+                .WithMany()
+                .HasForeignKey(e => e.SourceEvidenceItemId)
                 .OnDelete(DeleteBehavior.Cascade);
         });
     }

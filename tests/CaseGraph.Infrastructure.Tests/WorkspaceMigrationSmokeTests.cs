@@ -42,6 +42,7 @@ public sealed class WorkspaceMigrationSmokeTests
         Assert.True(await TableExistsAsync(connection, "TargetIdentifierLinkRecord"));
         Assert.True(await TableExistsAsync(connection, "MessageParticipantLinkRecord"));
         Assert.True(await TableExistsAsync(connection, "TargetMessagePresenceRecord"));
+        Assert.True(await TableExistsAsync(connection, "LocationObservationRecord"));
     }
 
     [Fact]

@@ -1,4 +1,5 @@
 using CaseGraph.App.Models;
+using CaseGraph.App.Views;
 using CaseGraph.App.Views.Pages;
 using System;
 using System.Collections.Generic;
@@ -17,7 +18,7 @@ public sealed class NavigationService : INavigationService
             [NavigationPage.Search] = ("Search", "FTS-backed message search with provenance and citation copy."),
             [NavigationPage.Timeline] = ("Timeline", "Paged chronological message timeline with filters and provenance drill-down."),
             [NavigationPage.PeopleTargets] = ("People / Targets", "Manage known people, aliases, identifiers, and message links."),
-            [NavigationPage.Locations] = ("Locations", "Geospatial analysis placeholder with map and proximity tools."),
+            [NavigationPage.Locations] = ("Locations", "Location observations with provenance filters, paging, and citation actions."),
             [NavigationPage.Associations] = ("Association Graph", "Relationship graph with filters, overlays, and export."),
             [NavigationPage.Reports] = ("Reports", "Create dossier exports with evidence citations, progress, and cancellation."),
             [NavigationPage.ReviewQueue] = ("Review Queue", "Background job history for ingest and verification tasks."),
@@ -52,6 +53,11 @@ public sealed class NavigationService : INavigationService
         if (page == NavigationPage.Timeline)
         {
             return new TimelineView();
+        }
+
+        if (page == NavigationPage.Locations)
+        {
+            return new LocationsPage();
         }
 
         if (page == NavigationPage.ReviewQueue)

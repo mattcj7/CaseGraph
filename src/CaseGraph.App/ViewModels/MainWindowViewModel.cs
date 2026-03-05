@@ -4,6 +4,7 @@ using CaseGraph.App.Views.Dialogs;
 using CaseGraph.Core.Abstractions;
 using CaseGraph.Core.Diagnostics;
 using CaseGraph.Core.Models;
+using CaseGraph.Infrastructure.Locations;
 using CaseGraph.Infrastructure.Timeline;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
@@ -22,6 +23,7 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
     private const string EvidenceImportJobType = "EvidenceImport";
     private const string EvidenceVerifyJobType = "EvidenceVerify";
     private const string MessagesIngestJobType = "MessagesIngest";
+    private const string LocationsIngestJobType = "LocationsIngest";
 
     private readonly INavigationService _navigationService;
     private readonly IThemeService _themeService;
@@ -88,6 +90,8 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
     public ObservableCollection<SearchGlobalPersonFilterOption> MessageSearchGlobalPersonFilters { get; } = new();
 
     public TimelineViewModel Timeline { get; }
+
+    public LocationsViewModel Locations { get; }
 
     public ReportsViewModel Reports { get; }
 
@@ -379,6 +383,8 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
 
     public IAsyncRelayCommand ParseMessagesFromEvidenceCommand { get; }
 
+    public IAsyncRelayCommand ParseLocationsFromEvidenceCommand { get; }
+
     public IAsyncRelayCommand RefreshLatestMessagesParseJobCommand { get; }
 
     public IAsyncRelayCommand CancelLatestMessagesParseJobCommand { get; }
@@ -455,6 +461,7 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
         IAssociationGraphQueryService associationGraphQueryService,
         IAssociationGraphExportPathBuilder associationGraphExportPathBuilder,
         TimelineViewModel timelineViewModel,
+        LocationsViewModel locationsViewModel,
         ReportsViewModel reportsViewModel,
         IWorkspacePathProvider workspacePathProvider,
         IUserInteractionService userInteractionService,
@@ -477,6 +484,7 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
         _associationGraphQueryService = associationGraphQueryService;
         _associationGraphExportPathBuilder = associationGraphExportPathBuilder;
         Timeline = timelineViewModel;
+        Locations = locationsViewModel;
         Reports = reportsViewModel;
         _workspacePathProvider = workspacePathProvider;
         _userInteractionService = userInteractionService;
@@ -485,6 +493,7 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
         _sessionJournal = sessionJournal;
         _appSessionState = appSessionState;
         Timeline.ViewSourceRequested = OpenTimelineSource;
+        Locations.ViewSourceRequested = OpenLocationSource;
 
         foreach (var item in _navigationService.GetNavigationItems())
         {
@@ -510,6 +519,10 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
         ParseMessagesFromEvidenceCommand = CreateSafeAsyncCommand(
             "ParseMessages",
             ParseMessagesFromSelectedEvidenceAsync
+        );
+        ParseLocationsFromEvidenceCommand = CreateSafeAsyncCommand(
+            "ParseLocations",
+            ParseLocationsFromSelectedEvidenceAsync
         );
         RefreshLatestMessagesParseJobCommand = new AsyncRelayCommand(RefreshLatestMessagesParseJobManuallyAsync);
         CancelLatestMessagesParseJobCommand = CreateSafeAsyncCommand(
@@ -632,6 +645,19 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
             Timeline.Deactivate();
         }
 
+        if (value.Page == NavigationPage.Locations)
+        {
+            Locations.ActivateAsync(CancellationToken.None).Forget(
+                "ActivateLocationsOnNavigate",
+                caseId: _appSessionState.CurrentCaseId,
+                evidenceId: _appSessionState.CurrentEvidenceId
+            );
+        }
+        else
+        {
+            Locations.Deactivate();
+        }
+
         if (value.Page == NavigationPage.Reports)
         {
             Reports.ActivateAsync(CancellationToken.None).Forget(
@@ -703,6 +729,10 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
         );
         Timeline.SetCurrentCaseAsync(value?.CaseId, CancellationToken.None).Forget(
             "RefreshTimelineOnCaseChanged",
+            caseId: value?.CaseId
+        );
+        Locations.SetCurrentCaseAsync(value?.CaseId, CancellationToken.None).Forget(
+            "RefreshLocationsOnCaseChanged",
             caseId: value?.CaseId
         );
         Reports.SetCurrentCaseAsync(value?.CaseId, CancellationToken.None).Forget(
@@ -1356,6 +1386,50 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
         catch (OperationCanceledException)
         {
             OperationText = "Messages ingest canceled.";
+        }
+    }
+
+    private async Task ParseLocationsFromSelectedEvidenceAsync()
+    {
+        if (CurrentCaseInfo is null || SelectedEvidenceItem is null)
+        {
+            OperationText = "Select an evidence item before parsing locations.";
+            return;
+        }
+
+        try
+        {
+            var payload = JsonSerializer.Serialize(new LocationsIngestPayload
+            {
+                SchemaVersion = 1,
+                CaseId = CurrentCaseInfo.CaseId,
+                EvidenceItemId = SelectedEvidenceItem.EvidenceItemId
+            });
+
+            var jobId = await _jobQueueService.EnqueueAsync(
+                new JobEnqueueRequest(
+                    LocationsIngestJobType,
+                    CurrentCaseInfo.CaseId,
+                    SelectedEvidenceItem.EvidenceItemId,
+                    payload
+                ),
+                CancellationToken.None
+            );
+
+            OperationText = $"Queued locations ingest job {jobId:D}.";
+            OperationProgress = 0;
+            await RefreshRecentJobsAsync(CancellationToken.None);
+        }
+        catch (Exception ex) when (IsWorkspaceLockException(ex))
+        {
+            ShowWorkspaceLockFailure(
+                "Queueing locations ingest failed because the workspace database is locked.",
+                ex
+            );
+        }
+        catch (OperationCanceledException)
+        {
+            OperationText = "Locations ingest canceled.";
         }
     }
 
@@ -2711,6 +2785,29 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
         OperationText = $"Opened source evidence: {evidenceItem.DisplayName} | {row.SourceLocator}";
     }
 
+    private void OpenLocationSource(LocationRowDto row)
+    {
+        if (CurrentCaseInfo is null)
+        {
+            OperationText = "Open a case before viewing location source.";
+            return;
+        }
+
+        var evidenceItem = EvidenceItems.FirstOrDefault(
+            item => item.EvidenceItemId == row.SourceEvidenceItemId
+        );
+        if (evidenceItem is null)
+        {
+            OperationText =
+                $"Source evidence item {row.SourceEvidenceItemId:D} is not available in the current case.";
+            return;
+        }
+
+        SelectedEvidenceItem = evidenceItem;
+        IsEvidenceDrawerOpen = true;
+        OperationText = $"Opened source evidence: {evidenceItem.DisplayName} | {row.SourceLocator}";
+    }
+
     private async Task CancelCurrentOperationAsync()
     {
         if (_activeJobId.HasValue)
@@ -2928,6 +3025,10 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
             else if (job.JobType == MessagesIngestJobType)
             {
                 await RefreshCurrentCaseAsync(CancellationToken.None);
+            }
+            else if (job.JobType == LocationsIngestJobType)
+            {
+                await Locations.RefreshCurrentPageAsync(CancellationToken.None);
             }
 
             await RefreshRecentActivityAsync(CancellationToken.None);
@@ -3411,6 +3512,7 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
 
         _jobUpdateSubscription.Dispose();
         _jobCompletionRefreshGate.Dispose();
+        Locations.Dispose();
         Reports.Dispose();
     }
 
@@ -3491,6 +3593,15 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
     }
 
     private sealed class MessagesIngestPayload
+    {
+        public int SchemaVersion { get; set; }
+
+        public Guid CaseId { get; set; }
+
+        public Guid EvidenceItemId { get; set; }
+    }
+
+    private sealed class LocationsIngestPayload
     {
         public int SchemaVersion { get; set; }
 
