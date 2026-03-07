@@ -50,12 +50,12 @@ public partial class ReportsViewModel : ObservableObject, IDisposable
             new SubjectKindOption(DossierSubjectTypes.GlobalPerson, "Global Person")
         ];
 
-        SelectedSubjectKind = AvailableSubjectKinds[0];
-
         BrowseOutputPathCommand = new RelayCommand(BrowseForOutputPath);
         CreateDossierCommand = new AsyncRelayCommand(CreateDossierAsync, () => CanCreateDossier);
         CancelExportCommand = new AsyncRelayCommand(CancelExportAsync, () => CanCancelExport);
         OpenFolderCommand = new RelayCommand(OpenFolder, () => CanOpenFolder);
+
+        SelectedSubjectKind = AvailableSubjectKinds[0];
 
         _jobUpdateSubscription = _jobQueueService.JobUpdates.Subscribe(new JobObserver(DispatchJobUpdate));
     }
@@ -579,9 +579,9 @@ public partial class ReportsViewModel : ObservableObject, IDisposable
         OnPropertyChanged(nameof(CanOpenFolder));
         OnPropertyChanged(nameof(HasSelectedSections));
         OnPropertyChanged(nameof(HasSubjectOptions));
-        CreateDossierCommand.NotifyCanExecuteChanged();
-        CancelExportCommand.NotifyCanExecuteChanged();
-        OpenFolderCommand.NotifyCanExecuteChanged();
+        CreateDossierCommand?.NotifyCanExecuteChanged();
+        CancelExportCommand?.NotifyCanExecuteChanged();
+        OpenFolderCommand?.NotifyCanExecuteChanged();
     }
 
     private static DateTimeOffset? ConvertLocalDateToStartUtc(DateTime? localDate)
