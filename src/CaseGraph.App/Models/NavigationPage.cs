@@ -6,6 +6,7 @@ public enum NavigationPage
     Import,
     Search,
     Timeline,
+    IncidentWindow,
     PeopleTargets,
     Locations,
     Associations,

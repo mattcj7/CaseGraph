@@ -1,0 +1,409 @@
+<UserControl x:Class="CaseGraph.App.Views.IncidentWindowPage"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             Background="{DynamicResource ContentBackgroundBrush}">
+    <Grid Margin="{StaticResource Space16}"
+          DataContext="{Binding IncidentWindow}">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+        </Grid.RowDefinitions>
+
+        <StackPanel Grid.Row="0">
+            <TextBlock Text="Incident Window" Style="{StaticResource PageTitleTextStyle}" />
+            <TextBlock Margin="{StaticResource SpaceTop8}"
+                       Style="{StaticResource SecondaryBodyTextStyle}"
+                       Text="{Binding StatusText}" />
+        </StackPanel>
+
+        <Border Grid.Row="1"
+                Margin="{StaticResource SpaceTop12}"
+                Style="{StaticResource PlaceholderHintBorderStyle}">
+            <StackPanel>
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="1.1*" />
+                        <ColumnDefinition Width="12" />
+                        <ColumnDefinition Width="1.1*" />
+                        <ColumnDefinition Width="12" />
+                        <ColumnDefinition Width="1.1*" />
+                        <ColumnDefinition Width="12" />
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="12" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+
+                    <StackPanel Grid.Column="0">
+                        <TextBlock Style="{StaticResource SecondaryBodyTextStyle}" Text="Anchor (Local)" />
+                        <TextBox Margin="{StaticResource SpaceTop8}"
+                                 Text="{Binding AnchorLocalText, UpdateSourceTrigger=PropertyChanged}"
+                                 Style="{StaticResource TopBarTextBoxStyle}" />
+                    </StackPanel>
+
+                    <StackPanel Grid.Column="2">
+                        <TextBlock Style="{StaticResource SecondaryBodyTextStyle}" Text="Start (Local)" />
+                        <TextBox Margin="{StaticResource SpaceTop8}"
+                                 Text="{Binding StartLocalText, UpdateSourceTrigger=PropertyChanged}"
+                                 Style="{StaticResource TopBarTextBoxStyle}" />
+                    </StackPanel>
+
+                    <StackPanel Grid.Column="4">
+                        <TextBlock Style="{StaticResource SecondaryBodyTextStyle}" Text="End (Local)" />
+                        <TextBox Margin="{StaticResource SpaceTop8}"
+                                 Text="{Binding EndLocalText, UpdateSourceTrigger=PropertyChanged}"
+                                 Style="{StaticResource TopBarTextBoxStyle}" />
+                    </StackPanel>
+
+                    <Button Grid.Column="6"
+                            VerticalAlignment="Bottom"
+                            Content="Apply -6h/+12h"
+                            Command="{Binding ApplyPresetCommand}"
+                            Style="{StaticResource TopBarButtonStyle}" />
+
+                    <Button Grid.Column="8"
+                            VerticalAlignment="Bottom"
+                            Content="Run"
+                            Command="{Binding RunCommand}"
+                            Style="{StaticResource TopBarButtonStyle}" />
+                </Grid>
+
+                <Grid Margin="{StaticResource SpaceTop12}">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="12" />
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="12" />
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="12" />
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="12" />
+                        <ColumnDefinition Width="1.2*" />
+                        <ColumnDefinition Width="12" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+
+                    <CheckBox Grid.Column="0"
+                              VerticalAlignment="Bottom"
+                              Content="Use scene center + radius"
+                              IsChecked="{Binding RadiusEnabled, Mode=TwoWay}" />
+
+                    <StackPanel Grid.Column="2">
+                        <TextBlock Style="{StaticResource SecondaryBodyTextStyle}" Text="Latitude" />
+                        <TextBox Margin="{StaticResource SpaceTop8}"
+                                 Text="{Binding CenterLatitudeText, UpdateSourceTrigger=PropertyChanged}"
+                                 Style="{StaticResource TopBarTextBoxStyle}" />
+                    </StackPanel>
+
+                    <StackPanel Grid.Column="4">
+                        <TextBlock Style="{StaticResource SecondaryBodyTextStyle}" Text="Longitude" />
+                        <TextBox Margin="{StaticResource SpaceTop8}"
+                                 Text="{Binding CenterLongitudeText, UpdateSourceTrigger=PropertyChanged}"
+                                 Style="{StaticResource TopBarTextBoxStyle}" />
+                    </StackPanel>
+
+                    <StackPanel Grid.Column="6">
+                        <TextBlock Style="{StaticResource SecondaryBodyTextStyle}" Text="Radius (m)" />
+                        <TextBox Margin="{StaticResource SpaceTop8}"
+                                 Text="{Binding RadiusMetersText, UpdateSourceTrigger=PropertyChanged}"
+                                 Style="{StaticResource TopBarTextBoxStyle}" />
+                    </StackPanel>
+
+                    <StackPanel Grid.Column="8">
+                        <TextBlock Style="{StaticResource SecondaryBodyTextStyle}" Text="Subject Focus" />
+                        <ComboBox Margin="{StaticResource SpaceTop8}"
+                                  ItemsSource="{Binding SubjectFilters}"
+                                  SelectedItem="{Binding SelectedSubjectFilter, Mode=TwoWay}"
+                                  DisplayMemberPath="DisplayName"
+                                  Style="{StaticResource TopBarComboBoxStyle}" />
+                    </StackPanel>
+
+                    <Button Grid.Column="10"
+                            VerticalAlignment="Bottom"
+                            Content="Clear"
+                            Command="{Binding ClearCommand}"
+                            Style="{StaticResource TopBarButtonStyle}" />
+                </Grid>
+
+                <CheckBox Margin="{StaticResource SpaceTop12}"
+                          Content="Include co-location candidates"
+                          IsChecked="{Binding IncludeCoLocationCandidates, Mode=TwoWay}" />
+            </StackPanel>
+        </Border>
+
+        <TabControl Grid.Row="2" Margin="{StaticResource SpaceTop12}">
+            <TabItem Header="Comms Hits">
+                <Grid Margin="{StaticResource Space16}">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="*" />
+                    </Grid.RowDefinitions>
+                    <DockPanel Grid.Row="0" LastChildFill="False">
+                        <TextBlock DockPanel.Dock="Left"
+                                   VerticalAlignment="Center"
+                                   Style="{StaticResource SecondaryBodyTextStyle}"
+                                   Text="{Binding CommsPageSummaryText}" />
+                        <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
+                            <Button Content="Previous" Command="{Binding PreviousCommsPageCommand}" Style="{StaticResource TopBarButtonStyle}" />
+                            <Button Margin="{StaticResource SpaceLeft8}" Content="Next" Command="{Binding NextCommsPageCommand}" Style="{StaticResource TopBarButtonStyle}" />
+                        </StackPanel>
+                    </DockPanel>
+                    <Grid Grid.Row="1" Margin="{StaticResource SpaceTop12}">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="2.1*" />
+                            <ColumnDefinition Width="16" />
+                            <ColumnDefinition Width="*" />
+                        </Grid.ColumnDefinitions>
+                        <DataGrid Grid.Column="0"
+                                  ItemsSource="{Binding CommsRows}"
+                                  SelectedItem="{Binding SelectedCommsRow, Mode=TwoWay}"
+                                  AutoGenerateColumns="False"
+                                  CanUserAddRows="False"
+                                  CanUserDeleteRows="False"
+                                  IsReadOnly="True"
+                                  EnableRowVirtualization="True"
+                                  EnableColumnVirtualization="True"
+                                  VirtualizingPanel.IsVirtualizing="True"
+                                  VirtualizingPanel.VirtualizationMode="Recycling">
+                            <DataGrid.Columns>
+                                <DataGridTextColumn Header="Time (Local)" Binding="{Binding TimestampLocalDisplay}" Width="1.1*" />
+                                <DataGridTextColumn Header="Participants" Binding="{Binding ParticipantsSummary}" Width="1.7*" />
+                                <DataGridTextColumn Header="Preview" Binding="{Binding Preview}" Width="2.3*" />
+                                <DataGridTemplateColumn Header="Source" Width="1.0*">
+                                    <DataGridTemplateColumn.CellTemplate>
+                                        <DataTemplate>
+                                            <Button Content="View Source"
+                                                    Command="{Binding DataContext.ViewCommsSourceCommand, RelativeSource={RelativeSource AncestorType=DataGrid}}"
+                                                    CommandParameter="{Binding}"
+                                                    Style="{StaticResource TopBarButtonStyle}" />
+                                        </DataTemplate>
+                                    </DataGridTemplateColumn.CellTemplate>
+                                </DataGridTemplateColumn>
+                                <DataGridTemplateColumn Header="Citation" Width="1.0*">
+                                    <DataGridTemplateColumn.CellTemplate>
+                                        <DataTemplate>
+                                            <Button Content="Copy Citation"
+                                                    Command="{Binding DataContext.CopyCommsCitationCommand, RelativeSource={RelativeSource AncestorType=DataGrid}}"
+                                                    CommandParameter="{Binding}"
+                                                    Style="{StaticResource TopBarButtonStyle}" />
+                                        </DataTemplate>
+                                    </DataGridTemplateColumn.CellTemplate>
+                                </DataGridTemplateColumn>
+                            </DataGrid.Columns>
+                        </DataGrid>
+                        <Border Grid.Column="2" Style="{StaticResource PlaceholderHintBorderStyle}">
+                            <ScrollViewer VerticalScrollBarVisibility="Auto">
+                                <StackPanel>
+                                    <TextBlock Text="Selected Comms Hit" Style="{StaticResource SectionTitleTextStyle}" />
+                                    <TextBlock Margin="{StaticResource SpaceTop12}" Style="{StaticResource SecondaryBodyTextStyle}" Text="Evidence" />
+                                    <TextBlock Style="{StaticResource BodyTextStyle}" Text="{Binding SelectedCommsRow.EvidenceDisplayName, TargetNullValue=(none)}" TextWrapping="Wrap" />
+                                    <TextBlock Margin="{StaticResource SpaceTop12}" Style="{StaticResource SecondaryBodyTextStyle}" Text="Source Locator" />
+                                    <TextBlock Style="{StaticResource BodyTextStyle}" Text="{Binding SelectedCommsRow.SourceLocator, TargetNullValue=(none)}" TextWrapping="Wrap" />
+                                    <TextBlock Margin="{StaticResource SpaceTop12}" Style="{StaticResource SecondaryBodyTextStyle}" Text="Participants" />
+                                    <TextBlock Style="{StaticResource BodyTextStyle}" Text="{Binding SelectedCommsRow.ParticipantsSummary, TargetNullValue=(none)}" TextWrapping="Wrap" />
+                                    <TextBlock Margin="{StaticResource SpaceTop12}" Style="{StaticResource SecondaryBodyTextStyle}" Text="Body" />
+                                    <TextBox Text="{Binding SelectedCommsRow.Body, TargetNullValue=(none)}" IsReadOnly="True" MinHeight="180" TextWrapping="Wrap" AcceptsReturn="True" VerticalScrollBarVisibility="Auto" Style="{StaticResource TopBarTextBoxStyle}" />
+                                    <WrapPanel Margin="{StaticResource SpaceTop16}">
+                                        <Button Content="View Source"
+                                                Command="{Binding ViewCommsSourceCommand}"
+                                                CommandParameter="{Binding SelectedCommsRow}"
+                                                Style="{StaticResource TopBarButtonStyle}" />
+                                        <Button Margin="{StaticResource SpaceLeft8}"
+                                                Content="Copy Citation"
+                                                Command="{Binding CopyCommsCitationCommand}"
+                                                CommandParameter="{Binding SelectedCommsRow}"
+                                                Style="{StaticResource TopBarButtonStyle}" />
+                                    </WrapPanel>
+                                </StackPanel>
+                            </ScrollViewer>
+                        </Border>
+                    </Grid>
+                </Grid>
+            </TabItem>
+
+            <TabItem Header="Geo Hits">
+                <Grid Margin="{StaticResource Space16}">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="*" />
+                    </Grid.RowDefinitions>
+                    <DockPanel Grid.Row="0" LastChildFill="False">
+                        <TextBlock DockPanel.Dock="Left"
+                                   VerticalAlignment="Center"
+                                   Style="{StaticResource SecondaryBodyTextStyle}"
+                                   Text="{Binding GeoPageSummaryText}" />
+                        <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
+                            <Button Content="Previous" Command="{Binding PreviousGeoPageCommand}" Style="{StaticResource TopBarButtonStyle}" />
+                            <Button Margin="{StaticResource SpaceLeft8}" Content="Next" Command="{Binding NextGeoPageCommand}" Style="{StaticResource TopBarButtonStyle}" />
+                        </StackPanel>
+                    </DockPanel>
+                    <Grid Grid.Row="1" Margin="{StaticResource SpaceTop12}">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="2.1*" />
+                            <ColumnDefinition Width="16" />
+                            <ColumnDefinition Width="*" />
+                        </Grid.ColumnDefinitions>
+                        <DataGrid Grid.Column="0"
+                                  ItemsSource="{Binding GeoRows}"
+                                  SelectedItem="{Binding SelectedGeoRow, Mode=TwoWay}"
+                                  AutoGenerateColumns="False"
+                                  IsReadOnly="True"
+                                  CanUserAddRows="False"
+                                  CanUserDeleteRows="False"
+                                  EnableRowVirtualization="True"
+                                  EnableColumnVirtualization="True"
+                                  VirtualizingPanel.IsVirtualizing="True"
+                                  VirtualizingPanel.VirtualizationMode="Recycling">
+                            <DataGrid.Columns>
+                                <DataGridTextColumn Header="Time (Local)" Binding="{Binding TimestampLocalDisplay}" Width="1.1*" />
+                                <DataGridTextColumn Header="Subject" Binding="{Binding SubjectDisplayName, TargetNullValue=(none)}" Width="1.3*" />
+                                <DataGridTextColumn Header="Coordinates" Binding="{Binding CoordinatesDisplay}" Width="1.5*" />
+                                <DataGridTextColumn Header="Accuracy (m)" Binding="{Binding AccuracyMeters, TargetNullValue=(none), StringFormat={}{0:F1}}" Width="0.9*" />
+                                <DataGridTextColumn Header="Scene Dist (m)" Binding="{Binding DistanceFromCenterMeters, TargetNullValue=(n/a), StringFormat={}{0:F1}}" Width="0.9*" />
+                                <DataGridTemplateColumn Header="Source" Width="1.0*">
+                                    <DataGridTemplateColumn.CellTemplate>
+                                        <DataTemplate>
+                                            <Button Content="View Source"
+                                                    Command="{Binding DataContext.ViewGeoSourceCommand, RelativeSource={RelativeSource AncestorType=DataGrid}}"
+                                                    CommandParameter="{Binding}"
+                                                    Style="{StaticResource TopBarButtonStyle}" />
+                                        </DataTemplate>
+                                    </DataGridTemplateColumn.CellTemplate>
+                                </DataGridTemplateColumn>
+                                <DataGridTemplateColumn Header="Citation" Width="1.0*">
+                                    <DataGridTemplateColumn.CellTemplate>
+                                        <DataTemplate>
+                                            <Button Content="Copy Citation"
+                                                    Command="{Binding DataContext.CopyGeoCitationCommand, RelativeSource={RelativeSource AncestorType=DataGrid}}"
+                                                    CommandParameter="{Binding}"
+                                                    Style="{StaticResource TopBarButtonStyle}" />
+                                        </DataTemplate>
+                                    </DataGridTemplateColumn.CellTemplate>
+                                </DataGridTemplateColumn>
+                            </DataGrid.Columns>
+                        </DataGrid>
+                        <Border Grid.Column="2" Style="{StaticResource PlaceholderHintBorderStyle}">
+                            <ScrollViewer VerticalScrollBarVisibility="Auto">
+                                <StackPanel>
+                                    <TextBlock Text="Selected Geo Hit" Style="{StaticResource SectionTitleTextStyle}" />
+                                    <TextBlock Margin="{StaticResource SpaceTop12}" Style="{StaticResource SecondaryBodyTextStyle}" Text="Coordinates" />
+                                    <TextBlock Style="{StaticResource BodyTextStyle}" Text="{Binding SelectedGeoRow.CoordinatesDisplay, TargetNullValue=(none)}" />
+                                    <TextBlock Margin="{StaticResource SpaceTop12}" Style="{StaticResource SecondaryBodyTextStyle}" Text="Scene Distance" />
+                                    <TextBlock Style="{StaticResource BodyTextStyle}" Text="{Binding SelectedGeoRow.DistanceFromCenterMeters, TargetNullValue=(n/a), StringFormat={}{0:F1} m}" />
+                                    <TextBlock Margin="{StaticResource SpaceTop12}" Style="{StaticResource SecondaryBodyTextStyle}" Text="Subject" />
+                                    <TextBlock Style="{StaticResource BodyTextStyle}" Text="{Binding SelectedGeoRow.SubjectDisplayName, TargetNullValue=(none)}" TextWrapping="Wrap" />
+                                    <TextBlock Margin="{StaticResource SpaceTop12}" Style="{StaticResource SecondaryBodyTextStyle}" Text="Source Locator" />
+                                    <TextBlock Style="{StaticResource BodyTextStyle}" Text="{Binding SelectedGeoRow.SourceLocator, TargetNullValue=(none)}" TextWrapping="Wrap" />
+                                    <WrapPanel Margin="{StaticResource SpaceTop16}">
+                                        <Button Content="View Source"
+                                                Command="{Binding ViewGeoSourceCommand}"
+                                                CommandParameter="{Binding SelectedGeoRow}"
+                                                Style="{StaticResource TopBarButtonStyle}" />
+                                        <Button Margin="{StaticResource SpaceLeft8}"
+                                                Content="Copy Citation"
+                                                Command="{Binding CopyGeoCitationCommand}"
+                                                CommandParameter="{Binding SelectedGeoRow}"
+                                                Style="{StaticResource TopBarButtonStyle}" />
+                                    </WrapPanel>
+                                </StackPanel>
+                            </ScrollViewer>
+                        </Border>
+                    </Grid>
+                </Grid>
+            </TabItem>
+
+            <TabItem Header="Co-location Candidates">
+                <Grid Margin="{StaticResource Space16}">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="*" />
+                    </Grid.RowDefinitions>
+                    <StackPanel Grid.Row="0">
+                        <TextBlock Style="{StaticResource SecondaryBodyTextStyle}" Text="{Binding CoLocationPageSummaryText}" />
+                        <TextBlock Margin="{StaticResource SpaceTop8}" Style="{StaticResource SecondaryBodyTextStyle}" Text="{Binding CoLocationHintText}" TextWrapping="Wrap" />
+                        <WrapPanel Margin="{StaticResource SpaceTop8}">
+                            <Button Content="Previous" Command="{Binding PreviousCoLocationPageCommand}" Style="{StaticResource TopBarButtonStyle}" />
+                            <Button Margin="{StaticResource SpaceLeft8}" Content="Next" Command="{Binding NextCoLocationPageCommand}" Style="{StaticResource TopBarButtonStyle}" />
+                        </WrapPanel>
+                    </StackPanel>
+                    <Grid Grid.Row="1" Margin="{StaticResource SpaceTop12}">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="2.1*" />
+                            <ColumnDefinition Width="16" />
+                            <ColumnDefinition Width="*" />
+                        </Grid.ColumnDefinitions>
+                        <DataGrid Grid.Column="0"
+                                  ItemsSource="{Binding CoLocationRows}"
+                                  SelectedItem="{Binding SelectedCoLocation, Mode=TwoWay}"
+                                  AutoGenerateColumns="False"
+                                  IsReadOnly="True"
+                                  CanUserAddRows="False"
+                                  CanUserDeleteRows="False"
+                                  EnableRowVirtualization="True"
+                                  EnableColumnVirtualization="True"
+                                  VirtualizingPanel.IsVirtualizing="True"
+                                  VirtualizingPanel.VirtualizationMode="Recycling">
+                            <DataGrid.Columns>
+                                <DataGridTextColumn Header="Subject A" Binding="{Binding FirstSubjectDisplayName}" Width="1.2*" />
+                                <DataGridTextColumn Header="Time A" Binding="{Binding FirstTimestampLocalDisplay}" Width="1.0*" />
+                                <DataGridTextColumn Header="Subject B" Binding="{Binding SecondSubjectDisplayName}" Width="1.2*" />
+                                <DataGridTextColumn Header="Time B" Binding="{Binding SecondTimestampLocalDisplay}" Width="1.0*" />
+                                <DataGridTextColumn Header="Dist (m)" Binding="{Binding DistanceMeters, StringFormat={}{0:F1}}" Width="0.8*" />
+                                <DataGridTextColumn Header="Delta (min)" Binding="{Binding TimeDeltaMinutes, StringFormat={}{0:F1}}" Width="0.9*" />
+                                <DataGridTemplateColumn Header="Source" Width="1.0*">
+                                    <DataGridTemplateColumn.CellTemplate>
+                                        <DataTemplate>
+                                            <Button Content="View Source"
+                                                    Command="{Binding DataContext.ViewCoLocationSourceCommand, RelativeSource={RelativeSource AncestorType=DataGrid}}"
+                                                    CommandParameter="{Binding}"
+                                                    Style="{StaticResource TopBarButtonStyle}" />
+                                        </DataTemplate>
+                                    </DataGridTemplateColumn.CellTemplate>
+                                </DataGridTemplateColumn>
+                                <DataGridTemplateColumn Header="Citation" Width="1.0*">
+                                    <DataGridTemplateColumn.CellTemplate>
+                                        <DataTemplate>
+                                            <Button Content="Copy Citation"
+                                                    Command="{Binding DataContext.CopyCoLocationCitationCommand, RelativeSource={RelativeSource AncestorType=DataGrid}}"
+                                                    CommandParameter="{Binding}"
+                                                    Style="{StaticResource TopBarButtonStyle}" />
+                                        </DataTemplate>
+                                    </DataGridTemplateColumn.CellTemplate>
+                                </DataGridTemplateColumn>
+                            </DataGrid.Columns>
+                        </DataGrid>
+                        <Border Grid.Column="2" Style="{StaticResource PlaceholderHintBorderStyle}">
+                            <ScrollViewer VerticalScrollBarVisibility="Auto">
+                                <StackPanel>
+                                    <TextBlock Text="Selected Candidate" Style="{StaticResource SectionTitleTextStyle}" />
+                                    <TextBlock Margin="{StaticResource SpaceTop12}" Style="{StaticResource SecondaryBodyTextStyle}" Text="Why" />
+                                    <TextBlock Style="{StaticResource BodyTextStyle}" Text="{Binding SelectedCoLocation.Why, TargetNullValue=(none)}" TextWrapping="Wrap" />
+                                    <TextBlock Margin="{StaticResource SpaceTop12}" Style="{StaticResource SecondaryBodyTextStyle}" Text="First Source Locator" />
+                                    <TextBlock Style="{StaticResource BodyTextStyle}" Text="{Binding SelectedCoLocation.FirstObservation.SourceLocator, TargetNullValue=(none)}" TextWrapping="Wrap" />
+                                    <TextBlock Margin="{StaticResource SpaceTop12}" Style="{StaticResource SecondaryBodyTextStyle}" Text="Second Source Locator" />
+                                    <TextBlock Style="{StaticResource BodyTextStyle}" Text="{Binding SelectedCoLocation.SecondObservation.SourceLocator, TargetNullValue=(none)}" TextWrapping="Wrap" />
+                                    <WrapPanel Margin="{StaticResource SpaceTop16}">
+                                        <Button Content="View First Source"
+                                                Command="{Binding ViewCoLocationSourceCommand}"
+                                                CommandParameter="{Binding SelectedCoLocation}"
+                                                Style="{StaticResource TopBarButtonStyle}" />
+                                        <Button Margin="{StaticResource SpaceLeft8}"
+                                                Content="View Second Source"
+                                                Command="{Binding ViewCoLocationSecondarySourceCommand}"
+                                                CommandParameter="{Binding SelectedCoLocation}"
+                                                Style="{StaticResource TopBarButtonStyle}" />
+                                        <Button Margin="{StaticResource SpaceLeft8}"
+                                                Content="Copy Citation"
+                                                Command="{Binding CopyCoLocationCitationCommand}"
+                                                CommandParameter="{Binding SelectedCoLocation}"
+                                                Style="{StaticResource TopBarButtonStyle}" />
+                                    </WrapPanel>
+                                </StackPanel>
+                            </ScrollViewer>
+                        </Border>
+                    </Grid>
+                </Grid>
+            </TabItem>
+        </TabControl>
+    </Grid>
+</UserControl>

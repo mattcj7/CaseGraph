@@ -17,6 +17,7 @@ public sealed class NavigationService : INavigationService
             [NavigationPage.Import] = ("Import", "Queue-backed evidence import with progress, cancel, and activity feed."),
             [NavigationPage.Search] = ("Search", "FTS-backed message search with provenance and citation copy."),
             [NavigationPage.Timeline] = ("Timeline", "Paged chronological message timeline with filters and provenance drill-down."),
+            [NavigationPage.IncidentWindow] = ("Incident Window", "Wizard-driven offense window analysis for comms, geo hits, and co-location evidence."),
             [NavigationPage.PeopleTargets] = ("People / Targets", "Manage known people, aliases, identifiers, and message links."),
             [NavigationPage.Locations] = ("Locations", "Location observations with provenance filters, paging, and citation actions."),
             [NavigationPage.Associations] = ("Association Graph", "Relationship graph with filters, overlays, and export."),
@@ -53,6 +54,11 @@ public sealed class NavigationService : INavigationService
         if (page == NavigationPage.Timeline)
         {
             return new TimelineView();
+        }
+
+        if (page == NavigationPage.IncidentWindow)
+        {
+            return new IncidentWindowPage();
         }
 
         if (page == NavigationPage.Locations)

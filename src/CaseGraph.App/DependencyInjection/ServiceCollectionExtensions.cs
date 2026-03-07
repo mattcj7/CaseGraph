@@ -2,6 +2,7 @@ using CaseGraph.App.Services;
 using CaseGraph.App.ViewModels;
 using CaseGraph.Core.Abstractions;
 using CaseGraph.Core.Diagnostics;
+using CaseGraph.Infrastructure.IncidentWindow;
 using CaseGraph.Infrastructure.Locations;
 using CaseGraph.Infrastructure.Reports;
 using CaseGraph.Infrastructure.Persistence;
@@ -72,6 +73,7 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<DossierBuilder>();
         services.AddSingleton<ReportExportService>();
         services.AddSingleton<TimelineQueryService>();
+        services.AddSingleton<IncidentWindowQueryService>();
         services.AddSingleton<LocationQueryService>();
         services.AddSingleton<IJobQueryService, JobQueryService>();
         services.AddSingleton<JobQueueService>();
@@ -79,6 +81,7 @@ public static class ServiceCollectionExtensions
         services.AddHostedService<JobRunnerHostedService>();
 
         services.AddSingleton<TimelineViewModel>();
+        services.AddSingleton<IncidentWindowViewModel>();
         services.AddSingleton<LocationsViewModel>();
         services.AddSingleton<ReportsViewModel>();
         services.AddSingleton<MainWindowViewModel>();

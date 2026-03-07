@@ -27,6 +27,8 @@ public sealed record LocationRowDto(
 
     public string? SubjectDisplayName { get; init; }
 
+    public double? DistanceFromCenterMeters { get; init; }
+
     public string TimestampLocalDisplay => ObservedUtc
         .ToLocalTime()
         .ToString("g", CultureInfo.CurrentCulture);

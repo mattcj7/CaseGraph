@@ -4,6 +4,7 @@ using CaseGraph.App.Views.Dialogs;
 using CaseGraph.Core.Abstractions;
 using CaseGraph.Core.Diagnostics;
 using CaseGraph.Core.Models;
+using CaseGraph.Infrastructure.IncidentWindow;
 using CaseGraph.Infrastructure.Locations;
 using CaseGraph.Infrastructure.Timeline;
 using CommunityToolkit.Mvvm.ComponentModel;
@@ -90,6 +91,8 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
     public ObservableCollection<SearchGlobalPersonFilterOption> MessageSearchGlobalPersonFilters { get; } = new();
 
     public TimelineViewModel Timeline { get; }
+
+    public IncidentWindowViewModel IncidentWindow { get; }
 
     public LocationsViewModel Locations { get; }
 
@@ -461,6 +464,7 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
         IAssociationGraphQueryService associationGraphQueryService,
         IAssociationGraphExportPathBuilder associationGraphExportPathBuilder,
         TimelineViewModel timelineViewModel,
+        IncidentWindowViewModel incidentWindowViewModel,
         LocationsViewModel locationsViewModel,
         ReportsViewModel reportsViewModel,
         IWorkspacePathProvider workspacePathProvider,
@@ -484,6 +488,7 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
         _associationGraphQueryService = associationGraphQueryService;
         _associationGraphExportPathBuilder = associationGraphExportPathBuilder;
         Timeline = timelineViewModel;
+        IncidentWindow = incidentWindowViewModel;
         Locations = locationsViewModel;
         Reports = reportsViewModel;
         _workspacePathProvider = workspacePathProvider;
@@ -493,6 +498,9 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
         _sessionJournal = sessionJournal;
         _appSessionState = appSessionState;
         Timeline.ViewSourceRequested = OpenTimelineSource;
+        IncidentWindow.ViewCommsSourceRequested = OpenTimelineSource;
+        IncidentWindow.ViewGeoSourceRequested = OpenLocationSource;
+        IncidentWindow.ViewCoLocationSourceRequested = OpenLocationSource;
         Locations.ViewSourceRequested = OpenLocationSource;
 
         foreach (var item in _navigationService.GetNavigationItems())
@@ -645,6 +653,19 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
             Timeline.Deactivate();
         }
 
+        if (value.Page == NavigationPage.IncidentWindow)
+        {
+            IncidentWindow.ActivateAsync(CancellationToken.None).Forget(
+                "ActivateIncidentWindowOnNavigate",
+                caseId: _appSessionState.CurrentCaseId,
+                evidenceId: _appSessionState.CurrentEvidenceId
+            );
+        }
+        else
+        {
+            IncidentWindow.Deactivate();
+        }
+
         if (value.Page == NavigationPage.Locations)
         {
             Locations.ActivateAsync(CancellationToken.None).Forget(
@@ -729,6 +750,10 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
         );
         Timeline.SetCurrentCaseAsync(value?.CaseId, CancellationToken.None).Forget(
             "RefreshTimelineOnCaseChanged",
+            caseId: value?.CaseId
+        );
+        IncidentWindow.SetCurrentCaseAsync(value?.CaseId, CancellationToken.None).Forget(
+            "RefreshIncidentWindowOnCaseChanged",
             caseId: value?.CaseId
         );
         Locations.SetCurrentCaseAsync(value?.CaseId, CancellationToken.None).Forget(
