@@ -15,7 +15,13 @@ public sealed class AppSelfTestSmokeTests
             "CaseGraph.App.SelfTest",
             Guid.NewGuid().ToString("N")
         );
+        var logRoot = Path.Combine(
+            Path.GetTempPath(),
+            "CaseGraph.App.SelfTest.Logs",
+            Guid.NewGuid().ToString("N")
+        );
         Directory.CreateDirectory(workspaceRoot);
+        Directory.CreateDirectory(logRoot);
 
         try
         {
@@ -41,7 +47,8 @@ public sealed class AppSelfTestSmokeTests
                 ],
                 environment:
                 [
-                    new KeyValuePair<string, string>("CASEGRAPH_WORKSPACE_ROOT", workspaceRoot)
+                    new KeyValuePair<string, string>("CASEGRAPH_WORKSPACE_ROOT", workspaceRoot),
+                    new KeyValuePair<string, string>("CASEGRAPH_LOG_DIRECTORY", logRoot)
                 ],
                 timeout: TimeSpan.FromMinutes(2)
             );
@@ -64,7 +71,8 @@ public sealed class AppSelfTestSmokeTests
                 arguments: ["--self-test"],
                 environment:
                 [
-                    new KeyValuePair<string, string>("CASEGRAPH_WORKSPACE_ROOT", workspaceRoot)
+                    new KeyValuePair<string, string>("CASEGRAPH_WORKSPACE_ROOT", workspaceRoot),
+                    new KeyValuePair<string, string>("CASEGRAPH_LOG_DIRECTORY", logRoot)
                 ],
                 timeout: TimeSpan.FromMinutes(2)
             );
@@ -81,10 +89,25 @@ public sealed class AppSelfTestSmokeTests
                 failureDetails.AppendLine(selfTestResult.Stderr);
                 Assert.Fail(failureDetails.ToString());
             }
+
+            var logPath = Directory.GetFiles(logRoot, "app-*.log", SearchOption.TopDirectoryOnly)
+                .SingleOrDefault();
+            Assert.False(
+                string.IsNullOrWhiteSpace(logPath),
+                $"Expected a self-test log file under {logRoot}."
+            );
+
+            var logContents = await File.ReadAllTextAsync(logPath!);
+            Assert.Contains("WorkspaceMigrationCompleted", logContents);
+            Assert.Contains("ApplyMigrationsCompleted", logContents);
+            Assert.Contains("WorkspaceSchemaVerified", logContents);
+            Assert.Contains("WorkspaceInitCompleted", logContents);
+            Assert.Contains("SelfTestHostStarted", logContents);
         }
         finally
         {
             TryDeleteDirectory(workspaceRoot);
+            TryDeleteDirectory(logRoot);
         }
     }
 

@@ -639,7 +639,39 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
             }
         );
 
-        CurrentView = _navigationService.CreateView(value.Page);
+        var correlationId = AppFileLogger.NewCorrelationId();
+        var navigationFields = new Dictionary<string, object?>
+        {
+            ["page"] = value.Page.ToString(),
+            ["title"] = value.Title,
+            ["correlationId"] = correlationId,
+            ["caseId"] = _appSessionState.CurrentCaseId?.ToString("D"),
+            ["evidenceId"] = _appSessionState.CurrentEvidenceId?.ToString("D")
+        };
+
+        try
+        {
+            CurrentView = _navigationService.CreateView(value.Page);
+            AppFileLogger.LogEvent(
+                eventName: "NavigationViewActivated",
+                level: "INFO",
+                message: $"{value.Title} view activated.",
+                fields: navigationFields
+            );
+        }
+        catch (Exception ex)
+        {
+            AppFileLogger.LogEvent(
+                eventName: "NavigationViewActivationFailed",
+                level: "ERROR",
+                message: $"Failed to activate {value.Title} view.",
+                ex: ex,
+                fields: navigationFields
+            );
+            OperationText = $"Failed to open {value.Title}. See logs for details.";
+            return;
+        }
+
         if (value.Page == NavigationPage.Timeline)
         {
             Timeline.ActivateAsync(CancellationToken.None).Forget(

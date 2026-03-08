@@ -1,5 +1,6 @@
 using CaseGraph.App.Services;
 using CaseGraph.Core.Abstractions;
+using CaseGraph.Core.Diagnostics;
 using CaseGraph.Core.Models;
 using CaseGraph.Infrastructure.Reports;
 using CaseGraph.Infrastructure.Services;
@@ -28,6 +29,7 @@ public partial class ReportsViewModel : ObservableObject, IDisposable
     private Guid? _currentCaseId;
     private string _currentCaseName = string.Empty;
     private string? _lastSuggestedOutputPath;
+    private bool _isInitializing;
     private bool _isDisposed;
 
     public ReportsViewModel(
@@ -38,6 +40,7 @@ public partial class ReportsViewModel : ObservableObject, IDisposable
         IJobQueryService jobQueryService
     )
     {
+        _isInitializing = true;
         _targetRegistryService = targetRegistryService;
         _caseQueryService = caseQueryService;
         _userInteractionService = userInteractionService;
@@ -55,7 +58,10 @@ public partial class ReportsViewModel : ObservableObject, IDisposable
         CancelExportCommand = new AsyncRelayCommand(CancelExportAsync, () => CanCancelExport);
         OpenFolderCommand = new RelayCommand(OpenFolder, () => CanOpenFolder);
 
-        SelectedSubjectKind = AvailableSubjectKinds[0];
+        selectedSubjectKind = AvailableSubjectKinds[0];
+        RebuildSubjectOptions();
+        _isInitializing = false;
+        NotifyStateChanged();
 
         _jobUpdateSubscription = _jobQueueService.JobUpdates.Subscribe(new JobObserver(DispatchJobUpdate));
     }
@@ -142,102 +148,147 @@ public partial class ReportsViewModel : ObservableObject, IDisposable
 
     public async Task SetCurrentCaseAsync(Guid? caseId, CancellationToken ct)
     {
-        _currentCaseId = caseId;
-        _currentCaseName = string.Empty;
-        SubjectOptions.Clear();
-        _targetSubjects.Clear();
-        _globalSubjects.Clear();
-        SelectedSubject = null;
-        LatestExportJob = null;
-        LastCompletedOutputPath = string.Empty;
-        ExportProgress = 0;
-        FromDateLocal = null;
-        ToDateLocal = null;
+        LogLifecycleEvent("ReportsCaseContextStarting", "Updating Reports case context.", caseId);
 
-        if (!caseId.HasValue)
+        try
         {
-            OutputPath = string.Empty;
-            ExportStatusText = "Open a case to create a dossier.";
+            _currentCaseId = caseId;
+            _currentCaseName = string.Empty;
+            SubjectOptions.Clear();
+            _targetSubjects.Clear();
+            _globalSubjects.Clear();
+            SelectedSubject = null;
+            LatestExportJob = null;
+            LastCompletedOutputPath = string.Empty;
+            ExportProgress = 0;
+            FromDateLocal = null;
+            ToDateLocal = null;
+
+            if (!caseId.HasValue)
+            {
+                OutputPath = string.Empty;
+                ExportStatusText = "Open a case to create a dossier.";
+                NotifyStateChanged();
+                LogLifecycleEvent("ReportsCaseContextCompleted", "Reports case context cleared.");
+                return;
+            }
+
+            var caseInfo = await _caseQueryService.GetCaseAsync(caseId.Value, ct);
+            _currentCaseName = caseInfo?.Name ?? $"Case {caseId.Value:D}";
+            var targets = await _targetRegistryService.GetTargetsAsync(caseId.Value, search: null, ct);
+
+            _targetSubjects.AddRange(
+                targets
+                    .OrderBy(target => target.DisplayName, StringComparer.OrdinalIgnoreCase)
+                    .Select(target => new ReportSubjectOption(
+                        DossierSubjectTypes.Target,
+                        target.TargetId,
+                        target.DisplayName,
+                        target.PrimaryAlias
+                    ))
+            );
+            _globalSubjects.AddRange(
+                targets
+                    .Where(target => target.GlobalEntityId.HasValue)
+                    .GroupBy(target => target.GlobalEntityId!.Value)
+                    .Select(group =>
+                    {
+                        var displayName = group
+                            .Select(item => item.GlobalDisplayName)
+                            .FirstOrDefault(value => !string.IsNullOrWhiteSpace(value))
+                            ?? $"Global Person {group.Key:D}";
+                        var detail = string.Join(
+                            ", ",
+                            group.Select(item => item.DisplayName)
+                                .Distinct(StringComparer.OrdinalIgnoreCase)
+                                .OrderBy(value => value, StringComparer.OrdinalIgnoreCase)
+                        );
+                        return new ReportSubjectOption(
+                            DossierSubjectTypes.GlobalPerson,
+                            group.Key,
+                            displayName,
+                            detail
+                        );
+                    })
+                    .OrderBy(option => option.DisplayName, StringComparer.OrdinalIgnoreCase)
+            );
+
+            if (_targetSubjects.Count == 0 && _globalSubjects.Count == 0)
+            {
+                ExportStatusText = "No targets or global persons are available in the current case.";
+                OutputPath = string.Empty;
+                NotifyStateChanged();
+                LogLifecycleEvent(
+                    "ReportsCaseContextCompleted",
+                    "Reports case context updated with no available subjects.",
+                    caseId
+                );
+                return;
+            }
+
+            SelectedSubjectKind = _targetSubjects.Count > 0
+                ? AvailableSubjectKinds.First(option => option.Value == DossierSubjectTypes.Target)
+                : AvailableSubjectKinds.First(option => option.Value == DossierSubjectTypes.GlobalPerson);
+            RebuildSubjectOptions();
+            await RefreshLatestReportJobAsync(ct);
             NotifyStateChanged();
-            return;
+            LogLifecycleEvent(
+                "ReportsCaseContextCompleted",
+                "Reports case context updated.",
+                caseId,
+                subjectCount: SubjectOptions.Count
+            );
         }
-
-        var caseInfo = await _caseQueryService.GetCaseAsync(caseId.Value, ct);
-        _currentCaseName = caseInfo?.Name ?? $"Case {caseId.Value:D}";
-        var targets = await _targetRegistryService.GetTargetsAsync(caseId.Value, search: null, ct);
-
-        _targetSubjects.AddRange(
-            targets
-                .OrderBy(target => target.DisplayName, StringComparer.OrdinalIgnoreCase)
-                .Select(target => new ReportSubjectOption(
-                    DossierSubjectTypes.Target,
-                    target.TargetId,
-                    target.DisplayName,
-                    target.PrimaryAlias
-                ))
-        );
-        _globalSubjects.AddRange(
-            targets
-                .Where(target => target.GlobalEntityId.HasValue)
-                .GroupBy(target => target.GlobalEntityId!.Value)
-                .Select(group =>
-                {
-                    var displayName = group
-                        .Select(item => item.GlobalDisplayName)
-                        .FirstOrDefault(value => !string.IsNullOrWhiteSpace(value))
-                        ?? $"Global Person {group.Key:D}";
-                    var detail = string.Join(
-                        ", ",
-                        group.Select(item => item.DisplayName)
-                            .Distinct(StringComparer.OrdinalIgnoreCase)
-                            .OrderBy(value => value, StringComparer.OrdinalIgnoreCase)
-                    );
-                    return new ReportSubjectOption(
-                        DossierSubjectTypes.GlobalPerson,
-                        group.Key,
-                        displayName,
-                        detail
-                    );
-                })
-                .OrderBy(option => option.DisplayName, StringComparer.OrdinalIgnoreCase)
-        );
-
-        if (_targetSubjects.Count == 0 && _globalSubjects.Count == 0)
+        catch (Exception ex)
         {
-            ExportStatusText = "No targets or global persons are available in the current case.";
-            OutputPath = string.Empty;
-            NotifyStateChanged();
-            return;
+            LogLifecycleFailure("ReportsCaseContextFailed", "Reports case context update failed.", ex, caseId);
+            throw;
         }
-
-        SelectedSubjectKind = _targetSubjects.Count > 0
-            ? AvailableSubjectKinds.First(option => option.Value == DossierSubjectTypes.Target)
-            : AvailableSubjectKinds.First(option => option.Value == DossierSubjectTypes.GlobalPerson);
-        RebuildSubjectOptions();
-        await RefreshLatestReportJobAsync(ct);
-        NotifyStateChanged();
     }
 
     public async Task ActivateAsync(CancellationToken ct)
     {
-        if (_currentCaseId.HasValue)
+        LogLifecycleEvent("ReportsActivationStarting", "Activating Reports page.", _currentCaseId);
+
+        try
         {
-            await RefreshLatestReportJobAsync(ct);
+            if (_currentCaseId.HasValue)
+            {
+                await RefreshLatestReportJobAsync(ct);
+            }
+
+            LogLifecycleEvent("ReportsActivationCompleted", "Reports page activated.", _currentCaseId);
+        }
+        catch (Exception ex)
+        {
+            LogLifecycleFailure("ReportsActivationFailed", "Reports page activation failed.", ex, _currentCaseId);
+            throw;
         }
     }
 
     public void Deactivate()
     {
+        LogLifecycleEvent("ReportsDeactivated", "Reports page deactivated.", _currentCaseId);
     }
 
     partial void OnSelectedSubjectKindChanged(SubjectKindOption? value)
     {
+        if (_isInitializing)
+        {
+            return;
+        }
+
         RebuildSubjectOptions();
         NotifyStateChanged();
     }
 
     partial void OnSelectedSubjectChanged(ReportSubjectOption? value)
     {
+        if (_isInitializing)
+        {
+            return;
+        }
+
         ApplySuggestedOutputPath();
         NotifyStateChanged();
     }
@@ -582,6 +633,55 @@ public partial class ReportsViewModel : ObservableObject, IDisposable
         CreateDossierCommand?.NotifyCanExecuteChanged();
         CancelExportCommand?.NotifyCanExecuteChanged();
         OpenFolderCommand?.NotifyCanExecuteChanged();
+    }
+
+    private static void LogLifecycleEvent(
+        string eventName,
+        string message,
+        Guid? caseId = null,
+        int? subjectCount = null
+    )
+    {
+        var fields = new Dictionary<string, object?>();
+        if (caseId.HasValue)
+        {
+            fields["caseId"] = caseId.Value.ToString("D");
+        }
+
+        if (subjectCount.HasValue)
+        {
+            fields["subjectCount"] = subjectCount.Value;
+        }
+
+        AppFileLogger.LogEvent(
+            eventName: eventName,
+            level: "INFO",
+            message: message,
+            fields: fields
+        );
+    }
+
+    private static void LogLifecycleFailure(
+        string eventName,
+        string message,
+        Exception ex,
+        Guid? caseId = null
+    )
+    {
+        var fields = caseId.HasValue
+            ? new Dictionary<string, object?>
+            {
+                ["caseId"] = caseId.Value.ToString("D")
+            }
+            : null;
+
+        AppFileLogger.LogEvent(
+            eventName: eventName,
+            level: "ERROR",
+            message: message,
+            ex: ex,
+            fields: fields
+        );
     }
 
     private static DateTimeOffset? ConvertLocalDateToStartUtc(DateTime? localDate)

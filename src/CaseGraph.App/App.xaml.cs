@@ -69,12 +69,14 @@ public partial class App : Application
 
         try
         {
-            AppFileLogger.Log("Building host.");
+            LogStartupStage("HostBuildStarting", "Building host.");
             _host = Host.CreateDefaultBuilder(hostArgs)
                 .ConfigureServices((_, services) => services.AddCaseGraphAppServices())
                 .Build();
+            LogStartupStage("HostBuildCompleted", "Host built.");
             InitializeSessionJournal(e.Args);
 
+            LogStartupStage("WorkspaceMigrationStarting", "Starting workspace migration.");
             var migrationSucceeded = await EnsureWorkspaceMigratedOrShowErrorAsync(
                 "Startup workspace migration failed."
             );
@@ -82,6 +84,7 @@ public partial class App : Application
             {
                 return;
             }
+            LogStartupStage("WorkspaceMigrationCompleted", "Workspace migration completed.");
 
             if (_selfTestMode)
             {
@@ -90,16 +93,20 @@ public partial class App : Application
                 return;
             }
 
-            AppFileLogger.Log("Starting host.");
+            LogStartupStage("HostStarting", "Starting host.");
             await _host.StartAsync(CancellationToken.None);
+            LogStartupStage("HostStarted", "Host started.");
             RegisterHostLifetimeBreadcrumbs();
 
             ApplicationThemeManager.Apply(ApplicationTheme.Light);
 
-            AppFileLogger.Log("Showing main window.");
+            LogStartupStage("MainWindowResolving", "Resolving main window.");
             var mainWindow = _host.Services.GetRequiredService<MainWindow>();
+            LogStartupStage("MainWindowResolved", "Main window resolved.");
+            LogStartupStage("MainWindowShowing", "Showing main window.");
             mainWindow.Show();
-            AppFileLogger.Log("Startup complete.");
+            LogStartupStage("MainWindowShown", "Main window shown.");
+            LogStartupStage("StartupCompleted", "Startup complete.");
             _sessionJournal?.RecordStartupComplete();
         }
         catch (Exception ex)
@@ -263,8 +270,9 @@ public partial class App : Application
 
         try
         {
-            AppFileLogger.Log("[SelfTest] Starting host.");
+            LogStartupStage("SelfTestHostStarting", "[SelfTest] Starting host.");
             await _host.StartAsync(CancellationToken.None);
+            LogStartupStage("SelfTestHostStarted", "[SelfTest] Host started.");
 
             var caseQueryService = _host.Services.GetRequiredService<ICaseQueryService>();
             var cases = await caseQueryService.GetRecentCasesAsync(CancellationToken.None);
@@ -676,5 +684,18 @@ public partial class App : Application
 
         _cleanExitRecorded = true;
         _sessionJournal?.MarkCleanExit(reason);
+    }
+
+    private static void LogStartupStage(string stage, string message)
+    {
+        AppFileLogger.LogEvent(
+            eventName: "StartupStage",
+            level: "INFO",
+            message: message,
+            fields: new Dictionary<string, object?>
+            {
+                ["stage"] = stage
+            }
+        );
     }
 }

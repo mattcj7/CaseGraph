@@ -1,23 +1,27 @@
 using CaseGraph.App.Services;
+using CaseGraph.App.Views.Pages;
 using CaseGraph.App.ViewModels;
 using CaseGraph.Core.Abstractions;
 using CaseGraph.Core.Models;
+using CaseGraph.Infrastructure.Timeline;
 using Microsoft.Extensions.DependencyInjection;
+using System.Runtime.ExceptionServices;
+using System.Windows;
 
 namespace CaseGraph.Infrastructure.Tests;
 
 public sealed class ReportsViewModelStartupTests
 {
     [Fact]
-    public void Constructor_DoesNotThrow_DuringDefaultInitialization()
+    public void Reports_Constructor_DoesNotThrow_DuringDefaultInitialization()
     {
-        var exception = Record.Exception(static () => _ = CreateViewModel());
+        var exception = Record.Exception(static () => _ = CreateReportsViewModel());
 
         Assert.Null(exception);
     }
 
     [Fact]
-    public void DI_Resolution_DoesNotThrow_DuringStartup()
+    public void Reports_DI_Resolution_DoesNotThrow_DuringStartup()
     {
         var services = new ServiceCollection();
         services.AddSingleton<ITargetRegistryService, FakeTargetRegistryService>();
@@ -34,7 +38,89 @@ public sealed class ReportsViewModelStartupTests
         Assert.Null(exception);
     }
 
-    private static ReportsViewModel CreateViewModel()
+    [Fact]
+    public void Timeline_Constructor_DoesNotThrow_DuringDefaultInitialization()
+    {
+        var exception = Record.Exception(static () => _ = CreateTimelineViewModel());
+
+        Assert.Null(exception);
+    }
+
+    [Fact]
+    public void Timeline_DI_Resolution_DoesNotThrow_DuringStartup()
+    {
+        var services = new ServiceCollection();
+        services.AddSingleton<ITargetRegistryService, FakeTargetRegistryService>();
+        services.AddSingleton<IUserInteractionService, FakeUserInteractionService>();
+        services.AddSingleton<IWorkspaceDatabaseInitializer, FakeWorkspaceDatabaseInitializer>();
+        services.AddSingleton<IWorkspacePathProvider, FakeWorkspacePathProvider>();
+        services.AddSingleton<IAuditLogService, FakeAuditLogService>();
+        services.AddSingleton<TimelineQueryService>();
+        services.AddSingleton<TimelineViewModel>();
+
+        using var provider = services.BuildServiceProvider();
+
+        var exception = Record.Exception(() => provider.GetRequiredService<TimelineViewModel>());
+
+        Assert.Null(exception);
+    }
+
+    [Fact]
+    public async Task Reports_ActivateAsync_DoesNotThrow_AfterCaseSelection()
+    {
+        var viewModel = CreateReportsViewModel();
+        var caseId = Guid.NewGuid();
+
+        var exception = await Record.ExceptionAsync(async () =>
+        {
+            await viewModel.SetCurrentCaseAsync(caseId, CancellationToken.None);
+            await viewModel.ActivateAsync(CancellationToken.None);
+        });
+
+        Assert.Null(exception);
+    }
+
+    [Fact]
+    public async Task Timeline_ActivateAsync_DoesNotThrow_WithoutCurrentCase()
+    {
+        var viewModel = CreateTimelineViewModel();
+
+        var exception = await Record.ExceptionAsync(
+            () => viewModel.ActivateAsync(CancellationToken.None)
+        );
+
+        Assert.Null(exception);
+    }
+
+    [Fact]
+    public void NavigationService_Creates_Reports_And_Timeline_Views()
+    {
+        var exception = Record.Exception(static () => RunOnStaThread(() =>
+        {
+            var app = Application.Current as CaseGraph.App.App;
+            if (app is null)
+            {
+                app = new CaseGraph.App.App();
+                app.InitializeComponent();
+            }
+
+            var navigationService = new NavigationService();
+            var navigationItems = navigationService.GetNavigationItems();
+
+            Assert.Contains(navigationItems, item => item.Page == CaseGraph.App.Models.NavigationPage.Reports);
+            Assert.Contains(navigationItems, item => item.Page == CaseGraph.App.Models.NavigationPage.Timeline);
+            Assert.IsType<ReportsView>(
+                navigationService.CreateView(CaseGraph.App.Models.NavigationPage.Reports)
+            );
+            Assert.IsType<TimelineView>(
+                navigationService.CreateView(CaseGraph.App.Models.NavigationPage.Timeline)
+            );
+        }));
+
+        Assert.Null(exception);
+    }
+
+    private static ReportsViewModel CreateReportsViewModel()
     {
         return new ReportsViewModel(
             new FakeTargetRegistryService(),
@@ -43,6 +129,45 @@ public sealed class ReportsViewModelStartupTests
             new FakeJobQueueService(),
             new FakeJobQueryService()
         );
+    }
+
+    private static TimelineViewModel CreateTimelineViewModel()
+    {
+        return new TimelineViewModel(
+            new TimelineQueryService(
+                new FakeWorkspaceDatabaseInitializer(),
+                new FakeWorkspacePathProvider(),
+                new FakeAuditLogService()
+            ),
+            new FakeTargetRegistryService(),
+            new FakeUserInteractionService()
+        );
+    }
+
+    private static void RunOnStaThread(Action action)
+    {
+        Exception? captured = null;
+
+        var thread = new Thread(() =>
+        {
+            try
+            {
+                action();
+            }
+            catch (Exception ex)
+            {
+                captured = ex;
+            }
+        });
+
+        thread.SetApartmentState(ApartmentState.STA);
+        thread.Start();
+        thread.Join();
+
+        if (captured is not null)
+        {
+            ExceptionDispatchInfo.Capture(captured).Throw();
+        }
     }
 
     private sealed class FakeTargetRegistryService : ITargetRegistryService
@@ -138,6 +263,28 @@ public sealed class ReportsViewModelStartupTests
 
         public Task<IReadOnlyList<JobInfo>> GetRecentJobsAsync(Guid? caseId, int take, CancellationToken ct)
             => Task.FromResult<IReadOnlyList<JobInfo>>([]);
+    }
+
+    private sealed class FakeWorkspaceDatabaseInitializer : IWorkspaceDatabaseInitializer
+    {
+        public Task EnsureInitializedAsync(CancellationToken ct) => Task.CompletedTask;
+    }
+
+    private sealed class FakeWorkspacePathProvider : IWorkspacePathProvider
+    {
+        public string WorkspaceRoot => Environment.CurrentDirectory;
+
+        public string WorkspaceDbPath => Path.Combine(Environment.CurrentDirectory, "casegraph-tests.db");
+
+        public string CasesRoot => Environment.CurrentDirectory;
+    }
+
+    private sealed class FakeAuditLogService : IAuditLogService
+    {
+        public Task AddAsync(AuditEvent auditEvent, CancellationToken ct) => Task.CompletedTask;
+
+        public Task<IReadOnlyList<AuditEvent>> GetRecentAsync(Guid? caseId, int take, CancellationToken ct)
+            => Task.FromResult<IReadOnlyList<AuditEvent>>([]);
     }
 
     private sealed class EmptyJobObservable : IObservable<JobInfo>

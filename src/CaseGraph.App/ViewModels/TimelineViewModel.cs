@@ -16,6 +16,7 @@ public partial class TimelineViewModel : ObservableObject, IDisposable
 
     private CancellationTokenSource? _loadCts;
     private bool _isActive;
+    private bool _isInitializing;
     private bool _isDisposed;
 
     public TimelineViewModel(
@@ -24,14 +25,10 @@ public partial class TimelineViewModel : ObservableObject, IDisposable
         IUserInteractionService userInteractionService
     )
     {
+        _isInitializing = true;
         _timelineQueryService = timelineQueryService;
         _targetRegistryService = targetRegistryService;
         _userInteractionService = userInteractionService;
-
-        TargetFilters.Add(TimelineTargetFilterOption.AllTargets);
-        GlobalPersonFilters.Add(TimelineGlobalPersonFilterOption.AllGlobalPersons);
-        SelectedTargetFilter = TimelineTargetFilterOption.AllTargets;
-        SelectedGlobalPersonFilter = TimelineGlobalPersonFilterOption.AllGlobalPersons;
 
         SearchCommand = new AsyncRelayCommand(SearchAsync);
         ClearFiltersCommand = new AsyncRelayCommand(ClearFiltersAsync);
@@ -39,6 +36,12 @@ public partial class TimelineViewModel : ObservableObject, IDisposable
         PreviousPageCommand = new AsyncRelayCommand(LoadPreviousPageAsync, () => CanGoPrevious);
         ViewSourceCommand = new RelayCommand<TimelineRowDto?>(ViewSource);
         CopyCitationCommand = new RelayCommand<TimelineRowDto?>(CopyCitation);
+
+        TargetFilters.Add(TimelineTargetFilterOption.AllTargets);
+        GlobalPersonFilters.Add(TimelineGlobalPersonFilterOption.AllGlobalPersons);
+        selectedTargetFilter = TimelineTargetFilterOption.AllTargets;
+        selectedGlobalPersonFilter = TimelineGlobalPersonFilterOption.AllGlobalPersons;
+        _isInitializing = false;
     }
 
     public ObservableCollection<TimelineRowDto> Rows { get; } = new();
@@ -130,53 +133,80 @@ public partial class TimelineViewModel : ObservableObject, IDisposable
 
     public async Task SetCurrentCaseAsync(Guid? caseId, CancellationToken ct)
     {
-        CurrentCaseId = caseId;
-        CancelLoad();
+        LogLifecycleEvent("TimelineCaseContextStarting", "Updating Timeline case context.", caseId);
 
-        if (!caseId.HasValue)
+        try
         {
-            ClearRows();
-            TotalCount = 0;
-            CurrentPage = 1;
-            StatusText = "Open a case to load the timeline.";
-            ResetFiltersToDefaults();
-            return;
-        }
+            CurrentCaseId = caseId;
+            CancelLoad();
 
-        await RefreshFilterOptionsAsync(ct);
-        if (_isActive)
-        {
-            await LoadPageAsync(0, ct);
+            if (!caseId.HasValue)
+            {
+                ClearRows();
+                TotalCount = 0;
+                CurrentPage = 1;
+                StatusText = "Open a case to load the timeline.";
+                ResetFiltersToDefaults();
+                LogLifecycleEvent("TimelineCaseContextCompleted", "Timeline case context cleared.");
+                return;
+            }
+
+            await RefreshFilterOptionsAsync(ct);
+            if (_isActive)
+            {
+                await LoadPageAsync(0, ct);
+            }
+            else
+            {
+                ClearRows();
+                TotalCount = 0;
+                CurrentPage = 1;
+                StatusText = "Timeline ready. Open the Timeline page to load results.";
+            }
+
+            LogLifecycleEvent("TimelineCaseContextCompleted", "Timeline case context updated.", caseId);
         }
-        else
+        catch (Exception ex)
         {
-            ClearRows();
-            TotalCount = 0;
-            CurrentPage = 1;
-            StatusText = "Timeline ready. Open the Timeline page to load results.";
+            LogLifecycleFailure("TimelineCaseContextFailed", "Timeline case context update failed.", ex, caseId);
+            throw;
         }
     }
 
     public async Task ActivateAsync(CancellationToken ct)
     {
-        _isActive = true;
+        LogLifecycleEvent("TimelineActivationStarting", "Activating Timeline page.", CurrentCaseId);
 
-        if (!CurrentCaseId.HasValue)
+        try
         {
-            ClearRows();
-            TotalCount = 0;
-            CurrentPage = 1;
-            StatusText = "Open a case to load the timeline.";
-            return;
-        }
+            _isActive = true;
 
-        await RefreshFilterOptionsAsync(ct);
-        await LoadPageAsync(Math.Max(CurrentPage - 1, 0), ct);
+            if (!CurrentCaseId.HasValue)
+            {
+                ClearRows();
+                TotalCount = 0;
+                CurrentPage = 1;
+                StatusText = "Open a case to load the timeline.";
+                LogLifecycleEvent("TimelineActivationCompleted", "Timeline activation completed without an open case.");
+                return;
+            }
+
+            await RefreshFilterOptionsAsync(ct);
+            await LoadPageAsync(Math.Max(CurrentPage - 1, 0), ct);
+            LogLifecycleEvent("TimelineActivationCompleted", "Timeline page activated.", CurrentCaseId);
+        }
+        catch (Exception ex)
+        {
+            LogLifecycleFailure("TimelineActivationFailed", "Timeline page activation failed.", ex, CurrentCaseId);
+            throw;
+        }
     }
 
     public void Deactivate()
     {
         _isActive = false;
+        CancelLoad();
+        LogLifecycleEvent("TimelineDeactivated", "Timeline page deactivated.", CurrentCaseId);
     }
 
     private async Task SearchAsync()
@@ -435,16 +465,26 @@ public partial class TimelineViewModel : ObservableObject, IDisposable
 
     partial void OnIsLoadingChanged(bool value)
     {
-        NextPageCommand.NotifyCanExecuteChanged();
-        PreviousPageCommand.NotifyCanExecuteChanged();
+        if (_isInitializing)
+        {
+            return;
+        }
+
+        NextPageCommand?.NotifyCanExecuteChanged();
+        PreviousPageCommand?.NotifyCanExecuteChanged();
         OnPropertyChanged(nameof(CanGoNext));
         OnPropertyChanged(nameof(CanGoPrevious));
     }
 
     partial void OnCurrentPageChanged(int value)
     {
-        NextPageCommand.NotifyCanExecuteChanged();
-        PreviousPageCommand.NotifyCanExecuteChanged();
+        if (_isInitializing)
+        {
+            return;
+        }
+
+        NextPageCommand?.NotifyCanExecuteChanged();
+        PreviousPageCommand?.NotifyCanExecuteChanged();
         OnPropertyChanged(nameof(CanGoNext));
         OnPropertyChanged(nameof(CanGoPrevious));
         OnPropertyChanged(nameof(PageSummaryText));
@@ -452,8 +492,13 @@ public partial class TimelineViewModel : ObservableObject, IDisposable
 
     partial void OnTotalCountChanged(int value)
     {
-        NextPageCommand.NotifyCanExecuteChanged();
-        PreviousPageCommand.NotifyCanExecuteChanged();
+        if (_isInitializing)
+        {
+            return;
+        }
+
+        NextPageCommand?.NotifyCanExecuteChanged();
+        PreviousPageCommand?.NotifyCanExecuteChanged();
         OnPropertyChanged(nameof(CanGoNext));
         OnPropertyChanged(nameof(CanGoPrevious));
         OnPropertyChanged(nameof(PageSummaryText));
@@ -501,6 +546,46 @@ public partial class TimelineViewModel : ObservableObject, IDisposable
         );
         var offset = TimeZoneInfo.Local.GetUtcOffset(localUnspecified);
         return new DateTimeOffset(localUnspecified, offset).ToUniversalTime();
+    }
+
+    private static void LogLifecycleEvent(string eventName, string message, Guid? caseId = null)
+    {
+        var fields = caseId.HasValue
+            ? new Dictionary<string, object?>
+            {
+                ["caseId"] = caseId.Value.ToString("D")
+            }
+            : null;
+
+        AppFileLogger.LogEvent(
+            eventName: eventName,
+            level: "INFO",
+            message: message,
+            fields: fields
+        );
+    }
+
+    private static void LogLifecycleFailure(
+        string eventName,
+        string message,
+        Exception ex,
+        Guid? caseId = null
+    )
+    {
+        var fields = caseId.HasValue
+            ? new Dictionary<string, object?>
+            {
+                ["caseId"] = caseId.Value.ToString("D")
+            }
+            : null;
+
+        AppFileLogger.LogEvent(
+            eventName: eventName,
+            level: "ERROR",
+            message: message,
+            ex: ex,
+            fields: fields
+        );
     }
 
     public void Dispose()

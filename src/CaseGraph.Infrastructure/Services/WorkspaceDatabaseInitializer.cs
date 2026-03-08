@@ -130,8 +130,10 @@ public class WorkspaceDbInitializer : IWorkspaceDbInitializer, IWorkspaceDatabas
 
             LogWorkspaceInitStep("SchemaVerify", "Running workspace schema verification query.");
             await VerifySchemaHealthAsync(ct);
+            LogWorkspaceInitStep("SchemaVerifyCompleted", "Workspace schema verification query completed.");
             LogWorkspaceInitStep("Finalize", "Marking stale running jobs as abandoned.");
             await MarkRunningJobsAsAbandonedAsync(ct);
+            LogWorkspaceInitStep("FinalizeCompleted", "Workspace finalization completed.");
             _initialized = true;
             _initializedWorkspaceDbPath = currentWorkspaceDbPath;
             AppFileLogger.LogEvent(
@@ -178,7 +180,9 @@ public class WorkspaceDbInitializer : IWorkspaceDbInitializer, IWorkspaceDatabas
             LogWorkspaceInitStep("ApplyMigrations", "Applying EF Core migrations.");
             await db.Database.MigrateAsync(ct);
             LogWorkspaceInitStep("ApplyMigrationsCompleted", "EF Core migrations applied.");
+            LogWorkspaceInitStep("EnsureMessageFtsObjects", "Ensuring message FTS table, triggers, and backfill are current.");
             await EnsureMessageFtsObjectsAsync(db, ct);
+            LogWorkspaceInitStep("EnsureMessageFtsObjectsCompleted", "Message FTS table, triggers, and backfill are current.");
         }
         finally
         {
@@ -444,83 +448,199 @@ public class WorkspaceDbInitializer : IWorkspaceDbInitializer, IWorkspaceDatabas
 
     private static async Task EnsureMessageFtsObjectsAsync(WorkspaceDbContext db, CancellationToken ct)
     {
-        await db.Database.ExecuteSqlRawAsync(
-            """
-            CREATE VIRTUAL TABLE IF NOT EXISTS MessageEventFts
-            USING fts5(MessageEventId UNINDEXED, CaseId UNINDEXED, Platform, Sender, Recipients, Body);
-            """,
-            ct
-        );
+        try
+        {
+            var ftsTableExisted = await SqliteObjectExistsAsync(db, "table", "MessageEventFts", ct);
+            var insertTriggerExisted = await SqliteObjectExistsAsync(db, "trigger", "MessageEventRecord_Fts_Insert", ct);
+            var updateTriggerExisted = await SqliteObjectExistsAsync(db, "trigger", "MessageEventRecord_Fts_Update", ct);
+            var deleteTriggerExisted = await SqliteObjectExistsAsync(db, "trigger", "MessageEventRecord_Fts_Delete", ct);
 
-        await db.Database.ExecuteSqlRawAsync(
-            """
-            CREATE TRIGGER IF NOT EXISTS MessageEventRecord_Fts_Insert
-            AFTER INSERT ON MessageEventRecord
-            BEGIN
-                INSERT INTO MessageEventFts(MessageEventId, CaseId, Platform, Sender, Recipients, Body)
-                VALUES (
-                    NEW.MessageEventId,
-                    NEW.CaseId,
-                    COALESCE(NEW.Platform, ''),
-                    COALESCE(NEW.Sender, ''),
-                    COALESCE(NEW.Recipients, ''),
-                    COALESCE(NEW.Body, '')
+            AppFileLogger.LogEvent(
+                eventName: "WorkspaceMessageFtsEnsureStarted",
+                level: "INFO",
+                message: "Ensuring workspace message FTS objects exist.",
+                fields: new Dictionary<string, object?>
+                {
+                    ["ftsTableExisted"] = ftsTableExisted,
+                    ["insertTriggerExisted"] = insertTriggerExisted,
+                    ["updateTriggerExisted"] = updateTriggerExisted,
+                    ["deleteTriggerExisted"] = deleteTriggerExisted
+                }
+            );
+
+            await db.Database.ExecuteSqlRawAsync(
+                """
+                CREATE VIRTUAL TABLE IF NOT EXISTS MessageEventFts
+                USING fts5(MessageEventId UNINDEXED, CaseId UNINDEXED, Platform, Sender, Recipients, Body);
+                """,
+                ct
+            );
+
+            await db.Database.ExecuteSqlRawAsync(
+                """
+                CREATE TRIGGER IF NOT EXISTS MessageEventRecord_Fts_Insert
+                AFTER INSERT ON MessageEventRecord
+                BEGIN
+                    INSERT INTO MessageEventFts(MessageEventId, CaseId, Platform, Sender, Recipients, Body)
+                    VALUES (
+                        NEW.MessageEventId,
+                        NEW.CaseId,
+                        COALESCE(NEW.Platform, ''),
+                        COALESCE(NEW.Sender, ''),
+                        COALESCE(NEW.Recipients, ''),
+                        COALESCE(NEW.Body, '')
+                    );
+                END;
+                """,
+                ct
+            );
+
+            await db.Database.ExecuteSqlRawAsync(
+                """
+                CREATE TRIGGER IF NOT EXISTS MessageEventRecord_Fts_Update
+                AFTER UPDATE ON MessageEventRecord
+                BEGIN
+                    DELETE FROM MessageEventFts WHERE MessageEventId = OLD.MessageEventId;
+                    INSERT INTO MessageEventFts(MessageEventId, CaseId, Platform, Sender, Recipients, Body)
+                    VALUES (
+                        NEW.MessageEventId,
+                        NEW.CaseId,
+                        COALESCE(NEW.Platform, ''),
+                        COALESCE(NEW.Sender, ''),
+                        COALESCE(NEW.Recipients, ''),
+                        COALESCE(NEW.Body, '')
+                    );
+                END;
+                """,
+                ct
+            );
+
+            await db.Database.ExecuteSqlRawAsync(
+                """
+                CREATE TRIGGER IF NOT EXISTS MessageEventRecord_Fts_Delete
+                AFTER DELETE ON MessageEventRecord
+                BEGIN
+                    DELETE FROM MessageEventFts WHERE MessageEventId = OLD.MessageEventId;
+                END;
+                """,
+                ct
+            );
+
+            var requiresBackfill = !ftsTableExisted
+                || !insertTriggerExisted
+                || !updateTriggerExisted
+                || !deleteTriggerExisted
+                || await HasMissingMessageFtsRowsAsync(db, ct);
+
+            if (!requiresBackfill)
+            {
+                AppFileLogger.LogEvent(
+                    eventName: "WorkspaceMessageFtsBackfillSkipped",
+                    level: "INFO",
+                    message: "Workspace message FTS backfill skipped because no missing rows were detected."
                 );
-            END;
-            """,
-            ct
-        );
+                return;
+            }
 
-        await db.Database.ExecuteSqlRawAsync(
-            """
-            CREATE TRIGGER IF NOT EXISTS MessageEventRecord_Fts_Update
-            AFTER UPDATE ON MessageEventRecord
-            BEGIN
-                DELETE FROM MessageEventFts WHERE MessageEventId = OLD.MessageEventId;
+            AppFileLogger.LogEvent(
+                eventName: "WorkspaceMessageFtsBackfillStarted",
+                level: "INFO",
+                message: "Workspace message FTS backfill started."
+            );
+            var affectedRows = await db.Database.ExecuteSqlRawAsync(
+                """
                 INSERT INTO MessageEventFts(MessageEventId, CaseId, Platform, Sender, Recipients, Body)
-                VALUES (
-                    NEW.MessageEventId,
-                    NEW.CaseId,
-                    COALESCE(NEW.Platform, ''),
-                    COALESCE(NEW.Sender, ''),
-                    COALESCE(NEW.Recipients, ''),
-                    COALESCE(NEW.Body, '')
+                SELECT
+                    me.MessageEventId,
+                    me.CaseId,
+                    COALESCE(me.Platform, ''),
+                    COALESCE(me.Sender, ''),
+                    COALESCE(me.Recipients, ''),
+                    COALESCE(me.Body, '')
+                FROM MessageEventRecord me
+                WHERE NOT EXISTS (
+                    SELECT 1
+                    FROM MessageEventFts fts
+                    WHERE fts.MessageEventId = me.MessageEventId
                 );
-            END;
-            """,
-            ct
-        );
+                """,
+                ct
+            );
+            AppFileLogger.LogEvent(
+                eventName: "WorkspaceMessageFtsBackfillCompleted",
+                level: "INFO",
+                message: "Workspace message FTS backfill completed.",
+                fields: new Dictionary<string, object?>
+                {
+                    ["affectedRows"] = affectedRows
+                }
+            );
+        }
+        catch (Exception ex)
+        {
+            AppFileLogger.LogEvent(
+                eventName: "WorkspaceMessageFtsEnsureFailed",
+                level: "ERROR",
+                message: "Workspace message FTS initialization failed.",
+                ex: ex
+            );
+            throw;
+        }
+    }
 
-        await db.Database.ExecuteSqlRawAsync(
+    private static async Task<bool> SqliteObjectExistsAsync(
+        WorkspaceDbContext db,
+        string objectType,
+        string objectName,
+        CancellationToken ct
+    )
+    {
+        var connection = db.Database.GetDbConnection();
+        await using var command = connection.CreateCommand();
+        command.CommandText =
             """
-            CREATE TRIGGER IF NOT EXISTS MessageEventRecord_Fts_Delete
-            AFTER DELETE ON MessageEventRecord
-            BEGIN
-                DELETE FROM MessageEventFts WHERE MessageEventId = OLD.MessageEventId;
-            END;
-            """,
-            ct
-        );
+            SELECT 1
+            FROM sqlite_master
+            WHERE type = $type
+              AND name = $name
+            LIMIT 1;
+            """;
 
-        await db.Database.ExecuteSqlRawAsync(
+        var typeParameter = command.CreateParameter();
+        typeParameter.ParameterName = "$type";
+        typeParameter.Value = objectType;
+        command.Parameters.Add(typeParameter);
+
+        var nameParameter = command.CreateParameter();
+        nameParameter.ParameterName = "$name";
+        nameParameter.Value = objectName;
+        command.Parameters.Add(nameParameter);
+
+        var result = await command.ExecuteScalarAsync(ct);
+        return result is not null;
+    }
+
+    private static async Task<bool> HasMissingMessageFtsRowsAsync(
+        WorkspaceDbContext db,
+        CancellationToken ct
+    )
+    {
+        var connection = db.Database.GetDbConnection();
+        await using var command = connection.CreateCommand();
+        command.CommandText =
             """
-            INSERT INTO MessageEventFts(MessageEventId, CaseId, Platform, Sender, Recipients, Body)
-            SELECT
-                me.MessageEventId,
-                me.CaseId,
-                COALESCE(me.Platform, ''),
-                COALESCE(me.Sender, ''),
-                COALESCE(me.Recipients, ''),
-                COALESCE(me.Body, '')
+            SELECT 1
             FROM MessageEventRecord me
             WHERE NOT EXISTS (
                 SELECT 1
                 FROM MessageEventFts fts
                 WHERE fts.MessageEventId = me.MessageEventId
-            );
-            """,
-            ct
-        );
+            )
+            LIMIT 1;
+            """;
+
+        var result = await command.ExecuteScalarAsync(ct);
+        return result is not null;
     }
 
     private static void MoveIfExists(string sourcePath, string destinationPath)
