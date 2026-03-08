@@ -1,5 +1,6 @@
 using CaseGraph.Core.Abstractions;
 using CaseGraph.Core.Diagnostics;
+using CaseGraph.Infrastructure.Services;
 
 namespace CaseGraph.App.Services;
 
@@ -8,6 +9,7 @@ public sealed class WorkspaceMigrationService : IWorkspaceMigrationService
     private static readonly TimeSpan WorkspaceMigrationTimeout = TimeSpan.FromSeconds(15);
 
     private readonly IWorkspaceDbInitializer _workspaceDbInitializer;
+    private readonly WorkspaceDbInitializer _workspaceDbInitializerConcrete;
     private readonly IWorkspacePathProvider _workspacePathProvider;
     private readonly SemaphoreSlim _migrationSemaphore = new(1, 1);
     private bool _migrationSucceeded;
@@ -15,10 +17,12 @@ public sealed class WorkspaceMigrationService : IWorkspaceMigrationService
 
     public WorkspaceMigrationService(
         IWorkspaceDbInitializer workspaceDbInitializer,
+        WorkspaceDbInitializer workspaceDbInitializerConcrete,
         IWorkspacePathProvider workspacePathProvider
     )
     {
         _workspaceDbInitializer = workspaceDbInitializer;
+        _workspaceDbInitializerConcrete = workspaceDbInitializerConcrete;
         _workspacePathProvider = workspacePathProvider;
     }
 
@@ -46,6 +50,11 @@ public sealed class WorkspaceMigrationService : IWorkspaceMigrationService
         {
             _migrationSemaphore.Release();
         }
+    }
+
+    public Task RunDeferredStartupWorkAsync(CancellationToken ct)
+    {
+        return _workspaceDbInitializerConcrete.RunDeferredStartupWorkAsync(ct);
     }
 
     private async Task EnsureMigratedCoreAsync(string workspaceDbPath, CancellationToken ct)

@@ -1,5 +1,7 @@
 using CaseGraph.App.DependencyInjection;
 using CaseGraph.App.Services;
+using CaseGraph.App.ViewModels;
+using CaseGraph.App.Views;
 using CaseGraph.Core.Abstractions;
 using CaseGraph.Core.Diagnostics;
 using Microsoft.Extensions.DependencyInjection;
@@ -26,10 +28,13 @@ public partial class App : Application
     private bool _cleanExitRecorded;
     private Mutex? _singleInstanceMutex;
     private bool _singleInstanceMutexHeld;
+    private IStartupStageReporter? _startupStageReporter;
+    private StartupProgressWindow? _startupProgressWindow;
 
     protected override async void OnStartup(StartupEventArgs e)
     {
         base.OnStartup(e);
+        ShutdownMode = ShutdownMode.OnExplicitShutdown;
 
         _selfTestMode = e.Args.Any(
             arg => string.Equals(arg, SelfTestArgument, StringComparison.OrdinalIgnoreCase)
@@ -66,17 +71,49 @@ public partial class App : Application
         }
 
         RegisterGlobalExceptionHandlers();
+        InitializeStartupProgress();
 
         try
         {
-            LogStartupStage("HostBuildStarting", "Building host.");
+            if (!_selfTestMode)
+            {
+                await Dispatcher.Yield(DispatcherPriority.Background);
+            }
+
+            ReportStartupStage(
+                stageKey: StartupStageKeys.BuildingHost,
+                stageText: "Building host",
+                logStage: "HostBuildStarting",
+                logMessage: "Building host.",
+                detailText: "Loading services and diagnostics."
+            );
             _host = Host.CreateDefaultBuilder(hostArgs)
-                .ConfigureServices((_, services) => services.AddCaseGraphAppServices())
+                .ConfigureServices((_, services) =>
+                {
+                    if (_startupStageReporter is not null)
+                    {
+                        services.AddSingleton(_startupStageReporter);
+                    }
+
+                    services.AddCaseGraphAppServices();
+                })
                 .Build();
-            LogStartupStage("HostBuildCompleted", "Host built.");
+            ReportStartupStage(
+                stageKey: StartupStageKeys.BuildingHost,
+                stageText: "Building host",
+                logStage: "HostBuildCompleted",
+                logMessage: "Host built.",
+                detailText: "Host built."
+            );
             InitializeSessionJournal(e.Args);
 
-            LogStartupStage("WorkspaceMigrationStarting", "Starting workspace migration.");
+            ReportStartupStage(
+                stageKey: StartupStageKeys.OpeningWorkspace,
+                stageText: "Opening workspace",
+                logStage: "WorkspaceMigrationStarting",
+                logMessage: "Starting workspace migration.",
+                detailText: "Opening workspace and checking database state."
+            );
             var migrationSucceeded = await EnsureWorkspaceMigratedOrShowErrorAsync(
                 "Startup workspace migration failed."
             );
@@ -100,13 +137,48 @@ public partial class App : Application
 
             ApplicationThemeManager.Apply(ApplicationTheme.Light);
 
-            LogStartupStage("MainWindowResolving", "Resolving main window.");
+            ReportStartupStage(
+                stageKey: StartupStageKeys.FinalizingStartup,
+                stageText: "Finalizing startup",
+                logStage: "StartupFinalizeScheduling",
+                logMessage: "Scheduling non-critical deferred startup cleanup.",
+                detailText: "Non-critical cleanup will continue after the main window opens."
+            );
+            ReportStartupStage(
+                stageKey: StartupStageKeys.OpeningMainWindow,
+                stageText: "Opening main window",
+                logStage: "MainWindowResolving",
+                logMessage: "Resolving main window.",
+                detailText: "Preparing the main window."
+            );
             var mainWindow = _host.Services.GetRequiredService<MainWindow>();
-            LogStartupStage("MainWindowResolved", "Main window resolved.");
-            LogStartupStage("MainWindowShowing", "Showing main window.");
+            ReportStartupStage(
+                stageKey: StartupStageKeys.OpeningMainWindow,
+                stageText: "Opening main window",
+                logStage: "MainWindowResolved",
+                logMessage: "Main window resolved.",
+                detailText: "Main window resolved."
+            );
+            ReportStartupStage(
+                stageKey: StartupStageKeys.OpeningMainWindow,
+                stageText: "Opening main window",
+                logStage: "MainWindowShowing",
+                logMessage: "Showing main window.",
+                detailText: "Showing main window."
+            );
+            MainWindow = mainWindow;
             mainWindow.Show();
-            LogStartupStage("MainWindowShown", "Main window shown.");
-            LogStartupStage("StartupCompleted", "Startup complete.");
+            ReportStartupStage(
+                stageKey: StartupStageKeys.OpeningMainWindow,
+                stageText: "Opening main window",
+                logStage: "MainWindowShown",
+                logMessage: "Main window shown.",
+                detailText: "Main window shown."
+            );
+            StartDeferredStartupWork();
+            ReportStartupCompleted("Startup complete.");
+            CloseStartupProgressWindow();
+            ShutdownMode = ShutdownMode.OnMainWindowClose;
             _sessionJournal?.RecordStartupComplete();
         }
         catch (Exception ex)
@@ -125,6 +197,7 @@ public partial class App : Application
         UnregisterGlobalExceptionHandlers();
         UnregisterHostLifetimeBreadcrumbs();
         ReleaseSingleInstanceGuard();
+        CloseStartupProgressWindow();
 
         if (_host is not null)
         {
@@ -146,6 +219,10 @@ public partial class App : Application
 
     internal Task HandleFatalExceptionAsync(string title, string context, Exception ex)
     {
+        ReportStartupFailure(
+            context,
+            ResolveDiagnosticsService()?.GetSnapshot().LogsDirectory ?? AppFileLogger.GetLogDirectory()
+        );
         return HandleFatalReportAsync(
             title,
             "The application encountered a fatal error and must close.",
@@ -230,10 +307,19 @@ public partial class App : Application
                         ["logsDirectory"] = logsDirectory
                     }
                 );
+                _startupStageReporter?.ReportStage(
+                    StartupStageKeys.OpeningWorkspace,
+                    "Opening workspace",
+                    "Workspace initialization timed out. Continuing startup and retrying later."
+                );
                 return true;
             }
             catch (Exception ex)
             {
+                ReportStartupFailure(
+                    "Workspace database migration failed.",
+                    ResolveDiagnosticsService()?.GetSnapshot().LogsDirectory ?? AppFileLogger.GetLogDirectory()
+                );
                 var report = UiExceptionReporter.LogFatalException(
                     context,
                     ex,
@@ -527,6 +613,19 @@ public partial class App : Application
         Shutdown(exitCode);
     }
 
+    private void InitializeStartupProgress()
+    {
+        _startupStageReporter = new StartupStageReporter();
+        if (_selfTestMode)
+        {
+            return;
+        }
+
+        var viewModel = new StartupProgressViewModel(_startupStageReporter);
+        _startupProgressWindow = new StartupProgressWindow(viewModel);
+        _startupProgressWindow.Show();
+    }
+
     private bool TryAcquireSingleInstanceGuard()
     {
         var mutexName = $"Local\\CaseGraphOffline_{Environment.UserName}";
@@ -684,6 +783,87 @@ public partial class App : Application
 
         _cleanExitRecorded = true;
         _sessionJournal?.MarkCleanExit(reason);
+    }
+
+    private void CloseStartupProgressWindow()
+    {
+        if (_startupProgressWindow is null)
+        {
+            return;
+        }
+
+        var window = _startupProgressWindow;
+        _startupProgressWindow = null;
+
+        if (window.IsLoaded)
+        {
+            window.Close();
+            return;
+        }
+
+        window.Dispatcher.Invoke(window.Close);
+    }
+
+    private void ReportStartupStage(
+        string stageKey,
+        string stageText,
+        string logStage,
+        string logMessage,
+        string? detailText = null
+    )
+    {
+        LogStartupStage(logStage, logMessage);
+        _startupStageReporter?.ReportStage(stageKey, stageText, detailText ?? logMessage);
+    }
+
+    private void ReportStartupCompleted(string detailText)
+    {
+        LogStartupStage("StartupCompleted", detailText);
+        _startupStageReporter?.ReportCompleted(
+            StartupStageKeys.StartupCompleted,
+            "Startup complete",
+            detailText
+        );
+    }
+
+    private void ReportStartupFailure(string detailText, string diagnosticsPath)
+    {
+        _startupStageReporter?.ReportFailure(
+            StartupStageKeys.StartupFailed,
+            "Startup failed",
+            detailText,
+            diagnosticsPath
+        );
+    }
+
+    private void StartDeferredStartupWork()
+    {
+        if (_host is null)
+        {
+            return;
+        }
+
+        var migrationService = _host.Services.GetRequiredService<IWorkspaceMigrationService>();
+        _ = RunDeferredStartupWorkAsync(migrationService);
+    }
+
+    private static async Task RunDeferredStartupWorkAsync(
+        IWorkspaceMigrationService migrationService
+    )
+    {
+        try
+        {
+            await migrationService.RunDeferredStartupWorkAsync(CancellationToken.None);
+        }
+        catch (Exception ex)
+        {
+            AppFileLogger.LogEvent(
+                eventName: "DeferredStartupWorkFailed",
+                level: "ERROR",
+                message: "Deferred startup work failed.",
+                ex: ex
+            );
+        }
     }
 
     private static void LogStartupStage(string stage, string message)

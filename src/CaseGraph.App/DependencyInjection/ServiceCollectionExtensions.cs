@@ -11,6 +11,7 @@ using CaseGraph.Infrastructure.Timeline;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using System.IO;
 
 namespace CaseGraph.App.DependencyInjection;
@@ -19,6 +20,7 @@ public static class ServiceCollectionExtensions
 {
     public static IServiceCollection AddCaseGraphAppServices(this IServiceCollection services)
     {
+        services.TryAddSingleton<IStartupStageReporter, StartupStageReporter>();
         services.AddSingleton<IWorkspacePathProvider, DefaultWorkspacePathProvider>();
         services.AddDbContextFactory<WorkspaceDbContext>((provider, options) =>
         {

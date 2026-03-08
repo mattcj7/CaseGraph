@@ -35,9 +35,12 @@ public class WorkspaceDbInitializer : IWorkspaceDbInitializer, IWorkspaceDatabas
     private readonly WorkspaceDbRebuilder _workspaceDbRebuilder;
     private readonly IWorkspaceWriteGate _workspaceWriteGate;
     private readonly IClock _clock;
+    private readonly IStartupStageReporter? _startupStageReporter;
     private readonly SemaphoreSlim _semaphore = new(1, 1);
     private bool _initialized;
     private string? _initializedWorkspaceDbPath;
+    private bool _deferredStartupWorkCompleted;
+    private string? _deferredStartupWorkspaceDbPath;
 
     public WorkspaceDbInitializer(
         IDbContextFactory<WorkspaceDbContext> dbContextFactory,
@@ -46,12 +49,32 @@ public class WorkspaceDbInitializer : IWorkspaceDbInitializer, IWorkspaceDatabas
         IWorkspaceWriteGate workspaceWriteGate,
         IClock clock
     )
+        : this(
+            dbContextFactory,
+            workspacePathProvider,
+            workspaceDbRebuilder,
+            workspaceWriteGate,
+            clock,
+            startupStageReporter: null
+        )
+    {
+    }
+
+    public WorkspaceDbInitializer(
+        IDbContextFactory<WorkspaceDbContext> dbContextFactory,
+        IWorkspacePathProvider workspacePathProvider,
+        WorkspaceDbRebuilder workspaceDbRebuilder,
+        IWorkspaceWriteGate workspaceWriteGate,
+        IClock clock,
+        IStartupStageReporter? startupStageReporter
+    )
     {
         _dbContextFactory = dbContextFactory;
         _workspacePathProvider = workspacePathProvider;
         _workspaceDbRebuilder = workspaceDbRebuilder;
         _workspaceWriteGate = workspaceWriteGate;
         _clock = clock;
+        _startupStageReporter = startupStageReporter;
     }
 
     public Task EnsureInitializedAsync(CancellationToken ct)
@@ -76,6 +99,9 @@ public class WorkspaceDbInitializer : IWorkspaceDbInitializer, IWorkspaceDatabas
             {
                 return;
             }
+
+            _deferredStartupWorkCompleted = false;
+            _deferredStartupWorkspaceDbPath = null;
 
             AppFileLogger.LogEvent(
                 eventName: "WorkspaceInitStarted",
@@ -131,15 +157,60 @@ public class WorkspaceDbInitializer : IWorkspaceDbInitializer, IWorkspaceDatabas
             LogWorkspaceInitStep("SchemaVerify", "Running workspace schema verification query.");
             await VerifySchemaHealthAsync(ct);
             LogWorkspaceInitStep("SchemaVerifyCompleted", "Workspace schema verification query completed.");
-            LogWorkspaceInitStep("Finalize", "Marking stale running jobs as abandoned.");
-            await MarkRunningJobsAsAbandonedAsync(ct);
-            LogWorkspaceInitStep("FinalizeCompleted", "Workspace finalization completed.");
             _initialized = true;
             _initializedWorkspaceDbPath = currentWorkspaceDbPath;
             AppFileLogger.LogEvent(
                 eventName: "WorkspaceInitCompleted",
                 level: "INFO",
                 message: "Workspace initializer completed.",
+                fields: new Dictionary<string, object?>
+                {
+                    ["workspaceDbPath"] = currentWorkspaceDbPath
+                }
+            );
+        }
+        finally
+        {
+            _semaphore.Release();
+        }
+    }
+
+    public async Task RunDeferredStartupWorkAsync(CancellationToken ct)
+    {
+        await _semaphore.WaitAsync(ct);
+        try
+        {
+            var currentWorkspaceDbPath = _workspacePathProvider.WorkspaceDbPath;
+            var sameWorkspacePath = string.Equals(
+                _deferredStartupWorkspaceDbPath,
+                currentWorkspaceDbPath,
+                StringComparison.OrdinalIgnoreCase
+            );
+            if (!_initialized || (_deferredStartupWorkCompleted && sameWorkspacePath))
+            {
+                return;
+            }
+
+            AppFileLogger.LogEvent(
+                eventName: "WorkspaceDeferredStartupWorkStarted",
+                level: "INFO",
+                message: "Deferred workspace startup work started.",
+                fields: new Dictionary<string, object?>
+                {
+                    ["workspaceDbPath"] = currentWorkspaceDbPath
+                }
+            );
+
+            LogWorkspaceInitStep("Finalize", "Marking stale running jobs as abandoned.");
+            await MarkRunningJobsAsAbandonedAsync(ct);
+            LogWorkspaceInitStep("FinalizeCompleted", "Workspace finalization completed.");
+
+            _deferredStartupWorkCompleted = true;
+            _deferredStartupWorkspaceDbPath = currentWorkspaceDbPath;
+            AppFileLogger.LogEvent(
+                eventName: "WorkspaceDeferredStartupWorkCompleted",
+                level: "INFO",
+                message: "Deferred workspace startup work completed.",
                 fields: new Dictionary<string, object?>
                 {
                     ["workspaceDbPath"] = currentWorkspaceDbPath
@@ -665,6 +736,61 @@ public class WorkspaceDbInitializer : IWorkspaceDbInitializer, IWorkspaceDatabas
                 ["workspaceDbPath"] = _workspacePathProvider.WorkspaceDbPath
             }
         );
+        ReportStartupStage(step, message);
+    }
+
+    private void ReportStartupStage(string step, string message)
+    {
+        if (_startupStageReporter is null)
+        {
+            return;
+        }
+
+        switch (step)
+        {
+            case "InspectDatabase":
+            case "OpenConnection":
+                _startupStageReporter.ReportStage(
+                    StartupStageKeys.OpeningWorkspace,
+                    "Opening workspace",
+                    message
+                );
+                break;
+
+            case "LoadMigrations":
+            case "ApplyMigrations":
+                _startupStageReporter.ReportStage(
+                    StartupStageKeys.LoadingMigrations,
+                    "Loading and applying migrations",
+                    message
+                );
+                break;
+
+            case "EnsureMessageFtsObjects":
+                _startupStageReporter.ReportStage(
+                    StartupStageKeys.EnsuringMessageSearchIndex,
+                    "Ensuring message search index",
+                    message
+                );
+                break;
+
+            case "SchemaVerify":
+            case "SchemaVerifyQuery":
+                _startupStageReporter.ReportStage(
+                    StartupStageKeys.VerifyingSchema,
+                    "Verifying schema",
+                    message
+                );
+                break;
+
+            case "Finalize":
+                _startupStageReporter.ReportStage(
+                    StartupStageKeys.FinalizingStartup,
+                    "Finalizing startup",
+                    message
+                );
+                break;
+        }
     }
 
     private sealed class DatabaseInspection
@@ -700,6 +826,25 @@ public sealed class WorkspaceDatabaseInitializer : WorkspaceDbInitializer
         IClock clock
     )
         : base(dbContextFactory, workspacePathProvider, workspaceDbRebuilder, workspaceWriteGate, clock)
+    {
+    }
+
+    public WorkspaceDatabaseInitializer(
+        IDbContextFactory<WorkspaceDbContext> dbContextFactory,
+        IWorkspacePathProvider workspacePathProvider,
+        WorkspaceDbRebuilder workspaceDbRebuilder,
+        IWorkspaceWriteGate workspaceWriteGate,
+        IClock clock,
+        IStartupStageReporter? startupStageReporter
+    )
+        : base(
+            dbContextFactory,
+            workspacePathProvider,
+            workspaceDbRebuilder,
+            workspaceWriteGate,
+            clock,
+            startupStageReporter
+        )
     {
     }
 }
