@@ -52,9 +52,9 @@ public sealed class WorkspaceMigrationService : IWorkspaceMigrationService
         }
     }
 
-    public Task RunDeferredStartupWorkAsync(CancellationToken ct)
+    public Task<bool> RunCaseOpenReadinessAsync(CancellationToken ct)
     {
-        return _workspaceDbInitializerConcrete.RunDeferredStartupWorkAsync(ct);
+        return _workspaceDbInitializerConcrete.RunCaseOpenReadinessAsync(ct);
     }
 
     private async Task EnsureMigratedCoreAsync(string workspaceDbPath, CancellationToken ct)

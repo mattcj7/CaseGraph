@@ -39,8 +39,10 @@ public class WorkspaceDbInitializer : IWorkspaceDbInitializer, IWorkspaceDatabas
     private readonly SemaphoreSlim _semaphore = new(1, 1);
     private bool _initialized;
     private string? _initializedWorkspaceDbPath;
-    private bool _deferredStartupWorkCompleted;
-    private string? _deferredStartupWorkspaceDbPath;
+    private bool _caseOpenReadinessCompleted;
+    private string? _caseOpenReadinessWorkspaceDbPath;
+    private bool _messageSearchReady;
+    private string? _messageSearchReadyWorkspaceDbPath;
 
     public WorkspaceDbInitializer(
         IDbContextFactory<WorkspaceDbContext> dbContextFactory,
@@ -100,8 +102,10 @@ public class WorkspaceDbInitializer : IWorkspaceDbInitializer, IWorkspaceDatabas
                 return;
             }
 
-            _deferredStartupWorkCompleted = false;
-            _deferredStartupWorkspaceDbPath = null;
+            _caseOpenReadinessCompleted = false;
+            _caseOpenReadinessWorkspaceDbPath = null;
+            _messageSearchReady = false;
+            _messageSearchReadyWorkspaceDbPath = null;
 
             AppFileLogger.LogEvent(
                 eventName: "WorkspaceInitStarted",
@@ -175,47 +179,100 @@ public class WorkspaceDbInitializer : IWorkspaceDbInitializer, IWorkspaceDatabas
         }
     }
 
-    public async Task RunDeferredStartupWorkAsync(CancellationToken ct)
+    public async Task<bool> RunCaseOpenReadinessAsync(CancellationToken ct)
     {
+        await InitializeAsync(ct);
+
         await _semaphore.WaitAsync(ct);
         try
         {
             var currentWorkspaceDbPath = _workspacePathProvider.WorkspaceDbPath;
             var sameWorkspacePath = string.Equals(
-                _deferredStartupWorkspaceDbPath,
+                _caseOpenReadinessWorkspaceDbPath,
                 currentWorkspaceDbPath,
                 StringComparison.OrdinalIgnoreCase
             );
-            if (!_initialized || (_deferredStartupWorkCompleted && sameWorkspacePath))
+            if (_caseOpenReadinessCompleted && sameWorkspacePath)
             {
-                return;
+                return false;
             }
 
             AppFileLogger.LogEvent(
-                eventName: "WorkspaceDeferredStartupWorkStarted",
+                eventName: "WorkspaceCaseOpenReadinessStarted",
                 level: "INFO",
-                message: "Deferred workspace startup work started.",
+                message: "Workspace case-open readiness started.",
                 fields: new Dictionary<string, object?>
                 {
                     ["workspaceDbPath"] = currentWorkspaceDbPath
                 }
             );
 
-            LogWorkspaceInitStep("Finalize", "Marking stale running jobs as abandoned.");
             await MarkRunningJobsAsAbandonedAsync(ct);
-            LogWorkspaceInitStep("FinalizeCompleted", "Workspace finalization completed.");
 
-            _deferredStartupWorkCompleted = true;
-            _deferredStartupWorkspaceDbPath = currentWorkspaceDbPath;
+            _caseOpenReadinessCompleted = true;
+            _caseOpenReadinessWorkspaceDbPath = currentWorkspaceDbPath;
             AppFileLogger.LogEvent(
-                eventName: "WorkspaceDeferredStartupWorkCompleted",
+                eventName: "WorkspaceCaseOpenReadinessCompleted",
                 level: "INFO",
-                message: "Deferred workspace startup work completed.",
+                message: "Workspace case-open readiness completed.",
                 fields: new Dictionary<string, object?>
                 {
                     ["workspaceDbPath"] = currentWorkspaceDbPath
                 }
             );
+            return true;
+        }
+        finally
+        {
+            _semaphore.Release();
+        }
+    }
+
+    public async Task<bool> EnsureMessageSearchReadyAsync(CancellationToken ct)
+    {
+        await InitializeAsync(ct);
+
+        await _semaphore.WaitAsync(ct);
+        try
+        {
+            var currentWorkspaceDbPath = _workspacePathProvider.WorkspaceDbPath;
+            var sameWorkspacePath = string.Equals(
+                _messageSearchReadyWorkspaceDbPath,
+                currentWorkspaceDbPath,
+                StringComparison.OrdinalIgnoreCase
+            );
+            if (_messageSearchReady && sameWorkspacePath)
+            {
+                return false;
+            }
+
+            await using var db = await _dbContextFactory.CreateDbContextAsync(ct);
+            LogWorkspaceInitStep(
+                "MessageSearchReadiness",
+                "Ensuring message search index objects and backfill are current."
+            );
+            await db.Database.OpenConnectionAsync(ct);
+            try
+            {
+                await EnsureMessageFtsObjectsAsync(db, ct);
+            }
+            finally
+            {
+                await db.Database.CloseConnectionAsync();
+            }
+
+            _messageSearchReady = true;
+            _messageSearchReadyWorkspaceDbPath = currentWorkspaceDbPath;
+            AppFileLogger.LogEvent(
+                eventName: "WorkspaceMessageSearchReadinessCompleted",
+                level: "INFO",
+                message: "Workspace message search readiness completed.",
+                fields: new Dictionary<string, object?>
+                {
+                    ["workspaceDbPath"] = currentWorkspaceDbPath
+                }
+            );
+            return true;
         }
         finally
         {
@@ -251,9 +308,6 @@ public class WorkspaceDbInitializer : IWorkspaceDbInitializer, IWorkspaceDatabas
             LogWorkspaceInitStep("ApplyMigrations", "Applying EF Core migrations.");
             await db.Database.MigrateAsync(ct);
             LogWorkspaceInitStep("ApplyMigrationsCompleted", "EF Core migrations applied.");
-            LogWorkspaceInitStep("EnsureMessageFtsObjects", "Ensuring message FTS table, triggers, and backfill are current.");
-            await EnsureMessageFtsObjectsAsync(db, ct);
-            LogWorkspaceInitStep("EnsureMessageFtsObjectsCompleted", "Message FTS table, triggers, and backfill are current.");
         }
         finally
         {

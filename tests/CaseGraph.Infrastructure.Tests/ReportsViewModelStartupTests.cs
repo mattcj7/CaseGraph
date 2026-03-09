@@ -24,6 +24,7 @@ public sealed class ReportsViewModelStartupTests
     public void Reports_DI_Resolution_DoesNotThrow_DuringStartup()
     {
         var services = new ServiceCollection();
+        services.AddSingleton<IFeatureReadinessService, FakeFeatureReadinessService>();
         services.AddSingleton<ITargetRegistryService, FakeTargetRegistryService>();
         services.AddSingleton<ICaseQueryService, FakeCaseQueryService>();
         services.AddSingleton<IUserInteractionService, FakeUserInteractionService>();
@@ -50,6 +51,7 @@ public sealed class ReportsViewModelStartupTests
     public void Timeline_DI_Resolution_DoesNotThrow_DuringStartup()
     {
         var services = new ServiceCollection();
+        services.AddSingleton<IFeatureReadinessService, FakeFeatureReadinessService>();
         services.AddSingleton<ITargetRegistryService, FakeTargetRegistryService>();
         services.AddSingleton<IUserInteractionService, FakeUserInteractionService>();
         services.AddSingleton<IWorkspaceDatabaseInitializer, FakeWorkspaceDatabaseInitializer>();
@@ -123,6 +125,7 @@ public sealed class ReportsViewModelStartupTests
     private static ReportsViewModel CreateReportsViewModel()
     {
         return new ReportsViewModel(
+            new FakeFeatureReadinessService(),
             new FakeTargetRegistryService(),
             new FakeCaseQueryService(),
             new FakeUserInteractionService(),
@@ -134,6 +137,7 @@ public sealed class ReportsViewModelStartupTests
     private static TimelineViewModel CreateTimelineViewModel()
     {
         return new TimelineViewModel(
+            new FakeFeatureReadinessService(),
             new TimelineQueryService(
                 new FakeWorkspaceDatabaseInitializer(),
                 new FakeWorkspacePathProvider(),
@@ -268,6 +272,20 @@ public sealed class ReportsViewModelStartupTests
     private sealed class FakeWorkspaceDatabaseInitializer : IWorkspaceDatabaseInitializer
     {
         public Task EnsureInitializedAsync(CancellationToken ct) => Task.CompletedTask;
+    }
+
+    private sealed class FakeFeatureReadinessService : IFeatureReadinessService
+    {
+        public Task<ReadinessResult> EnsureReadyAsync(
+            ReadinessFeature feature,
+            Guid? caseId,
+            bool requiresMessageSearchIndex,
+            IProgress<ReadinessProgress>? progress,
+            CancellationToken ct
+        )
+        {
+            return Task.FromResult(new ReadinessResult(false, "No-op."));
+        }
     }
 
     private sealed class FakeWorkspacePathProvider : IWorkspacePathProvider

@@ -4,5 +4,5 @@ public interface IWorkspaceMigrationService
 {
     Task EnsureMigratedAsync(CancellationToken ct);
 
-    Task RunDeferredStartupWorkAsync(CancellationToken ct);
+    Task<bool> RunCaseOpenReadinessAsync(CancellationToken ct);
 }

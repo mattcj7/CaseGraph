@@ -13,6 +13,7 @@ namespace CaseGraph.App.ViewModels;
 
 public partial class IncidentWindowViewModel : ObservableObject, IDisposable
 {
+    private readonly IFeatureReadinessService _featureReadinessService;
     private readonly IncidentWindowQueryService _queryService;
     private readonly ITargetRegistryService _targetRegistryService;
     private readonly IUserInteractionService _userInteractionService;
@@ -23,11 +24,13 @@ public partial class IncidentWindowViewModel : ObservableObject, IDisposable
     private bool _hasExecuted;
 
     public IncidentWindowViewModel(
+        IFeatureReadinessService featureReadinessService,
         IncidentWindowQueryService queryService,
         ITargetRegistryService targetRegistryService,
         IUserInteractionService userInteractionService
     )
     {
+        _featureReadinessService = featureReadinessService;
         _queryService = queryService;
         _targetRegistryService = targetRegistryService;
         _userInteractionService = userInteractionService;
@@ -204,11 +207,15 @@ public partial class IncidentWindowViewModel : ObservableObject, IDisposable
             return;
         }
 
-        await RefreshSubjectFiltersAsync(ct);
         ResetInputsToDefaults();
-        StatusText = _isActive
-            ? "Incident Window ready. Adjust the window and run it."
-            : "Incident Window ready. Open the page to run it.";
+        if (_isActive)
+        {
+            await LoadFeatureContextAsync(ct);
+        }
+        else
+        {
+            StatusText = "Incident Window ready. Open the page to prepare filters.";
+        }
     }
 
     public async Task ActivateAsync(CancellationToken ct)
@@ -220,7 +227,7 @@ public partial class IncidentWindowViewModel : ObservableObject, IDisposable
             return;
         }
 
-        await RefreshSubjectFiltersAsync(ct);
+        await LoadFeatureContextAsync(ct);
         if (!_hasExecuted)
         {
             StatusText = "Incident Window ready. Adjust the window and run it.";
@@ -381,6 +388,18 @@ public partial class IncidentWindowViewModel : ObservableObject, IDisposable
         {
             SelectedSubjectFilter = IncidentWindowSubjectFilterOption.AllSubjects;
         }
+    }
+
+    private async Task LoadFeatureContextAsync(CancellationToken ct)
+    {
+        await _featureReadinessService.EnsureReadyAsync(
+            ReadinessFeature.IncidentWindow,
+            CurrentCaseId,
+            requiresMessageSearchIndex: false,
+            CreateReadinessProgress(),
+            ct
+        );
+        await RefreshSubjectFiltersAsync(ct);
     }
 
     private void ResetInputsToDefaults()
@@ -633,6 +652,14 @@ public partial class IncidentWindowViewModel : ObservableObject, IDisposable
         var start = ((currentPage - 1) * 100) + 1;
         var end = Math.Min(currentPage * 100, totalCount);
         return $"Showing {start:0}-{end:0} of {totalCount:0}";
+    }
+
+    private IProgress<ReadinessProgress> CreateReadinessProgress()
+    {
+        return new Progress<ReadinessProgress>(update =>
+        {
+            StatusText = update.DetailText;
+        });
     }
 
     private void RaisePagingStateChanged()

@@ -10,6 +10,7 @@ namespace CaseGraph.App.ViewModels;
 
 public partial class TimelineViewModel : ObservableObject, IDisposable
 {
+    private readonly IFeatureReadinessService _featureReadinessService;
     private readonly TimelineQueryService _timelineQueryService;
     private readonly ITargetRegistryService _targetRegistryService;
     private readonly IUserInteractionService _userInteractionService;
@@ -20,12 +21,14 @@ public partial class TimelineViewModel : ObservableObject, IDisposable
     private bool _isDisposed;
 
     public TimelineViewModel(
+        IFeatureReadinessService featureReadinessService,
         TimelineQueryService timelineQueryService,
         ITargetRegistryService targetRegistryService,
         IUserInteractionService userInteractionService
     )
     {
         _isInitializing = true;
+        _featureReadinessService = featureReadinessService;
         _timelineQueryService = timelineQueryService;
         _targetRegistryService = targetRegistryService;
         _userInteractionService = userInteractionService;
@@ -151,10 +154,10 @@ public partial class TimelineViewModel : ObservableObject, IDisposable
                 return;
             }
 
-            await RefreshFilterOptionsAsync(ct);
+            ResetFiltersToDefaults();
             if (_isActive)
             {
-                await LoadPageAsync(0, ct);
+                await PrepareAndLoadAsync(0, ct);
             }
             else
             {
@@ -191,8 +194,7 @@ public partial class TimelineViewModel : ObservableObject, IDisposable
                 return;
             }
 
-            await RefreshFilterOptionsAsync(ct);
-            await LoadPageAsync(Math.Max(CurrentPage - 1, 0), ct);
+            await PrepareAndLoadAsync(Math.Max(CurrentPage - 1, 0), ct);
             LogLifecycleEvent("TimelineActivationCompleted", "Timeline page activated.", CurrentCaseId);
         }
         catch (Exception ex)
@@ -264,6 +266,17 @@ public partial class TimelineViewModel : ObservableObject, IDisposable
         var loadCts = BeginLoad(outerCt);
         var correlationId = AppFileLogger.NewCorrelationId();
         IsLoading = true;
+        if (NullIfWhiteSpace(QueryText) is not null)
+        {
+            await _featureReadinessService.EnsureReadyAsync(
+                ReadinessFeature.Timeline,
+                CurrentCaseId,
+                requiresMessageSearchIndex: true,
+                CreateReadinessProgress(),
+                loadCts.Token
+            );
+        }
+
         StatusText = "Loading timeline...";
 
         try
@@ -367,6 +380,19 @@ public partial class TimelineViewModel : ObservableObject, IDisposable
         }
     }
 
+    private async Task PrepareAndLoadAsync(int zeroBasedPageIndex, CancellationToken ct)
+    {
+        await _featureReadinessService.EnsureReadyAsync(
+            ReadinessFeature.Timeline,
+            CurrentCaseId,
+            requiresMessageSearchIndex: false,
+            CreateReadinessProgress(),
+            ct
+        );
+        await RefreshFilterOptionsAsync(ct);
+        await LoadPageAsync(zeroBasedPageIndex, ct);
+    }
+
     private CancellationTokenSource BeginLoad(CancellationToken outerCt)
     {
         CancelLoad();
@@ -437,6 +463,14 @@ public partial class TimelineViewModel : ObservableObject, IDisposable
         SelectedRow = null;
         OnPropertyChanged(nameof(HasRows));
         OnPropertyChanged(nameof(PageSummaryText));
+    }
+
+    private IProgress<ReadinessProgress> CreateReadinessProgress()
+    {
+        return new Progress<ReadinessProgress>(update =>
+        {
+            StatusText = update.DetailText;
+        });
     }
 
     private void ViewSource(TimelineRowDto? row)

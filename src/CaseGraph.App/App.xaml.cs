@@ -140,9 +140,9 @@ public partial class App : Application
             ReportStartupStage(
                 stageKey: StartupStageKeys.FinalizingStartup,
                 stageText: "Finalizing startup",
-                logStage: "StartupFinalizeScheduling",
-                logMessage: "Scheduling non-critical deferred startup cleanup.",
-                detailText: "Non-critical cleanup will continue after the main window opens."
+                logStage: "StartupFinalizeCompleted",
+                logMessage: "Startup shell checks completed.",
+                detailText: "Startup shell checks completed."
             );
             ReportStartupStage(
                 stageKey: StartupStageKeys.OpeningMainWindow,
@@ -175,7 +175,6 @@ public partial class App : Application
                 logMessage: "Main window shown.",
                 detailText: "Main window shown."
             );
-            StartDeferredStartupWork();
             ReportStartupCompleted("Startup complete.");
             CloseStartupProgressWindow();
             ShutdownMode = ShutdownMode.OnMainWindowClose;
@@ -836,36 +835,6 @@ public partial class App : Application
         );
     }
 
-    private void StartDeferredStartupWork()
-    {
-        if (_host is null)
-        {
-            return;
-        }
-
-        var migrationService = _host.Services.GetRequiredService<IWorkspaceMigrationService>();
-        _ = RunDeferredStartupWorkAsync(migrationService);
-    }
-
-    private static async Task RunDeferredStartupWorkAsync(
-        IWorkspaceMigrationService migrationService
-    )
-    {
-        try
-        {
-            await migrationService.RunDeferredStartupWorkAsync(CancellationToken.None);
-        }
-        catch (Exception ex)
-        {
-            AppFileLogger.LogEvent(
-                eventName: "DeferredStartupWorkFailed",
-                level: "ERROR",
-                message: "Deferred startup work failed.",
-                ex: ex
-            );
-        }
-    }
-
     private static void LogStartupStage(string stage, string message)
     {
         AppFileLogger.LogEvent(
@@ -874,6 +843,7 @@ public partial class App : Application
             message: message,
             fields: new Dictionary<string, object?>
             {
+                ["phase"] = "Startup",
                 ["stage"] = stage
             }
         );

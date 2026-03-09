@@ -29,8 +29,10 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
     private readonly INavigationService _navigationService;
     private readonly IThemeService _themeService;
     private readonly ICaseWorkspaceService _caseWorkspaceService;
+    private readonly ICaseOpenReadinessService _caseOpenReadinessService;
     private readonly ICaseQueryService _caseQueryService;
     private readonly IEvidenceVaultService _evidenceVaultService;
+    private readonly IFeatureReadinessService _featureReadinessService;
     private readonly IMessageSearchService _messageSearchService;
     private readonly IAuditQueryService _auditQueryService;
     private readonly IJobQueueService _jobQueueService;
@@ -454,8 +456,10 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
         INavigationService navigationService,
         IThemeService themeService,
         ICaseWorkspaceService caseWorkspaceService,
+        ICaseOpenReadinessService caseOpenReadinessService,
         ICaseQueryService caseQueryService,
         IEvidenceVaultService evidenceVaultService,
+        IFeatureReadinessService featureReadinessService,
         IMessageSearchService messageSearchService,
         IAuditQueryService auditQueryService,
         IJobQueueService jobQueueService,
@@ -478,8 +482,10 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
         _navigationService = navigationService;
         _themeService = themeService;
         _caseWorkspaceService = caseWorkspaceService;
+        _caseOpenReadinessService = caseOpenReadinessService;
         _caseQueryService = caseQueryService;
         _evidenceVaultService = evidenceVaultService;
+        _featureReadinessService = featureReadinessService;
         _messageSearchService = messageSearchService;
         _auditQueryService = auditQueryService;
         _jobQueueService = jobQueueService;
@@ -2726,10 +2732,17 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
 
         var searchCts = BeginMessageSearch();
         IsMessageSearchInProgress = true;
-        MessageSearchStatusText = "Searching messages...";
 
         try
         {
+            await _featureReadinessService.EnsureReadyAsync(
+                ReadinessFeature.Search,
+                CurrentCaseInfo.CaseId,
+                requiresMessageSearchIndex: query is not null,
+                CreateMessageSearchReadinessProgress(),
+                searchCts.Token
+            );
+            MessageSearchStatusText = "Searching messages...";
             var hits = await _messageSearchService.SearchAsync(
                 new MessageSearchRequest(
                     CurrentCaseInfo.CaseId,
@@ -2898,6 +2911,11 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
     private async Task OpenCaseInternalAsync(Guid caseId, CancellationToken ct)
     {
         var openedCase = await _caseWorkspaceService.OpenCaseAsync(caseId, ct);
+        await _caseOpenReadinessService.EnsureReadyAsync(
+            openedCase.CaseId,
+            CreateOperationReadinessProgress(),
+            ct
+        );
         var evidence = await _caseQueryService.GetEvidenceForCaseAsync(caseId, ct);
 
         CurrentCaseInfo = openedCase;
@@ -3384,6 +3402,27 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
     private static bool IsTerminalStatus(JobStatus status)
     {
         return status is JobStatus.Succeeded or JobStatus.Failed or JobStatus.Canceled or JobStatus.Abandoned;
+    }
+
+    private IProgress<ReadinessProgress> CreateOperationReadinessProgress()
+    {
+        return new Progress<ReadinessProgress>(update =>
+        {
+            if (update.Progress.HasValue)
+            {
+                OperationProgress = Math.Clamp(update.Progress.Value, 0d, 1d);
+            }
+
+            OperationText = update.DetailText;
+        });
+    }
+
+    private IProgress<ReadinessProgress> CreateMessageSearchReadinessProgress()
+    {
+        return new Progress<ReadinessProgress>(update =>
+        {
+            MessageSearchStatusText = update.DetailText;
+        });
     }
 
     private OperationScope BeginOperation(string operationText)

@@ -141,9 +141,10 @@ public partial class LocationsViewModel : ObservableObject, IDisposable
             return;
         }
 
-        await RefreshSubjectFiltersAsync(ct);
+        ResetFiltersToDefaults();
         if (_isActive)
         {
+            await RefreshSubjectFiltersAsync(ct);
             await LoadPageAsync(0, ct);
         }
         else
@@ -151,7 +152,7 @@ public partial class LocationsViewModel : ObservableObject, IDisposable
             ClearRows();
             TotalCount = 0;
             CurrentPage = 1;
-            StatusText = "Locations ready. Open the Locations page to load results.";
+            StatusText = "Locations ready. Open the Locations page to prepare filters and load results.";
         }
     }
 
