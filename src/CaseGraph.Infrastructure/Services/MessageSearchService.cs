@@ -1,4 +1,5 @@
 using CaseGraph.Core.Abstractions;
+using CaseGraph.Core.Diagnostics;
 using CaseGraph.Core.Models;
 using Microsoft.Data.Sqlite;
 using System.Globalization;
@@ -58,23 +59,54 @@ public sealed class MessageSearchService : IMessageSearchService
         await _databaseInitializer.EnsureInitializedAsync(ct);
 
         var prepared = PrepareRequest(request);
+        var correlationId = AppFileLogger.GetScopeValue("correlationId") ?? AppFileLogger.NewCorrelationId();
         if (!prepared.CanSearch)
         {
+            AppFileLogger.LogEvent(
+                eventName: "MessageSearchQuerySkipped",
+                level: "INFO",
+                message: "Message search query skipped because no usable query or filters were supplied.",
+                fields: BuildSearchFields(prepared, correlationId, executionMode: "none", hitCount: 0)
+            );
             return Array.Empty<MessageSearchHit>();
         }
 
+        AppFileLogger.LogEvent(
+            eventName: "MessageSearchQueryStarted",
+            level: "INFO",
+            message: "Message search query started.",
+            fields: BuildSearchFields(
+                prepared,
+                correlationId,
+                executionMode: prepared.Query is null ? "structuredOnly" : "fts"
+            )
+        );
+
         if (prepared.Query is null)
         {
-            return await SearchWithoutKeywordAsync(prepared, ct);
+            var hits = await SearchWithoutKeywordAsync(prepared, ct);
+            LogSearchCompleted(prepared, correlationId, executionMode: "structuredOnly", hits.Count);
+            return hits;
         }
 
         try
         {
-            return await SearchWithFtsAsync(prepared, ct);
+            var hits = await SearchWithFtsAsync(prepared, ct);
+            LogSearchCompleted(prepared, correlationId, executionMode: "fts", hits.Count);
+            return hits;
         }
-        catch (SqliteException)
+        catch (SqliteException ex)
         {
-            return await SearchWithLikeFallbackAsync(prepared, ct);
+            AppFileLogger.LogEvent(
+                eventName: "MessageSearchQueryFtsFailed",
+                level: "WARN",
+                message: "Message search FTS query failed. Falling back to LIKE search.",
+                ex: ex,
+                fields: BuildSearchFields(prepared, correlationId, executionMode: "fts")
+            );
+            var fallbackHits = await SearchWithLikeFallbackAsync(prepared, ct);
+            LogSearchCompleted(prepared, correlationId, executionMode: "likeFallback", fallbackHits.Count);
+            return fallbackHits;
         }
     }
 
@@ -762,6 +794,55 @@ public sealed class MessageSearchService : IMessageSearchService
         return Enum.TryParse<TargetIdentifierType>(type, ignoreCase: true, out var parsed)
             ? parsed
             : TargetIdentifierType.Other;
+    }
+
+    private static void LogSearchCompleted(
+        PreparedSearchRequest request,
+        string correlationId,
+        string executionMode,
+        int hitCount
+    )
+    {
+        AppFileLogger.LogEvent(
+            eventName: "MessageSearchQueryCompleted",
+            level: "INFO",
+            message: "Message search query completed.",
+            fields: BuildSearchFields(request, correlationId, executionMode, hitCount)
+        );
+    }
+
+    private static Dictionary<string, object?> BuildSearchFields(
+        PreparedSearchRequest request,
+        string correlationId,
+        string executionMode,
+        int? hitCount = null
+    )
+    {
+        var fields = new Dictionary<string, object?>
+        {
+            ["caseId"] = request.CaseId == Guid.Empty ? null : request.CaseId.ToString("D"),
+            ["correlationId"] = correlationId,
+            ["hasKeyword"] = request.Query is not null,
+            ["hasPlatformFilter"] = request.PlatformFilter is not null,
+            ["hasSenderFilter"] = request.SenderFilter is not null,
+            ["hasRecipientFilter"] = request.RecipientFilter is not null,
+            ["hasTargetFilter"] = request.TargetId.HasValue,
+            ["hasGlobalEntityFilter"] = request.GlobalEntityId.HasValue,
+            ["hasIdentifierTypeFilter"] = request.IdentifierTypeFilter is not null,
+            ["hasDirectionFilter"] = request.DirectionFilter is not null,
+            ["hasFromUtc"] = request.FromUtc.HasValue,
+            ["hasToUtc"] = request.ToUtc.HasValue,
+            ["take"] = request.Take,
+            ["skip"] = request.Skip,
+            ["executionMode"] = executionMode
+        };
+
+        if (hitCount.HasValue)
+        {
+            fields["hitCount"] = hitCount.Value;
+        }
+
+        return fields;
     }
 
     private sealed record PreparedSearchRequest(

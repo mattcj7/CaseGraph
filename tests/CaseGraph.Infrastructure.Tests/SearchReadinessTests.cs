@@ -8,10 +8,10 @@ using Microsoft.Extensions.DependencyInjection;
 
 namespace CaseGraph.Infrastructure.Tests;
 
-public sealed class FeatureReadinessServiceTests
+public sealed class SearchReadinessTests
 {
     [Fact]
-    public async Task SearchReadiness_ReturnsPreparingAndRestoresMissingMessageSearchRow()
+    public async Task SearchReadiness_CurrentIndex_CompletesWithoutPendingMaintenance()
     {
         await using var fixture = await ReadinessFixture.CreateAsync();
         var service = fixture.Services.GetRequiredService<IFeatureReadinessService>();
@@ -19,6 +19,8 @@ public sealed class FeatureReadinessServiceTests
 
         await initializer.InitializeAsync(CancellationToken.None);
         var messageEventId = await SeedMessageWithMissingFtsRowAsync(fixture.PathProvider.WorkspaceDbPath);
+        await initializer.EnsureMessageSearchReadyAsync(CancellationToken.None);
+
         var result = await service.EnsureReadyAsync(
             ReadinessFeature.Search,
             Guid.NewGuid(),
@@ -32,17 +34,15 @@ public sealed class FeatureReadinessServiceTests
         );
         await connection.OpenAsync();
 
-        Assert.True(result.WorkPerformed);
-        Assert.False(result.IsReady);
-        Assert.True(result.IsPreparing);
-        Assert.NotNull(result.PendingWork);
-
-        await result.PendingWork!;
+        Assert.True(result.IsReady);
+        Assert.False(result.IsPreparing);
+        Assert.False(result.WorkPerformed);
+        Assert.Null(result.PendingWork);
         Assert.Equal(1, await CountFtsRowsAsync(connection, messageEventId));
     }
 
     [Fact]
-    public async Task ReportsReadiness_LeavesMissingMessageSearchRowUntouched()
+    public async Task SearchReadiness_StaleIndex_ReturnsPreparingWithoutBlockingCaller()
     {
         await using var fixture = await ReadinessFixture.CreateAsync();
         var service = fixture.Services.GetRequiredService<IFeatureReadinessService>();
@@ -50,21 +50,28 @@ public sealed class FeatureReadinessServiceTests
 
         await initializer.InitializeAsync(CancellationToken.None);
         var messageEventId = await SeedMessageWithMissingFtsRowAsync(fixture.PathProvider.WorkspaceDbPath);
-        var result = await service.EnsureReadyAsync(
-            ReadinessFeature.Reports,
+        var readinessTask = service.EnsureReadyAsync(
+            ReadinessFeature.Search,
             Guid.NewGuid(),
-            requiresMessageSearchIndex: false,
+            requiresMessageSearchIndex: true,
             progress: null,
             ct: CancellationToken.None
         );
+        var completedTask = await Task.WhenAny(readinessTask, Task.Delay(500));
+        Assert.Same(readinessTask, completedTask);
 
-        await using var connection = new SqliteConnection(
+        var readinessResult = await readinessTask;
+        Assert.False(readinessResult.IsReady);
+        Assert.True(readinessResult.IsPreparing);
+        Assert.NotNull(readinessResult.PendingWork);
+
+        await readinessResult.PendingWork!;
+
+        await using var verificationConnection = new SqliteConnection(
             $"Data Source={fixture.PathProvider.WorkspaceDbPath}"
         );
-        await connection.OpenAsync();
-
-        Assert.False(result.WorkPerformed);
-        Assert.Equal(0, await CountFtsRowsAsync(connection, messageEventId));
+        await verificationConnection.OpenAsync();
+        Assert.Equal(1, await CountFtsRowsAsync(verificationConnection, messageEventId));
     }
 
     private static async Task<Guid> SeedMessageWithMissingFtsRowAsync(string workspaceDbPath)
@@ -274,7 +281,7 @@ public sealed class FeatureReadinessServiceTests
         {
             var workspaceRoot = Path.Combine(
                 Path.GetTempPath(),
-                "CaseGraph.FeatureReadinessServiceTests",
+                "CaseGraph.SearchReadinessTests",
                 Guid.NewGuid().ToString("N")
             );
             Directory.CreateDirectory(workspaceRoot);

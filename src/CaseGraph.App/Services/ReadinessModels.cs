@@ -24,4 +24,12 @@ public sealed record ReadinessProgress(
     ReadinessFeature? Feature = null
 );
 
-public sealed record ReadinessResult(bool WorkPerformed, string Summary);
+public sealed record ReadinessResult(
+    bool WorkPerformed,
+    string Summary,
+    bool IsReady = true,
+    Task? PendingWork = null
+)
+{
+    public bool IsPreparing => !IsReady && PendingWork is not null;
+}

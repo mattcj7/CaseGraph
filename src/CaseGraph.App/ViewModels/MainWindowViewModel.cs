@@ -2732,55 +2732,56 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
 
         var searchCts = BeginMessageSearch();
         IsMessageSearchInProgress = true;
+        var searchRequest = new MessageSearchRequest(
+            CurrentCaseInfo.CaseId,
+            query,
+            selectedPlatform,
+            senderFilter,
+            recipientFilter,
+            selectedTargetId,
+            identifierTypeFilter,
+            directionFilter,
+            fromUtc,
+            toUtc,
+            Take: 250,
+            Skip: 0,
+            GlobalEntityId: selectedGlobalEntityId
+        );
+        var ownsSearchLifetime = true;
 
         try
         {
-            await _featureReadinessService.EnsureReadyAsync(
+            var readinessResult = await _featureReadinessService.EnsureReadyAsync(
                 ReadinessFeature.Search,
                 CurrentCaseInfo.CaseId,
                 requiresMessageSearchIndex: query is not null,
                 CreateMessageSearchReadinessProgress(),
                 searchCts.Token
             );
-            MessageSearchStatusText = "Searching messages...";
-            var hits = await _messageSearchService.SearchAsync(
-                new MessageSearchRequest(
-                    CurrentCaseInfo.CaseId,
-                    query,
-                    selectedPlatform,
-                    senderFilter,
-                    recipientFilter,
-                    selectedTargetId,
-                    identifierTypeFilter,
-                    directionFilter,
-                    fromUtc,
-                    toUtc,
-                    Take: 250,
-                    Skip: 0,
-                    GlobalEntityId: selectedGlobalEntityId
-                ),
-                searchCts.Token
-            );
-
             if (!ReferenceEquals(_messageSearchCts, searchCts))
             {
                 return;
             }
 
-            var ordered = hits
-                .OrderByDescending(hit => hit.TimestampUtc ?? DateTimeOffset.MinValue)
-                .ToList();
-
-            MessageSearchResults.Clear();
-            foreach (var hit in ordered)
+            if (readinessResult.IsPreparing)
             {
-                MessageSearchResults.Add(hit);
+                MessageSearchResults.Clear();
+                SelectedMessageSearchResult = null;
+                MessageSearchStatusText = readinessResult.Summary;
+                ownsSearchLifetime = false;
+                ContinueMessageSearchAfterReadinessAsync(
+                    searchRequest,
+                    searchCts,
+                    readinessResult.PendingWork!
+                ).Forget(
+                    "ContinueMessageSearchAfterReadiness",
+                    caseId: CurrentCaseInfo.CaseId,
+                    evidenceId: _appSessionState.CurrentEvidenceId
+                );
+                return;
             }
 
-            SelectedMessageSearchResult = MessageSearchResults.FirstOrDefault();
-            MessageSearchStatusText = ordered.Count == 0
-                ? "No message hits."
-                : $"Found {ordered.Count} message hit(s).";
+            await ExecuteMessageSearchRequestAsync(searchRequest, searchCts.Token);
         }
         catch (OperationCanceledException) when (searchCts.IsCancellationRequested)
         {
@@ -2793,8 +2794,82 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
         }
         finally
         {
+            if (ownsSearchLifetime)
+            {
+                EndMessageSearch(searchCts);
+            }
+        }
+    }
+
+    private async Task ContinueMessageSearchAfterReadinessAsync(
+        MessageSearchRequest request,
+        CancellationTokenSource searchCts,
+        Task pendingWork
+    )
+    {
+        try
+        {
+            await pendingWork.WaitAsync(searchCts.Token);
+            if (!ReferenceEquals(_messageSearchCts, searchCts))
+            {
+                return;
+            }
+
+            MessageSearchStatusText = "Searching messages...";
+            await ExecuteMessageSearchRequestAsync(request, searchCts.Token);
+        }
+        catch (OperationCanceledException) when (searchCts.IsCancellationRequested)
+        {
+            if (!ReferenceEquals(_messageSearchCts, searchCts))
+            {
+                return;
+            }
+
+            MessageSearchStatusText = "Search canceled.";
+        }
+        catch (Exception)
+        {
+            if (ReferenceEquals(_messageSearchCts, searchCts))
+            {
+                MessageSearchResults.Clear();
+                SelectedMessageSearchResult = null;
+                MessageSearchStatusText = "Search preparation failed. Check diagnostics logs.";
+            }
+
+            throw;
+        }
+        finally
+        {
             EndMessageSearch(searchCts);
         }
+    }
+
+    private async Task ExecuteMessageSearchRequestAsync(
+        MessageSearchRequest request,
+        CancellationToken ct
+    )
+    {
+        MessageSearchStatusText = "Searching messages...";
+        var hits = await _messageSearchService.SearchAsync(request, ct);
+        if (ct.IsCancellationRequested)
+        {
+            return;
+        }
+
+        var ordered = hits
+            .OrderByDescending(hit => hit.TimestampUtc ?? DateTimeOffset.MinValue)
+            .ToList();
+
+        MessageSearchResults.Clear();
+        foreach (var hit in ordered)
+        {
+            MessageSearchResults.Add(hit);
+        }
+
+        SelectedMessageSearchResult = MessageSearchResults.FirstOrDefault();
+        MessageSearchStatusText = ordered.Count == 0
+            ? "No message hits."
+            : $"Found {ordered.Count} message hit(s).";
     }
 
     private void CopyMessageCitation()

@@ -40,7 +40,8 @@ public sealed class FeatureReadinessService : IFeatureReadinessService
             feature,
             correlationId,
             caseId,
-            workPerformed: null
+            workPerformed: null,
+            status: null
         );
 
         try
@@ -65,9 +66,37 @@ public sealed class FeatureReadinessService : IFeatureReadinessService
                     feature,
                     correlationId,
                     caseId,
-                    workPerformed: false
+                    workPerformed: false,
+                    status: null
                 );
                 return new ReadinessResult(false, noWorkSummary);
+            }
+
+            var readinessStatus = await _workspaceDbInitializer.GetMessageSearchReadinessStatusAsync(ct);
+            if (readinessStatus.IsCurrent)
+            {
+                const string currentSummary = "Message search readiness already current.";
+                Report(
+                    progress,
+                    new ReadinessProgress(
+                        ReadinessPhase.FeatureOpen,
+                        $"{ToDisplayName(feature)} ready.",
+                        currentSummary,
+                        Progress: 1.0,
+                        CaseId: caseId,
+                        Feature: feature
+                    )
+                );
+                LogEvent(
+                    "FeatureReadinessCompleted",
+                    $"{ToDisplayName(feature)} readiness completed.",
+                    feature,
+                    correlationId,
+                    caseId,
+                    workPerformed: false,
+                    status: readinessStatus.State.ToString()
+                );
+                return new ReadinessResult(false, currentSummary);
             }
 
             Report(
@@ -75,37 +104,33 @@ public sealed class FeatureReadinessService : IFeatureReadinessService
                 new ReadinessProgress(
                     ReadinessPhase.FeatureOpen,
                     $"Preparing {ToDisplayName(feature)}...",
-                    "Ensuring the message search index is current.",
-                    Progress: 0.6,
+                    readinessStatus.State == MessageSearchReadinessState.MaintenanceInProgress
+                        ? "Search index maintenance is already running."
+                        : "Search index maintenance is required before keyword search can run.",
+                    Progress: 0.4,
                     CaseId: caseId,
                     Feature: feature
                 )
             );
-            var workPerformed = await _workspaceDbInitializer.EnsureMessageSearchReadyAsync(ct);
-            var summary = workPerformed
-                ? "Message search readiness completed."
-                : "Message search readiness already current.";
-
-            Report(
-                progress,
-                new ReadinessProgress(
-                    ReadinessPhase.FeatureOpen,
-                    $"{ToDisplayName(feature)} ready.",
-                    summary,
-                    Progress: 1.0,
-                    CaseId: caseId,
-                    Feature: feature
-                )
-            );
+            var pendingWork = await _workspaceDbInitializer.EnsureMessageSearchMaintenanceScheduledAsync(ct);
+            var summary = readinessStatus.State == MessageSearchReadinessState.MaintenanceInProgress
+                ? "Search is still preparing the message index. Your query will run when ready."
+                : "Preparing Search. Message index maintenance is running before the query starts.";
             LogEvent(
-                "FeatureReadinessCompleted",
-                $"{ToDisplayName(feature)} readiness completed.",
+                "FeatureReadinessDeferred",
+                $"{ToDisplayName(feature)} readiness deferred while message search maintenance runs.",
                 feature,
                 correlationId,
                 caseId,
-                workPerformed: workPerformed
+                workPerformed: true,
+                status: readinessStatus.State.ToString()
             );
-            return new ReadinessResult(workPerformed, summary);
+            return new ReadinessResult(
+                WorkPerformed: true,
+                Summary: summary,
+                IsReady: false,
+                PendingWork: pendingWork
+            );
         }
         catch (Exception ex)
         {
@@ -114,7 +139,7 @@ public sealed class FeatureReadinessService : IFeatureReadinessService
                 level: "ERROR",
                 message: $"{ToDisplayName(feature)} readiness failed.",
                 ex: ex,
-                fields: BuildFields(feature, correlationId, caseId, workPerformed: null)
+                fields: BuildFields(feature, correlationId, caseId, workPerformed: null, status: null)
             );
             throw;
         }
@@ -131,14 +156,15 @@ public sealed class FeatureReadinessService : IFeatureReadinessService
         ReadinessFeature feature,
         string correlationId,
         Guid? caseId,
-        bool? workPerformed
+        bool? workPerformed,
+        string? status
     )
     {
         AppFileLogger.LogEvent(
             eventName: eventName,
             level: "INFO",
             message: message,
-            fields: BuildFields(feature, correlationId, caseId, workPerformed)
+            fields: BuildFields(feature, correlationId, caseId, workPerformed, status)
         );
     }
 
@@ -146,7 +172,8 @@ public sealed class FeatureReadinessService : IFeatureReadinessService
         ReadinessFeature feature,
         string correlationId,
         Guid? caseId,
-        bool? workPerformed
+        bool? workPerformed,
+        string? status
     )
     {
         var fields = new Dictionary<string, object?>
@@ -164,6 +191,11 @@ public sealed class FeatureReadinessService : IFeatureReadinessService
         if (workPerformed.HasValue)
         {
             fields["workPerformed"] = workPerformed.Value;
+        }
+
+        if (!string.IsNullOrWhiteSpace(status))
+        {
+            fields["readinessStatus"] = status;
         }
 
         return fields;
