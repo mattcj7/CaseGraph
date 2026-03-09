@@ -1,5 +1,6 @@
 using CaseGraph.Core.Abstractions;
 using CaseGraph.Core.Diagnostics;
+using CaseGraph.Infrastructure.Diagnostics;
 using CaseGraph.Infrastructure.Persistence;
 using CaseGraph.Infrastructure.Persistence.Entities;
 using Microsoft.Data.Sqlite;
@@ -36,6 +37,7 @@ public class WorkspaceDbInitializer : IWorkspaceDbInitializer, IWorkspaceDatabas
     private readonly IWorkspaceWriteGate _workspaceWriteGate;
     private readonly IClock _clock;
     private readonly IStartupStageReporter? _startupStageReporter;
+    private readonly IPerformanceInstrumentation _performanceInstrumentation;
     private readonly SemaphoreSlim _semaphore = new(1, 1);
     private bool _initialized;
     private string? _initializedWorkspaceDbPath;
@@ -59,7 +61,8 @@ public class WorkspaceDbInitializer : IWorkspaceDbInitializer, IWorkspaceDatabas
             workspaceDbRebuilder,
             workspaceWriteGate,
             clock,
-            startupStageReporter: null
+            startupStageReporter: null,
+            performanceInstrumentation: null
         )
     {
     }
@@ -70,7 +73,8 @@ public class WorkspaceDbInitializer : IWorkspaceDbInitializer, IWorkspaceDatabas
         WorkspaceDbRebuilder workspaceDbRebuilder,
         IWorkspaceWriteGate workspaceWriteGate,
         IClock clock,
-        IStartupStageReporter? startupStageReporter
+        IStartupStageReporter? startupStageReporter,
+        IPerformanceInstrumentation? performanceInstrumentation = null
     )
     {
         _dbContextFactory = dbContextFactory;
@@ -79,6 +83,8 @@ public class WorkspaceDbInitializer : IWorkspaceDbInitializer, IWorkspaceDatabas
         _workspaceWriteGate = workspaceWriteGate;
         _clock = clock;
         _startupStageReporter = startupStageReporter;
+        _performanceInstrumentation = performanceInstrumentation
+            ?? new PerformanceInstrumentation(new PerformanceBudgetOptions(), TimeProvider.System);
     }
 
     public Task EnsureInitializedAsync(CancellationToken ct)
@@ -88,148 +94,180 @@ public class WorkspaceDbInitializer : IWorkspaceDbInitializer, IWorkspaceDatabas
 
     public async Task InitializeAsync(CancellationToken ct)
     {
-        await _semaphore.WaitAsync(ct);
-        try
-        {
-            using var workspaceScope = AppFileLogger.BeginWorkspaceScope(_workspacePathProvider.WorkspaceRoot);
-            var currentWorkspaceDbPath = _workspacePathProvider.WorkspaceDbPath;
-            var sameWorkspacePath = string.Equals(
-                _initializedWorkspaceDbPath,
-                currentWorkspaceDbPath,
-                StringComparison.OrdinalIgnoreCase
-            );
-
-            if (_initialized && sameWorkspacePath)
-            {
-                return;
-            }
-
-            _caseOpenReadinessCompleted = false;
-            _caseOpenReadinessWorkspaceDbPath = null;
-            _messageSearchReady = false;
-            _messageSearchReadyWorkspaceDbPath = null;
-            _messageSearchMaintenanceTask = null;
-            _messageSearchMaintenanceWorkspaceDbPath = null;
-
-            AppFileLogger.LogEvent(
-                eventName: "WorkspaceInitStarted",
-                level: "INFO",
-                message: "Workspace initializer started.",
-                fields: new Dictionary<string, object?>
+        await _performanceInstrumentation.TrackAsync(
+            new PerformanceOperationContext(
+                PerformanceOperationKinds.Startup,
+                "WorkspaceInitialize",
+                Fields: new Dictionary<string, object?>
                 {
-                    ["workspaceDbPath"] = currentWorkspaceDbPath
+                    ["workspaceDbPath"] = _workspacePathProvider.WorkspaceDbPath
                 }
-            );
-            LogWorkspaceInitStep("InspectDatabase", "Inspecting existing workspace database state.");
-
-            Directory.CreateDirectory(_workspacePathProvider.WorkspaceRoot);
-            Directory.CreateDirectory(_workspacePathProvider.CasesRoot);
-
-            var inspection = await InspectDatabaseAsync(ct);
-            if (!inspection.Exists)
+            ),
+            async innerCt =>
             {
-                await EnsureUpgradedAsync(ct);
-            }
-            else if (inspection.HasMigrationHistory)
-            {
-                // Existing migration-based DBs must be upgraded in-place.
-                await EnsureUpgradedAsync(ct);
-            }
-            else if (inspection.IsBroken)
-            {
-                await RepairDatabaseAsync(ct);
-            }
-            else
-            {
-                await EnsureUpgradedAsync(ct);
-            }
-
-            var missingAfterUpgrade = await GetMissingRequiredTablesAsync(ct);
-            if (missingAfterUpgrade.Count > 0)
-            {
-                var postUpgradeInspection = await InspectDatabaseAsync(ct);
-                if (postUpgradeInspection.HasMigrationHistory)
+                await _semaphore.WaitAsync(innerCt);
+                try
                 {
-                    await RepairDatabaseAsync(ct);
+                    using var workspaceScope = AppFileLogger.BeginWorkspaceScope(
+                        _workspacePathProvider.WorkspaceRoot
+                    );
+                    var currentWorkspaceDbPath = _workspacePathProvider.WorkspaceDbPath;
+                    var sameWorkspacePath = string.Equals(
+                        _initializedWorkspaceDbPath,
+                        currentWorkspaceDbPath,
+                        StringComparison.OrdinalIgnoreCase
+                    );
+
+                    if (_initialized && sameWorkspacePath)
+                    {
+                        return;
+                    }
+
+                    _caseOpenReadinessCompleted = false;
+                    _caseOpenReadinessWorkspaceDbPath = null;
+                    _messageSearchReady = false;
+                    _messageSearchReadyWorkspaceDbPath = null;
+                    _messageSearchMaintenanceTask = null;
+                    _messageSearchMaintenanceWorkspaceDbPath = null;
+
+                    AppFileLogger.LogEvent(
+                        eventName: "WorkspaceInitStarted",
+                        level: "INFO",
+                        message: "Workspace initializer started.",
+                        fields: new Dictionary<string, object?>
+                        {
+                            ["workspaceDbPath"] = currentWorkspaceDbPath
+                        }
+                    );
+                    LogWorkspaceInitStep("InspectDatabase", "Inspecting existing workspace database state.");
+
+                    Directory.CreateDirectory(_workspacePathProvider.WorkspaceRoot);
+                    Directory.CreateDirectory(_workspacePathProvider.CasesRoot);
+
+                    var inspection = await InspectDatabaseAsync(innerCt);
+                    if (!inspection.Exists)
+                    {
+                        await EnsureUpgradedAsync(innerCt);
+                    }
+                    else if (inspection.HasMigrationHistory)
+                    {
+                        await EnsureUpgradedAsync(innerCt);
+                    }
+                    else if (inspection.IsBroken)
+                    {
+                        await RepairDatabaseAsync(innerCt);
+                    }
+                    else
+                    {
+                        await EnsureUpgradedAsync(innerCt);
+                    }
+
+                    var missingAfterUpgrade = await GetMissingRequiredTablesAsync(innerCt);
+                    if (missingAfterUpgrade.Count > 0)
+                    {
+                        var postUpgradeInspection = await InspectDatabaseAsync(innerCt);
+                        if (postUpgradeInspection.HasMigrationHistory)
+                        {
+                            await RepairDatabaseAsync(innerCt);
+                        }
+                    }
+
+                    var missingRequiredTables = await GetMissingRequiredTablesAsync(innerCt);
+                    if (missingRequiredTables.Count > 0)
+                    {
+                        throw new InvalidOperationException(
+                            $"Workspace DB is missing required tables: {string.Join(", ", missingRequiredTables)}"
+                        );
+                    }
+
+                    LogWorkspaceInitStep("SchemaVerify", "Running workspace schema verification query.");
+                    await VerifySchemaHealthAsync(innerCt);
+                    LogWorkspaceInitStep(
+                        "SchemaVerifyCompleted",
+                        "Workspace schema verification query completed."
+                    );
+                    _initialized = true;
+                    _initializedWorkspaceDbPath = currentWorkspaceDbPath;
+                    AppFileLogger.LogEvent(
+                        eventName: "WorkspaceInitCompleted",
+                        level: "INFO",
+                        message: "Workspace initializer completed.",
+                        fields: new Dictionary<string, object?>
+                        {
+                            ["workspaceDbPath"] = currentWorkspaceDbPath
+                        }
+                    );
                 }
-            }
-
-            var missingRequiredTables = await GetMissingRequiredTablesAsync(ct);
-            if (missingRequiredTables.Count > 0)
-            {
-                throw new InvalidOperationException(
-                    $"Workspace DB is missing required tables: {string.Join(", ", missingRequiredTables)}"
-                );
-            }
-
-            LogWorkspaceInitStep("SchemaVerify", "Running workspace schema verification query.");
-            await VerifySchemaHealthAsync(ct);
-            LogWorkspaceInitStep("SchemaVerifyCompleted", "Workspace schema verification query completed.");
-            _initialized = true;
-            _initializedWorkspaceDbPath = currentWorkspaceDbPath;
-            AppFileLogger.LogEvent(
-                eventName: "WorkspaceInitCompleted",
-                level: "INFO",
-                message: "Workspace initializer completed.",
-                fields: new Dictionary<string, object?>
+                finally
                 {
-                    ["workspaceDbPath"] = currentWorkspaceDbPath
+                    _semaphore.Release();
                 }
-            );
-        }
-        finally
-        {
-            _semaphore.Release();
-        }
+            },
+            ct
+        );
     }
 
     public async Task<bool> RunCaseOpenReadinessAsync(CancellationToken ct)
     {
         await InitializeAsync(ct);
 
-        await _semaphore.WaitAsync(ct);
-        try
-        {
-            var currentWorkspaceDbPath = _workspacePathProvider.WorkspaceDbPath;
-            var sameWorkspacePath = string.Equals(
-                _caseOpenReadinessWorkspaceDbPath,
-                currentWorkspaceDbPath,
-                StringComparison.OrdinalIgnoreCase
-            );
-            if (_caseOpenReadinessCompleted && sameWorkspacePath)
+        return await _performanceInstrumentation.TrackAsync(
+            new PerformanceOperationContext(
+                PerformanceOperationKinds.CaseOpen,
+                "WorkspaceCaseOpenReadiness",
+                Fields: new Dictionary<string, object?>
+                {
+                    ["workspaceDbPath"] = _workspacePathProvider.WorkspaceDbPath
+                }
+            ),
+            async innerCt =>
             {
-                return false;
-            }
-
-            AppFileLogger.LogEvent(
-                eventName: "WorkspaceCaseOpenReadinessStarted",
-                level: "INFO",
-                message: "Workspace case-open readiness started.",
-                fields: new Dictionary<string, object?>
+                await _semaphore.WaitAsync(innerCt);
+                try
                 {
-                    ["workspaceDbPath"] = currentWorkspaceDbPath
+                    var currentWorkspaceDbPath = _workspacePathProvider.WorkspaceDbPath;
+                    var sameWorkspacePath = string.Equals(
+                        _caseOpenReadinessWorkspaceDbPath,
+                        currentWorkspaceDbPath,
+                        StringComparison.OrdinalIgnoreCase
+                    );
+                    if (_caseOpenReadinessCompleted && sameWorkspacePath)
+                    {
+                        return false;
+                    }
+
+                    AppFileLogger.LogEvent(
+                        eventName: "WorkspaceCaseOpenReadinessStarted",
+                        level: "INFO",
+                        message: "Workspace case-open readiness started.",
+                        fields: new Dictionary<string, object?>
+                        {
+                            ["workspaceDbPath"] = currentWorkspaceDbPath
+                        }
+                    );
+
+                    await MarkRunningJobsAsAbandonedAsync(innerCt);
+
+                    _caseOpenReadinessCompleted = true;
+                    _caseOpenReadinessWorkspaceDbPath = currentWorkspaceDbPath;
+                    AppFileLogger.LogEvent(
+                        eventName: "WorkspaceCaseOpenReadinessCompleted",
+                        level: "INFO",
+                        message: "Workspace case-open readiness completed.",
+                        fields: new Dictionary<string, object?>
+                        {
+                            ["workspaceDbPath"] = currentWorkspaceDbPath
+                        }
+                    );
+                    return true;
                 }
-            );
-
-            await MarkRunningJobsAsAbandonedAsync(ct);
-
-            _caseOpenReadinessCompleted = true;
-            _caseOpenReadinessWorkspaceDbPath = currentWorkspaceDbPath;
-            AppFileLogger.LogEvent(
-                eventName: "WorkspaceCaseOpenReadinessCompleted",
-                level: "INFO",
-                message: "Workspace case-open readiness completed.",
-                fields: new Dictionary<string, object?>
+                finally
                 {
-                    ["workspaceDbPath"] = currentWorkspaceDbPath
+                    _semaphore.Release();
                 }
-            );
-            return true;
-        }
-        finally
-        {
-            _semaphore.Release();
-        }
+            },
+            ct
+        );
     }
 
     public async Task<bool> EnsureMessageSearchReadyAsync(CancellationToken ct)
@@ -243,86 +281,104 @@ public class WorkspaceDbInitializer : IWorkspaceDbInitializer, IWorkspaceDatabas
     {
         await InitializeAsync(ct);
 
-        await _semaphore.WaitAsync(ct);
-        try
-        {
-            var currentWorkspaceDbPath = _workspacePathProvider.WorkspaceDbPath;
-            AppFileLogger.LogEvent(
-                eventName: "WorkspaceMessageSearchReadinessCheckStarted",
-                level: "INFO",
-                message: "Workspace message search readiness check started.",
-                fields: new Dictionary<string, object?>
+        return await _performanceInstrumentation.TrackAsync(
+            new PerformanceOperationContext(
+                PerformanceOperationKinds.FeatureReadiness,
+                "ReadinessStatus",
+                FeatureName: "Search",
+                Fields: new Dictionary<string, object?>
                 {
-                    ["workspaceDbPath"] = currentWorkspaceDbPath
+                    ["workspaceDbPath"] = _workspacePathProvider.WorkspaceDbPath
                 }
-            );
-
-            var readyForCurrentWorkspace = IsSameWorkspacePath(_messageSearchReadyWorkspaceDbPath, currentWorkspaceDbPath)
-                && _messageSearchReady;
-            if (readyForCurrentWorkspace)
+            ),
+            async innerCt =>
             {
-                AppFileLogger.LogEvent(
-                    eventName: "WorkspaceMessageSearchReadinessCheckCompleted",
-                    level: "INFO",
-                    message: "Workspace message search readiness check completed.",
-                    fields: BuildMessageSearchReadinessFields(
-                        currentWorkspaceDbPath,
-                        MessageSearchReadinessStatus.CurrentCached
-                    )
-                );
-                return MessageSearchReadinessStatus.CurrentCached;
-            }
-
-            var maintenanceInProgress = IsSameWorkspacePath(
-                    _messageSearchMaintenanceWorkspaceDbPath,
-                    currentWorkspaceDbPath
-                )
-                && _messageSearchMaintenanceTask is { IsCompleted: false };
-            if (maintenanceInProgress)
-            {
-                AppFileLogger.LogEvent(
-                    eventName: "WorkspaceMessageSearchReadinessCheckCompleted",
-                    level: "INFO",
-                    message: "Workspace message search readiness check completed.",
-                    fields: BuildMessageSearchReadinessFields(
-                        currentWorkspaceDbPath,
-                        MessageSearchReadinessStatus.MaintenanceInProgressCached
-                    )
-                );
-                return MessageSearchReadinessStatus.MaintenanceInProgressCached;
-            }
-
-            await using var db = await _dbContextFactory.CreateDbContextAsync(ct);
-            await db.Database.OpenConnectionAsync(ct);
-            try
-            {
-                var inspection = await InspectMessageSearchFtsStateAsync(db, ct);
-                var status = MessageSearchReadinessStatus.FromInspection(inspection);
-
-                AppFileLogger.LogEvent(
-                    eventName: "WorkspaceMessageSearchReadinessCheckCompleted",
-                    level: "INFO",
-                    message: "Workspace message search readiness check completed.",
-                    fields: BuildMessageSearchReadinessFields(currentWorkspaceDbPath, status)
-                );
-
-                if (status.IsCurrent)
+                await _semaphore.WaitAsync(innerCt);
+                try
                 {
-                    _messageSearchReady = true;
-                    _messageSearchReadyWorkspaceDbPath = currentWorkspaceDbPath;
-                }
+                    var currentWorkspaceDbPath = _workspacePathProvider.WorkspaceDbPath;
+                    AppFileLogger.LogEvent(
+                        eventName: "WorkspaceMessageSearchReadinessCheckStarted",
+                        level: "INFO",
+                        message: "Workspace message search readiness check started.",
+                        fields: new Dictionary<string, object?>
+                        {
+                            ["workspaceDbPath"] = currentWorkspaceDbPath
+                        }
+                    );
 
-                return status;
-            }
-            finally
-            {
-                await db.Database.CloseConnectionAsync();
-            }
-        }
-        finally
-        {
-            _semaphore.Release();
-        }
+                    var readyForCurrentWorkspace = IsSameWorkspacePath(
+                            _messageSearchReadyWorkspaceDbPath,
+                            currentWorkspaceDbPath
+                        )
+                        && _messageSearchReady;
+                    if (readyForCurrentWorkspace)
+                    {
+                        AppFileLogger.LogEvent(
+                            eventName: "WorkspaceMessageSearchReadinessCheckCompleted",
+                            level: "INFO",
+                            message: "Workspace message search readiness check completed.",
+                            fields: BuildMessageSearchReadinessFields(
+                                currentWorkspaceDbPath,
+                                MessageSearchReadinessStatus.CurrentCached
+                            )
+                        );
+                        return MessageSearchReadinessStatus.CurrentCached;
+                    }
+
+                    var maintenanceInProgress = IsSameWorkspacePath(
+                            _messageSearchMaintenanceWorkspaceDbPath,
+                            currentWorkspaceDbPath
+                        )
+                        && _messageSearchMaintenanceTask is { IsCompleted: false };
+                    if (maintenanceInProgress)
+                    {
+                        AppFileLogger.LogEvent(
+                            eventName: "WorkspaceMessageSearchReadinessCheckCompleted",
+                            level: "INFO",
+                            message: "Workspace message search readiness check completed.",
+                            fields: BuildMessageSearchReadinessFields(
+                                currentWorkspaceDbPath,
+                                MessageSearchReadinessStatus.MaintenanceInProgressCached
+                            )
+                        );
+                        return MessageSearchReadinessStatus.MaintenanceInProgressCached;
+                    }
+
+                    await using var db = await _dbContextFactory.CreateDbContextAsync(innerCt);
+                    await db.Database.OpenConnectionAsync(innerCt);
+                    try
+                    {
+                        var inspection = await InspectMessageSearchFtsStateAsync(db, innerCt);
+                        var status = MessageSearchReadinessStatus.FromInspection(inspection);
+
+                        AppFileLogger.LogEvent(
+                            eventName: "WorkspaceMessageSearchReadinessCheckCompleted",
+                            level: "INFO",
+                            message: "Workspace message search readiness check completed.",
+                            fields: BuildMessageSearchReadinessFields(currentWorkspaceDbPath, status)
+                        );
+
+                        if (status.IsCurrent)
+                        {
+                            _messageSearchReady = true;
+                            _messageSearchReadyWorkspaceDbPath = currentWorkspaceDbPath;
+                        }
+
+                        return status;
+                    }
+                    finally
+                    {
+                        await db.Database.CloseConnectionAsync();
+                    }
+                }
+                finally
+                {
+                    _semaphore.Release();
+                }
+            },
+            ct
+        );
     }
 
     public async Task<Task<MessageSearchMaintenanceResult>> EnsureMessageSearchMaintenanceScheduledAsync(
@@ -376,64 +432,79 @@ public class WorkspaceDbInitializer : IWorkspaceDbInitializer, IWorkspaceDatabas
 
     private async Task<MessageSearchMaintenanceResult> RunMessageSearchMaintenanceAsync(string workspaceDbPath)
     {
-        await using var db = await _dbContextFactory.CreateDbContextAsync();
-        await db.Database.OpenConnectionAsync();
-        try
-        {
-            var inspection = await InspectMessageSearchFtsStateAsync(db, CancellationToken.None);
-            if (!inspection.RequiresMaintenance)
-            {
-                AppFileLogger.LogEvent(
-                    eventName: "WorkspaceMessageSearchMaintenanceSkipped",
-                    level: "INFO",
-                    message: "Workspace message search maintenance skipped because the index is already current.",
-                    fields: BuildMessageSearchReadinessFields(
-                        workspaceDbPath,
-                        MessageSearchReadinessStatus.FromInspection(inspection)
-                    )
-                );
-                await MarkMessageSearchReadyAsync(workspaceDbPath);
-                return new MessageSearchMaintenanceResult(
-                    WorkPerformed: false,
-                    Summary: "Message search readiness already current."
-                );
-            }
-
-            AppFileLogger.LogEvent(
-                eventName: "WorkspaceMessageSearchMaintenanceStarted",
-                level: "INFO",
-                message: "Workspace message search maintenance started.",
-                fields: BuildMessageSearchReadinessFields(
-                    workspaceDbPath,
-                    MessageSearchReadinessStatus.FromInspection(inspection)
-                )
-            );
-
-            var maintenanceResult = await EnsureMessageFtsObjectsAsync(
-                db,
-                workspaceDbPath,
-                inspection,
-                CancellationToken.None
-            );
-
-            await MarkMessageSearchReadyAsync(workspaceDbPath);
-            AppFileLogger.LogEvent(
-                eventName: "WorkspaceMessageSearchReadinessCompleted",
-                level: "INFO",
-                message: "Workspace message search readiness completed.",
-                fields: new Dictionary<string, object?>
+        return await _performanceInstrumentation.TrackAsync(
+            new PerformanceOperationContext(
+                PerformanceOperationKinds.ImportMaintenance,
+                "Maintenance",
+                FeatureName: "MessageSearch",
+                Fields: new Dictionary<string, object?>
                 {
-                    ["workspaceDbPath"] = workspaceDbPath,
-                    ["workPerformed"] = maintenanceResult.WorkPerformed,
-                    ["maintenanceAction"] = maintenanceResult.Action
+                    ["workspaceDbPath"] = workspaceDbPath
                 }
-            );
-            return maintenanceResult;
-        }
-        finally
-        {
-            await db.Database.CloseConnectionAsync();
-        }
+            ),
+            async _ =>
+            {
+                await using var db = await _dbContextFactory.CreateDbContextAsync();
+                await db.Database.OpenConnectionAsync();
+                try
+                {
+                    var inspection = await InspectMessageSearchFtsStateAsync(db, CancellationToken.None);
+                    if (!inspection.RequiresMaintenance)
+                    {
+                        AppFileLogger.LogEvent(
+                            eventName: "WorkspaceMessageSearchMaintenanceSkipped",
+                            level: "INFO",
+                            message: "Workspace message search maintenance skipped because the index is already current.",
+                            fields: BuildMessageSearchReadinessFields(
+                                workspaceDbPath,
+                                MessageSearchReadinessStatus.FromInspection(inspection)
+                            )
+                        );
+                        await MarkMessageSearchReadyAsync(workspaceDbPath);
+                        return new MessageSearchMaintenanceResult(
+                            WorkPerformed: false,
+                            Summary: "Message search readiness already current."
+                        );
+                    }
+
+                    AppFileLogger.LogEvent(
+                        eventName: "WorkspaceMessageSearchMaintenanceStarted",
+                        level: "INFO",
+                        message: "Workspace message search maintenance started.",
+                        fields: BuildMessageSearchReadinessFields(
+                            workspaceDbPath,
+                            MessageSearchReadinessStatus.FromInspection(inspection)
+                        )
+                    );
+
+                    var maintenanceResult = await EnsureMessageFtsObjectsAsync(
+                        db,
+                        workspaceDbPath,
+                        inspection,
+                        CancellationToken.None
+                    );
+
+                    await MarkMessageSearchReadyAsync(workspaceDbPath);
+                    AppFileLogger.LogEvent(
+                        eventName: "WorkspaceMessageSearchReadinessCompleted",
+                        level: "INFO",
+                        message: "Workspace message search readiness completed.",
+                        fields: new Dictionary<string, object?>
+                        {
+                            ["workspaceDbPath"] = workspaceDbPath,
+                            ["workPerformed"] = maintenanceResult.WorkPerformed,
+                            ["maintenanceAction"] = maintenanceResult.Action
+                        }
+                    );
+                    return maintenanceResult;
+                }
+                finally
+                {
+                    await db.Database.CloseConnectionAsync();
+                }
+            },
+            CancellationToken.None
+        );
     }
 
     private async Task ObserveMessageSearchMaintenanceCompletion(

@@ -1,6 +1,7 @@
 using CaseGraph.Core.Abstractions;
 using CaseGraph.Core.Diagnostics;
 using CaseGraph.Core.Models;
+using CaseGraph.Infrastructure.Diagnostics;
 using Microsoft.Data.Sqlite;
 using System.Globalization;
 
@@ -10,14 +11,18 @@ public sealed class MessageSearchService : IMessageSearchService
 {
     private readonly IWorkspaceDatabaseInitializer _databaseInitializer;
     private readonly IWorkspacePathProvider _workspacePathProvider;
+    private readonly IPerformanceInstrumentation _performanceInstrumentation;
 
     public MessageSearchService(
         IWorkspaceDatabaseInitializer databaseInitializer,
-        IWorkspacePathProvider workspacePathProvider
+        IWorkspacePathProvider workspacePathProvider,
+        IPerformanceInstrumentation? performanceInstrumentation = null
     )
     {
         _databaseInitializer = databaseInitializer;
         _workspacePathProvider = workspacePathProvider;
+        _performanceInstrumentation = performanceInstrumentation
+            ?? new PerformanceInstrumentation(new PerformanceBudgetOptions(), TimeProvider.System);
     }
 
     public Task<IReadOnlyList<MessageSearchHit>> SearchAsync(
@@ -71,43 +76,66 @@ public sealed class MessageSearchService : IMessageSearchService
             return Array.Empty<MessageSearchHit>();
         }
 
-        AppFileLogger.LogEvent(
-            eventName: "MessageSearchQueryStarted",
-            level: "INFO",
-            message: "Message search query started.",
-            fields: BuildSearchFields(
-                prepared,
-                correlationId,
-                executionMode: prepared.Query is null ? "structuredOnly" : "fts"
-            )
+        return await _performanceInstrumentation.TrackAsync(
+            new PerformanceOperationContext(
+                PerformanceOperationKinds.FeatureQuery,
+                "Query",
+                FeatureName: "Search",
+                CaseId: prepared.CaseId,
+                CorrelationId: correlationId,
+                Fields: new Dictionary<string, object?>
+                {
+                    ["hasKeyword"] = prepared.Query is not null,
+                    ["structuredOnly"] = prepared.Query is null
+                }
+            ),
+            async innerCt =>
+            {
+                AppFileLogger.LogEvent(
+                    eventName: "MessageSearchQueryStarted",
+                    level: "INFO",
+                    message: "Message search query started.",
+                    fields: BuildSearchFields(
+                        prepared,
+                        correlationId,
+                        executionMode: prepared.Query is null ? "structuredOnly" : "fts"
+                    )
+                );
+
+                if (prepared.Query is null)
+                {
+                    var hits = await SearchWithoutKeywordAsync(prepared, innerCt);
+                    LogSearchCompleted(prepared, correlationId, executionMode: "structuredOnly", hits.Count);
+                    return hits;
+                }
+
+                try
+                {
+                    var hits = await SearchWithFtsAsync(prepared, innerCt);
+                    LogSearchCompleted(prepared, correlationId, executionMode: "fts", hits.Count);
+                    return hits;
+                }
+                catch (SqliteException ex)
+                {
+                    AppFileLogger.LogEvent(
+                        eventName: "MessageSearchQueryFtsFailed",
+                        level: "WARN",
+                        message: "Message search FTS query failed. Falling back to LIKE search.",
+                        ex: ex,
+                        fields: BuildSearchFields(prepared, correlationId, executionMode: "fts")
+                    );
+                    var fallbackHits = await SearchWithLikeFallbackAsync(prepared, innerCt);
+                    LogSearchCompleted(
+                        prepared,
+                        correlationId,
+                        executionMode: "likeFallback",
+                        fallbackHits.Count
+                    );
+                    return fallbackHits;
+                }
+            },
+            ct
         );
-
-        if (prepared.Query is null)
-        {
-            var hits = await SearchWithoutKeywordAsync(prepared, ct);
-            LogSearchCompleted(prepared, correlationId, executionMode: "structuredOnly", hits.Count);
-            return hits;
-        }
-
-        try
-        {
-            var hits = await SearchWithFtsAsync(prepared, ct);
-            LogSearchCompleted(prepared, correlationId, executionMode: "fts", hits.Count);
-            return hits;
-        }
-        catch (SqliteException ex)
-        {
-            AppFileLogger.LogEvent(
-                eventName: "MessageSearchQueryFtsFailed",
-                level: "WARN",
-                message: "Message search FTS query failed. Falling back to LIKE search.",
-                ex: ex,
-                fields: BuildSearchFields(prepared, correlationId, executionMode: "fts")
-            );
-            var fallbackHits = await SearchWithLikeFallbackAsync(prepared, ct);
-            LogSearchCompleted(prepared, correlationId, executionMode: "likeFallback", fallbackHits.Count);
-            return fallbackHits;
-        }
     }
 
     public async Task<TargetPresenceSummary?> GetTargetPresenceSummaryAsync(

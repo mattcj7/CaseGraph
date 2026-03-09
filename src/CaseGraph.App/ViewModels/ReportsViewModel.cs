@@ -2,6 +2,7 @@ using CaseGraph.App.Services;
 using CaseGraph.Core.Abstractions;
 using CaseGraph.Core.Diagnostics;
 using CaseGraph.Core.Models;
+using CaseGraph.Infrastructure.Diagnostics;
 using CaseGraph.Infrastructure.Reports;
 using CaseGraph.Infrastructure.Services;
 using CommunityToolkit.Mvvm.ComponentModel;
@@ -23,6 +24,7 @@ public partial class ReportsViewModel : ObservableObject, IDisposable
     private readonly IUserInteractionService _userInteractionService;
     private readonly IJobQueueService _jobQueueService;
     private readonly IJobQueryService _jobQueryService;
+    private readonly IPerformanceInstrumentation _performanceInstrumentation;
     private readonly IDisposable _jobUpdateSubscription;
 
     private readonly List<ReportSubjectOption> _targetSubjects = [];
@@ -40,7 +42,8 @@ public partial class ReportsViewModel : ObservableObject, IDisposable
         ICaseQueryService caseQueryService,
         IUserInteractionService userInteractionService,
         IJobQueueService jobQueueService,
-        IJobQueryService jobQueryService
+        IJobQueryService jobQueryService,
+        IPerformanceInstrumentation? performanceInstrumentation = null
     )
     {
         _isInitializing = true;
@@ -50,6 +53,8 @@ public partial class ReportsViewModel : ObservableObject, IDisposable
         _userInteractionService = userInteractionService;
         _jobQueueService = jobQueueService;
         _jobQueryService = jobQueryService;
+        _performanceInstrumentation = performanceInstrumentation
+            ?? new PerformanceInstrumentation(new PerformanceBudgetOptions(), TimeProvider.System);
 
         AvailableSubjectKinds =
         [
@@ -212,8 +217,20 @@ public partial class ReportsViewModel : ObservableObject, IDisposable
 
         try
         {
-            _isActive = true;
-            await LoadCaseContextAsync(ct);
+            await _performanceInstrumentation.TrackAsync(
+                new PerformanceOperationContext(
+                    PerformanceOperationKinds.FeatureOpen,
+                    "Activate",
+                    FeatureName: ReadinessFeature.Reports.ToString(),
+                    CaseId: _currentCaseId
+                ),
+                async innerCt =>
+                {
+                    _isActive = true;
+                    await LoadCaseContextAsync(innerCt);
+                },
+                ct
+            );
 
             LogLifecycleEvent("ReportsActivationCompleted", "Reports page activated.", _currentCaseId);
         }

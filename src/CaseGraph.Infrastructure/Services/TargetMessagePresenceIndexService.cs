@@ -1,6 +1,7 @@
 using CaseGraph.Core.Abstractions;
 using CaseGraph.Core.Diagnostics;
 using CaseGraph.Core.Models;
+using CaseGraph.Infrastructure.Diagnostics;
 using CaseGraph.Infrastructure.Persistence;
 using CaseGraph.Infrastructure.Persistence.Entities;
 using Microsoft.EntityFrameworkCore;
@@ -15,18 +16,22 @@ public sealed class TargetMessagePresenceIndexService : ITargetMessagePresenceIn
     private readonly IWorkspaceDatabaseInitializer _databaseInitializer;
     private readonly IWorkspaceWriteGate _workspaceWriteGate;
     private readonly IClock _clock;
+    private readonly IPerformanceInstrumentation _performanceInstrumentation;
 
     public TargetMessagePresenceIndexService(
         IDbContextFactory<WorkspaceDbContext> dbContextFactory,
         IWorkspaceDatabaseInitializer databaseInitializer,
         IWorkspaceWriteGate workspaceWriteGate,
-        IClock clock
+        IClock clock,
+        IPerformanceInstrumentation? performanceInstrumentation = null
     )
     {
         _dbContextFactory = dbContextFactory;
         _databaseInitializer = databaseInitializer;
         _workspaceWriteGate = workspaceWriteGate;
         _clock = clock;
+        _performanceInstrumentation = performanceInstrumentation
+            ?? new PerformanceInstrumentation(new PerformanceBudgetOptions(), TimeProvider.System);
     }
 
     public Task RebuildCaseAsync(Guid caseId, CancellationToken ct)
@@ -95,98 +100,128 @@ public sealed class TargetMessagePresenceIndexService : ITargetMessagePresenceIn
         CancellationToken ct
     )
     {
-        await _workspaceWriteGate.ExecuteWriteAsync(
-            operationName,
-            async writeCt =>
+        await _performanceInstrumentation.TrackAsync(
+            new PerformanceOperationContext(
+                PerformanceOperationKinds.ImportMaintenance,
+                "Refresh",
+                FeatureName: "TargetPresenceIndex",
+                CaseId: caseId,
+                EvidenceItemId: evidenceItemId,
+                Fields: new Dictionary<string, object?>
+                {
+                    ["identifierId"] = identifierId?.ToString("D"),
+                    ["writeOperationName"] = operationName
+                }
+            ),
+            async innerCt =>
             {
-                await _databaseInitializer.EnsureInitializedAsync(writeCt);
-                await using var db = await _dbContextFactory.CreateDbContextAsync(writeCt);
-                var now = _clock.UtcNow.ToUniversalTime();
+                await _workspaceWriteGate.ExecuteWriteAsync(
+                    operationName,
+                    async writeCt =>
+                    {
+                        await _databaseInitializer.EnsureInitializedAsync(writeCt);
+                        await using var db = await _dbContextFactory.CreateDbContextAsync(writeCt);
+                        var now = _clock.UtcNow.ToUniversalTime();
 
-                IQueryable<TargetMessagePresenceRecord> deleteScope = db.TargetMessagePresences
-                    .Where(row => row.CaseId == caseId);
-                if (evidenceItemId.HasValue)
-                {
-                    deleteScope = deleteScope.Where(row => row.EvidenceItemId == evidenceItemId.Value);
-                }
+                        IQueryable<TargetMessagePresenceRecord> deleteScope = db.TargetMessagePresences
+                            .Where(row => row.CaseId == caseId);
+                        if (evidenceItemId.HasValue)
+                        {
+                            deleteScope = deleteScope.Where(
+                                row => row.EvidenceItemId == evidenceItemId.Value
+                            );
+                        }
 
-                if (identifierId.HasValue)
-                {
-                    deleteScope = deleteScope.Where(row => row.MatchedIdentifierId == identifierId.Value);
-                }
+                        if (identifierId.HasValue)
+                        {
+                            deleteScope = deleteScope.Where(
+                                row => row.MatchedIdentifierId == identifierId.Value
+                            );
+                        }
 
-                var existingRows = await deleteScope.ToListAsync(writeCt);
-                if (existingRows.Count > 0)
-                {
-                    db.TargetMessagePresences.RemoveRange(existingRows);
-                }
+                        var existingRows = await deleteScope.ToListAsync(writeCt);
+                        if (existingRows.Count > 0)
+                        {
+                            db.TargetMessagePresences.RemoveRange(existingRows);
+                        }
 
-                var linksQuery = db.TargetIdentifierLinks
-                    .AsNoTracking()
-                    .Include(link => link.Identifier)
-                    .Where(link => link.CaseId == caseId);
-                if (identifierId.HasValue)
-                {
-                    linksQuery = linksQuery.Where(link => link.IdentifierId == identifierId.Value);
-                }
+                        var linksQuery = db.TargetIdentifierLinks
+                            .AsNoTracking()
+                            .Include(link => link.Identifier)
+                            .Where(link => link.CaseId == caseId);
+                        if (identifierId.HasValue)
+                        {
+                            linksQuery = linksQuery.Where(
+                                link => link.IdentifierId == identifierId.Value
+                            );
+                        }
 
-                var linkedIdentifiers = await linksQuery
-                    .Where(link => link.Identifier != null)
-                    .Select(link => new LinkedIdentifier(
-                        link.TargetId,
-                        link.IdentifierId,
-                        ParseIdentifierType(link.Identifier!.Type),
-                        link.Identifier!.ValueNormalized
-                    ))
-                    .ToListAsync(writeCt);
+                        var linkedIdentifiers = await linksQuery
+                            .Where(link => link.Identifier != null)
+                            .Select(
+                                link => new LinkedIdentifier(
+                                    link.TargetId,
+                                    link.IdentifierId,
+                                    ParseIdentifierType(link.Identifier!.Type),
+                                    link.Identifier!.ValueNormalized
+                                )
+                            )
+                            .ToListAsync(writeCt);
 
-                if (linkedIdentifiers.Count == 0)
-                {
-                    await db.SaveChangesAsync(writeCt);
-                    return;
-                }
+                        if (linkedIdentifiers.Count == 0)
+                        {
+                            await db.SaveChangesAsync(writeCt);
+                            return;
+                        }
 
-                var messagesQuery = db.MessageEvents
-                    .AsNoTracking()
-                    .Where(message => message.CaseId == caseId);
-                if (evidenceItemId.HasValue)
-                {
-                    messagesQuery = messagesQuery.Where(message => message.EvidenceItemId == evidenceItemId.Value);
-                }
+                        var messagesQuery = db.MessageEvents
+                            .AsNoTracking()
+                            .Where(message => message.CaseId == caseId);
+                        if (evidenceItemId.HasValue)
+                        {
+                            messagesQuery = messagesQuery.Where(
+                                message => message.EvidenceItemId == evidenceItemId.Value
+                            );
+                        }
 
-                var messages = await messagesQuery
-                    .Select(message => new MessagePresenceSource(
-                        message.MessageEventId,
-                        message.EvidenceItemId,
-                        message.TimestampUtc,
-                        message.SourceLocator,
-                        message.Sender,
-                        message.Recipients
-                    ))
-                    .ToListAsync(writeCt);
+                        var messages = await messagesQuery
+                            .Select(
+                                message => new MessagePresenceSource(
+                                    message.MessageEventId,
+                                    message.EvidenceItemId,
+                                    message.TimestampUtc,
+                                    message.SourceLocator,
+                                    message.Sender,
+                                    message.Recipients
+                                )
+                            )
+                            .ToListAsync(writeCt);
 
-                if (messages.Count == 0)
-                {
-                    await db.SaveChangesAsync(writeCt);
-                    return;
-                }
+                        if (messages.Count == 0)
+                        {
+                            await db.SaveChangesAsync(writeCt);
+                            return;
+                        }
 
-                var presenceRows = BuildPresenceRows(caseId, linkedIdentifiers, messages, now);
-                if (presenceRows.Count > 0)
-                {
-                    db.TargetMessagePresences.AddRange(presenceRows);
-                }
+                        var presenceRows = BuildPresenceRows(caseId, linkedIdentifiers, messages, now);
+                        if (presenceRows.Count > 0)
+                        {
+                            db.TargetMessagePresences.AddRange(presenceRows);
+                        }
 
-                await db.SaveChangesAsync(writeCt);
+                        await db.SaveChangesAsync(writeCt);
+                    },
+                    innerCt,
+                    correlationId: AppFileLogger.GetScopeValue("correlationId"),
+                    fields: new Dictionary<string, object?>
+                    {
+                        ["caseId"] = caseId.ToString("D"),
+                        ["evidenceItemId"] = evidenceItemId?.ToString("D"),
+                        ["identifierId"] = identifierId?.ToString("D")
+                    }
+                );
             },
-            ct,
-            correlationId: AppFileLogger.GetScopeValue("correlationId"),
-            fields: new Dictionary<string, object?>
-            {
-                ["caseId"] = caseId.ToString("D"),
-                ["evidenceItemId"] = evidenceItemId?.ToString("D"),
-                ["identifierId"] = identifierId?.ToString("D")
-            }
+            ct
         );
     }
 

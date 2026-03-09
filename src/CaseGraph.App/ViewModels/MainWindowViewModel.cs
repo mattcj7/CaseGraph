@@ -4,6 +4,7 @@ using CaseGraph.App.Views.Dialogs;
 using CaseGraph.Core.Abstractions;
 using CaseGraph.Core.Diagnostics;
 using CaseGraph.Core.Models;
+using CaseGraph.Infrastructure.Diagnostics;
 using CaseGraph.Infrastructure.IncidentWindow;
 using CaseGraph.Infrastructure.Locations;
 using CaseGraph.Infrastructure.Timeline;
@@ -43,6 +44,7 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
     private readonly IWorkspacePathProvider _workspacePathProvider;
     private readonly IUserInteractionService _userInteractionService;
     private readonly IDiagnosticsService _diagnosticsService;
+    private readonly IPerformanceInstrumentation _performanceInstrumentation;
     private readonly SafeAsyncActionRunner _safeAsyncActionRunner;
     private readonly ISessionJournal _sessionJournal;
     private readonly IAppSessionState _appSessionState;
@@ -476,7 +478,8 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
         IDiagnosticsService diagnosticsService,
         SafeAsyncActionRunner safeAsyncActionRunner,
         ISessionJournal sessionJournal,
-        IAppSessionState appSessionState
+        IAppSessionState appSessionState,
+        IPerformanceInstrumentation? performanceInstrumentation = null
     )
     {
         _navigationService = navigationService;
@@ -500,6 +503,8 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
         _workspacePathProvider = workspacePathProvider;
         _userInteractionService = userInteractionService;
         _diagnosticsService = diagnosticsService;
+        _performanceInstrumentation = performanceInstrumentation
+            ?? new PerformanceInstrumentation(new PerformanceBudgetOptions(), TimeProvider.System);
         _safeAsyncActionRunner = safeAsyncActionRunner;
         _sessionJournal = sessionJournal;
         _appSessionState = appSessionState;
@@ -2985,26 +2990,38 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
 
     private async Task OpenCaseInternalAsync(Guid caseId, CancellationToken ct)
     {
-        var openedCase = await _caseWorkspaceService.OpenCaseAsync(caseId, ct);
-        await _caseOpenReadinessService.EnsureReadyAsync(
-            openedCase.CaseId,
-            CreateOperationReadinessProgress(),
+        await _performanceInstrumentation.TrackAsync(
+            new PerformanceOperationContext(
+                PerformanceOperationKinds.CaseOpen,
+                "OpenCase",
+                CaseId: caseId
+            ),
+            async innerCt =>
+            {
+                var openedCase = await _caseWorkspaceService.OpenCaseAsync(caseId, innerCt);
+                await _caseOpenReadinessService.EnsureReadyAsync(
+                    openedCase.CaseId,
+                    CreateOperationReadinessProgress(),
+                    innerCt
+                );
+                var evidence = await _caseQueryService.GetEvidenceForCaseAsync(caseId, innerCt);
+
+                CurrentCaseInfo = openedCase;
+                SetEvidenceItems(evidence);
+                SelectedEvidenceItem = EvidenceItems.FirstOrDefault();
+                IsEvidenceDrawerOpen = SelectedEvidenceItem is not null;
+
+                await RefreshCasesAsync(innerCt);
+                await RefreshRecentActivityAsync(innerCt);
+                await RefreshRecentJobsAsync(innerCt);
+                MessageSearchResults.Clear();
+                SelectedMessageSearchResult = null;
+                MessageSearchStatusText = "Enter a query or apply at least one filter.";
+                SelectedCase = AvailableCases.FirstOrDefault(c => c.CaseId == openedCase.CaseId)
+                    ?? openedCase;
+            },
             ct
         );
-        var evidence = await _caseQueryService.GetEvidenceForCaseAsync(caseId, ct);
-
-        CurrentCaseInfo = openedCase;
-        SetEvidenceItems(evidence);
-        SelectedEvidenceItem = EvidenceItems.FirstOrDefault();
-        IsEvidenceDrawerOpen = SelectedEvidenceItem is not null;
-
-        await RefreshCasesAsync(ct);
-        await RefreshRecentActivityAsync(ct);
-        await RefreshRecentJobsAsync(ct);
-        MessageSearchResults.Clear();
-        SelectedMessageSearchResult = null;
-        MessageSearchStatusText = "Enter a query or apply at least one filter.";
-        SelectedCase = AvailableCases.FirstOrDefault(c => c.CaseId == openedCase.CaseId) ?? openedCase;
     }
 
     private async Task RefreshCurrentCaseAsync(CancellationToken ct)

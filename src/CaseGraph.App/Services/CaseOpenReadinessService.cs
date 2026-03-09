@@ -1,14 +1,21 @@
 using CaseGraph.Core.Diagnostics;
+using CaseGraph.Infrastructure.Diagnostics;
 
 namespace CaseGraph.App.Services;
 
 public sealed class CaseOpenReadinessService : ICaseOpenReadinessService
 {
     private readonly IWorkspaceMigrationService _workspaceMigrationService;
+    private readonly IPerformanceInstrumentation _performanceInstrumentation;
 
-    public CaseOpenReadinessService(IWorkspaceMigrationService workspaceMigrationService)
+    public CaseOpenReadinessService(
+        IWorkspaceMigrationService workspaceMigrationService,
+        IPerformanceInstrumentation? performanceInstrumentation = null
+    )
     {
         _workspaceMigrationService = workspaceMigrationService;
+        _performanceInstrumentation = performanceInstrumentation
+            ?? new PerformanceInstrumentation(new PerformanceBudgetOptions(), TimeProvider.System);
     }
 
     public async Task<ReadinessResult> EnsureReadyAsync(
@@ -18,70 +25,84 @@ public sealed class CaseOpenReadinessService : ICaseOpenReadinessService
     )
     {
         var correlationId = AppFileLogger.NewCorrelationId();
-        Report(
-            progress,
-            new ReadinessProgress(
-                ReadinessPhase.CaseOpen,
-                "Preparing case...",
-                "Checking case readiness tasks.",
-                Progress: 0.2,
-                CaseId: caseId
-            )
-        );
-        LogEvent(
-            "CaseOpenReadinessStarted",
-            "Case-open readiness started.",
-            correlationId,
-            caseId
-        );
+        return await _performanceInstrumentation.TrackAsync(
+            new PerformanceOperationContext(
+                PerformanceOperationKinds.CaseOpen,
+                "CaseOpenReadiness",
+                CaseId: caseId,
+                CorrelationId: correlationId
+            ),
+            async innerCt =>
+            {
+                Report(
+                    progress,
+                    new ReadinessProgress(
+                        ReadinessPhase.CaseOpen,
+                        "Preparing case...",
+                        "Checking case readiness tasks.",
+                        Progress: 0.2,
+                        CaseId: caseId
+                    )
+                );
+                LogEvent(
+                    "CaseOpenReadinessStarted",
+                    "Case-open readiness started.",
+                    correlationId,
+                    caseId
+                );
 
-        try
-        {
-            Report(
-                progress,
-                new ReadinessProgress(
-                    ReadinessPhase.CaseOpen,
-                    "Preparing case...",
-                    "Reconciling interrupted case jobs.",
-                    Progress: 0.6,
-                    CaseId: caseId
-                )
-            );
-            var workPerformed = await _workspaceMigrationService.RunCaseOpenReadinessAsync(ct);
-            var summary = workPerformed
-                ? "Case readiness completed."
-                : "Case readiness already current.";
+                try
+                {
+                    Report(
+                        progress,
+                        new ReadinessProgress(
+                            ReadinessPhase.CaseOpen,
+                            "Preparing case...",
+                            "Reconciling interrupted case jobs.",
+                            Progress: 0.6,
+                            CaseId: caseId
+                        )
+                    );
+                    var workPerformed = await _workspaceMigrationService.RunCaseOpenReadinessAsync(
+                        innerCt
+                    );
+                    var summary = workPerformed
+                        ? "Case readiness completed."
+                        : "Case readiness already current.";
 
-            Report(
-                progress,
-                new ReadinessProgress(
-                    ReadinessPhase.CaseOpen,
-                    "Preparing case...",
-                    summary,
-                    Progress: 0.9,
-                    CaseId: caseId
-                )
-            );
-            LogEvent(
-                "CaseOpenReadinessCompleted",
-                summary,
-                correlationId,
-                caseId,
-                workPerformed: workPerformed
-            );
-            return new ReadinessResult(workPerformed, summary);
-        }
-        catch (Exception ex)
-        {
-            AppFileLogger.LogEvent(
-                eventName: "CaseOpenReadinessFailed",
-                level: "ERROR",
-                message: "Case-open readiness failed.",
-                ex: ex,
-                fields: BuildFields(correlationId, caseId, feature: null, workPerformed: null)
-            );
-            throw;
-        }
+                    Report(
+                        progress,
+                        new ReadinessProgress(
+                            ReadinessPhase.CaseOpen,
+                            "Preparing case...",
+                            summary,
+                            Progress: 0.9,
+                            CaseId: caseId
+                        )
+                    );
+                    LogEvent(
+                        "CaseOpenReadinessCompleted",
+                        summary,
+                        correlationId,
+                        caseId,
+                        workPerformed: workPerformed
+                    );
+                    return new ReadinessResult(workPerformed, summary);
+                }
+                catch (Exception ex)
+                {
+                    AppFileLogger.LogEvent(
+                        eventName: "CaseOpenReadinessFailed",
+                        level: "ERROR",
+                        message: "Case-open readiness failed.",
+                        ex: ex,
+                        fields: BuildFields(correlationId, caseId, feature: null, workPerformed: null)
+                    );
+                    throw;
+                }
+            },
+            ct
+        );
     }
 
     private static void Report(IProgress<ReadinessProgress>? progress, ReadinessProgress update)

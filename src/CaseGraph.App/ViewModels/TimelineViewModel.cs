@@ -1,6 +1,7 @@
 using CaseGraph.App.Services;
 using CaseGraph.Core.Abstractions;
 using CaseGraph.Core.Diagnostics;
+using CaseGraph.Infrastructure.Diagnostics;
 using CaseGraph.Infrastructure.Timeline;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
@@ -14,6 +15,7 @@ public partial class TimelineViewModel : ObservableObject, IDisposable
     private readonly TimelineQueryService _timelineQueryService;
     private readonly ITargetRegistryService _targetRegistryService;
     private readonly IUserInteractionService _userInteractionService;
+    private readonly IPerformanceInstrumentation _performanceInstrumentation;
 
     private CancellationTokenSource? _loadCts;
     private bool _isActive;
@@ -24,7 +26,8 @@ public partial class TimelineViewModel : ObservableObject, IDisposable
         IFeatureReadinessService featureReadinessService,
         TimelineQueryService timelineQueryService,
         ITargetRegistryService targetRegistryService,
-        IUserInteractionService userInteractionService
+        IUserInteractionService userInteractionService,
+        IPerformanceInstrumentation? performanceInstrumentation = null
     )
     {
         _isInitializing = true;
@@ -32,6 +35,8 @@ public partial class TimelineViewModel : ObservableObject, IDisposable
         _timelineQueryService = timelineQueryService;
         _targetRegistryService = targetRegistryService;
         _userInteractionService = userInteractionService;
+        _performanceInstrumentation = performanceInstrumentation
+            ?? new PerformanceInstrumentation(new PerformanceBudgetOptions(), TimeProvider.System);
 
         SearchCommand = new AsyncRelayCommand(SearchAsync);
         ClearFiltersCommand = new AsyncRelayCommand(ClearFiltersAsync);
@@ -182,19 +187,30 @@ public partial class TimelineViewModel : ObservableObject, IDisposable
 
         try
         {
-            _isActive = true;
+            await _performanceInstrumentation.TrackAsync(
+                new PerformanceOperationContext(
+                    PerformanceOperationKinds.FeatureOpen,
+                    "Activate",
+                    FeatureName: ReadinessFeature.Timeline.ToString(),
+                    CaseId: CurrentCaseId
+                ),
+                async innerCt =>
+                {
+                    _isActive = true;
 
-            if (!CurrentCaseId.HasValue)
-            {
-                ClearRows();
-                TotalCount = 0;
-                CurrentPage = 1;
-                StatusText = "Open a case to load the timeline.";
-                LogLifecycleEvent("TimelineActivationCompleted", "Timeline activation completed without an open case.");
-                return;
-            }
+                    if (!CurrentCaseId.HasValue)
+                    {
+                        ClearRows();
+                        TotalCount = 0;
+                        CurrentPage = 1;
+                        StatusText = "Open a case to load the timeline.";
+                        return;
+                    }
 
-            await PrepareAndLoadAsync(Math.Max(CurrentPage - 1, 0), ct);
+                    await PrepareAndLoadAsync(Math.Max(CurrentPage - 1, 0), innerCt);
+                },
+                ct
+            );
             LogLifecycleEvent("TimelineActivationCompleted", "Timeline page activated.", CurrentCaseId);
         }
         catch (Exception ex)

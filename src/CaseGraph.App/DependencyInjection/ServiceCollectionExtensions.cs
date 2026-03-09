@@ -2,6 +2,7 @@ using CaseGraph.App.Services;
 using CaseGraph.App.ViewModels;
 using CaseGraph.Core.Abstractions;
 using CaseGraph.Core.Diagnostics;
+using CaseGraph.Infrastructure.Diagnostics;
 using CaseGraph.Infrastructure.IncidentWindow;
 using CaseGraph.Infrastructure.Locations;
 using CaseGraph.Infrastructure.Reports;
@@ -21,6 +22,9 @@ public static class ServiceCollectionExtensions
     public static IServiceCollection AddCaseGraphAppServices(this IServiceCollection services)
     {
         services.TryAddSingleton<IStartupStageReporter, StartupStageReporter>();
+        services.TryAddSingleton(TimeProvider.System);
+        services.TryAddSingleton<PerformanceBudgetOptions>();
+        services.TryAddSingleton<IPerformanceInstrumentation, PerformanceInstrumentation>();
         services.AddSingleton<IWorkspacePathProvider, DefaultWorkspacePathProvider>();
         services.AddDbContextFactory<WorkspaceDbContext>((provider, options) =>
         {

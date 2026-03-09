@@ -1,5 +1,6 @@
 using CaseGraph.Core.Abstractions;
 using CaseGraph.Core.Models;
+using CaseGraph.Infrastructure.Diagnostics;
 using Microsoft.Data.Sqlite;
 using System.Globalization;
 using System.Text.Json;
@@ -11,16 +12,20 @@ public sealed class TimelineQueryService
     private readonly IWorkspaceDatabaseInitializer _databaseInitializer;
     private readonly IWorkspacePathProvider _workspacePathProvider;
     private readonly IAuditLogService _auditLogService;
+    private readonly IPerformanceInstrumentation _performanceInstrumentation;
 
     public TimelineQueryService(
         IWorkspaceDatabaseInitializer databaseInitializer,
         IWorkspacePathProvider workspacePathProvider,
-        IAuditLogService auditLogService
+        IAuditLogService auditLogService,
+        IPerformanceInstrumentation? performanceInstrumentation = null
     )
     {
         _databaseInitializer = databaseInitializer;
         _workspacePathProvider = workspacePathProvider;
         _auditLogService = auditLogService;
+        _performanceInstrumentation = performanceInstrumentation
+            ?? new PerformanceInstrumentation(new PerformanceBudgetOptions(), TimeProvider.System);
     }
 
     public async Task<TimelineQueryPage> SearchAsync(
@@ -36,25 +41,44 @@ public sealed class TimelineQueryService
             return TimelineQueryPage.Empty;
         }
 
-        TimelineQueryPage page;
-        if (prepared.QueryText is null)
-        {
-            page = await SearchWithoutKeywordAsync(prepared, ct);
-        }
-        else
-        {
-            try
+        return await _performanceInstrumentation.TrackAsync(
+            new PerformanceOperationContext(
+                PerformanceOperationKinds.FeatureQuery,
+                prepared.QueryText is null ? "Open" : "Query",
+                FeatureName: "Timeline",
+                CaseId: prepared.CaseId,
+                CorrelationId: prepared.CorrelationId,
+                Fields: new Dictionary<string, object?>
+                {
+                    ["hasKeyword"] = prepared.QueryText is not null,
+                    ["skip"] = prepared.Skip,
+                    ["take"] = prepared.Take
+                }
+            ),
+            async innerCt =>
             {
-                page = await SearchWithFtsAsync(prepared, ct);
-            }
-            catch (SqliteException)
-            {
-                page = await SearchWithLikeAsync(prepared, ct);
-            }
-        }
+                TimelineQueryPage page;
+                if (prepared.QueryText is null)
+                {
+                    page = await SearchWithoutKeywordAsync(prepared, innerCt);
+                }
+                else
+                {
+                    try
+                    {
+                        page = await SearchWithFtsAsync(prepared, innerCt);
+                    }
+                    catch (SqliteException)
+                    {
+                        page = await SearchWithLikeAsync(prepared, innerCt);
+                    }
+                }
 
-        await WriteAuditAsync(prepared, page.TotalCount, ct);
-        return page;
+                await WriteAuditAsync(prepared, page.TotalCount, innerCt);
+                return page;
+            },
+            ct
+        );
     }
 
     private async Task<TimelineQueryPage> SearchWithFtsAsync(

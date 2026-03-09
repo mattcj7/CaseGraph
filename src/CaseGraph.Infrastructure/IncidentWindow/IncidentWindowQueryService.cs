@@ -1,5 +1,6 @@
 using CaseGraph.Core.Abstractions;
 using CaseGraph.Core.Models;
+using CaseGraph.Infrastructure.Diagnostics;
 using CaseGraph.Infrastructure.Locations;
 using CaseGraph.Infrastructure.Timeline;
 using Microsoft.Data.Sqlite;
@@ -20,18 +21,22 @@ public sealed class IncidentWindowQueryService
     private readonly IWorkspacePathProvider _workspacePathProvider;
     private readonly IAuditLogService _auditLogService;
     private readonly IClock _clock;
+    private readonly IPerformanceInstrumentation _performanceInstrumentation;
 
     public IncidentWindowQueryService(
         IWorkspaceDatabaseInitializer databaseInitializer,
         IWorkspacePathProvider workspacePathProvider,
         IAuditLogService auditLogService,
-        IClock clock
+        IClock clock,
+        IPerformanceInstrumentation? performanceInstrumentation = null
     )
     {
         _databaseInitializer = databaseInitializer;
         _workspacePathProvider = workspacePathProvider;
         _auditLogService = auditLogService;
         _clock = clock;
+        _performanceInstrumentation = performanceInstrumentation
+            ?? new PerformanceInstrumentation(new PerformanceBudgetOptions(), TimeProvider.System);
     }
 
     public async Task<IncidentWindowQueryResult> ExecuteAsync(
@@ -47,20 +52,38 @@ public sealed class IncidentWindowQueryService
             return IncidentWindowQueryResult.Empty;
         }
 
-        await using var connection = await OpenConnectionAsync(ct);
-        var comms = await QueryCommsAsync(connection, prepared, ct);
-        var geo = await QueryGeoAsync(connection, prepared, ct);
-        var coLocation = prepared.ShouldQueryCoLocation
-            ? await QueryCoLocationAsync(connection, prepared, ct)
-            : IncidentWindowQueryPage<IncidentWindowCoLocationCandidateDto>.Empty;
+        return await _performanceInstrumentation.TrackAsync(
+            new PerformanceOperationContext(
+                PerformanceOperationKinds.FeatureQuery,
+                prepared.WriteAuditEvent ? "Run" : "PageLoad",
+                FeatureName: "IncidentWindow",
+                CaseId: prepared.CaseId,
+                CorrelationId: prepared.CorrelationId,
+                Fields: new Dictionary<string, object?>
+                {
+                    ["radiusEnabled"] = prepared.RadiusEnabled,
+                    ["includeCoLocationCandidates"] = prepared.IncludeCoLocationCandidates
+                }
+            ),
+            async innerCt =>
+            {
+                await using var connection = await OpenConnectionAsync(innerCt);
+                var comms = await QueryCommsAsync(connection, prepared, innerCt);
+                var geo = await QueryGeoAsync(connection, prepared, innerCt);
+                var coLocation = prepared.ShouldQueryCoLocation
+                    ? await QueryCoLocationAsync(connection, prepared, innerCt)
+                    : IncidentWindowQueryPage<IncidentWindowCoLocationCandidateDto>.Empty;
 
-        var result = new IncidentWindowQueryResult(comms, geo, coLocation);
-        if (prepared.WriteAuditEvent)
-        {
-            await WriteAuditAsync(prepared, result, ct);
-        }
+                var result = new IncidentWindowQueryResult(comms, geo, coLocation);
+                if (prepared.WriteAuditEvent)
+                {
+                    await WriteAuditAsync(prepared, result, innerCt);
+                }
 
-        return result;
+                return result;
+            },
+            ct
+        );
     }
 
     private async Task<SqliteConnection> OpenConnectionAsync(CancellationToken ct)

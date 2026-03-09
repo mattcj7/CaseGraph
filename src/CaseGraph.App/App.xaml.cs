@@ -4,6 +4,7 @@ using CaseGraph.App.ViewModels;
 using CaseGraph.App.Views;
 using CaseGraph.Core.Abstractions;
 using CaseGraph.Core.Diagnostics;
+using CaseGraph.Infrastructure.Diagnostics;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using System.IO;
@@ -48,6 +49,11 @@ public partial class App : Application
             "CaseGraphOffline"
         );
         var workspaceDbPath = Path.Combine(workspaceRoot, "workspace.db");
+        var performanceBudgets = new PerformanceBudgetOptions();
+        var performanceInstrumentation = new PerformanceInstrumentation(
+            performanceBudgets,
+            TimeProvider.System
+        );
 
         AppFileLogger.Log($"Startup begin. Args: {string.Join(' ', e.Args)}");
         AppFileLogger.Log($"Workspace root: {workspaceRoot}");
@@ -75,110 +81,129 @@ public partial class App : Application
 
         try
         {
-            if (!_selfTestMode)
-            {
-                await Dispatcher.Yield(DispatcherPriority.Background);
-            }
-
-            ReportStartupStage(
-                stageKey: StartupStageKeys.BuildingHost,
-                stageText: "Building host",
-                logStage: "HostBuildStarting",
-                logMessage: "Building host.",
-                detailText: "Loading services and diagnostics."
-            );
-            _host = Host.CreateDefaultBuilder(hostArgs)
-                .ConfigureServices((_, services) =>
-                {
-                    if (_startupStageReporter is not null)
+            await performanceInstrumentation.TrackAsync(
+                new PerformanceOperationContext(
+                    PerformanceOperationKinds.Startup,
+                    "ApplicationStartup",
+                    CorrelationId: AppFileLogger.NewCorrelationId(),
+                    Fields: new Dictionary<string, object?>
                     {
-                        services.AddSingleton(_startupStageReporter);
+                        ["selfTest"] = _selfTestMode
+                    }
+                ),
+                async _ =>
+                {
+                    if (!_selfTestMode)
+                    {
+                        await Dispatcher.Yield(DispatcherPriority.Background);
                     }
 
-                    services.AddCaseGraphAppServices();
-                })
-                .Build();
-            ReportStartupStage(
-                stageKey: StartupStageKeys.BuildingHost,
-                stageText: "Building host",
-                logStage: "HostBuildCompleted",
-                logMessage: "Host built.",
-                detailText: "Host built."
-            );
-            InitializeSessionJournal(e.Args);
+                    ReportStartupStage(
+                        stageKey: StartupStageKeys.BuildingHost,
+                        stageText: "Building host",
+                        logStage: "HostBuildStarting",
+                        logMessage: "Building host.",
+                        detailText: "Loading services and diagnostics."
+                    );
+                    _host = Host.CreateDefaultBuilder(hostArgs)
+                        .ConfigureServices((_, services) =>
+                        {
+                            services.AddSingleton(performanceBudgets);
+                            services.AddSingleton<IPerformanceInstrumentation>(performanceInstrumentation);
 
-            ReportStartupStage(
-                stageKey: StartupStageKeys.OpeningWorkspace,
-                stageText: "Opening workspace",
-                logStage: "WorkspaceMigrationStarting",
-                logMessage: "Starting workspace migration.",
-                detailText: "Opening workspace and checking database state."
-            );
-            var migrationSucceeded = await EnsureWorkspaceMigratedOrShowErrorAsync(
-                "Startup workspace migration failed."
-            );
-            if (!migrationSucceeded)
-            {
-                return;
-            }
-            LogStartupStage("WorkspaceMigrationCompleted", "Workspace migration completed.");
+                            if (_startupStageReporter is not null)
+                            {
+                                services.AddSingleton(_startupStageReporter);
+                            }
 
-            if (_selfTestMode)
-            {
-                var selfTestExitCode = await RunSelfTestAsync();
-                await ShutdownAsync(selfTestExitCode);
-                return;
-            }
+                            services.AddCaseGraphAppServices();
+                        })
+                        .Build();
+                    ReportStartupStage(
+                        stageKey: StartupStageKeys.BuildingHost,
+                        stageText: "Building host",
+                        logStage: "HostBuildCompleted",
+                        logMessage: "Host built.",
+                        detailText: "Host built."
+                    );
+                    InitializeSessionJournal(e.Args);
 
-            LogStartupStage("HostStarting", "Starting host.");
-            await _host.StartAsync(CancellationToken.None);
-            LogStartupStage("HostStarted", "Host started.");
-            RegisterHostLifetimeBreadcrumbs();
+                    ReportStartupStage(
+                        stageKey: StartupStageKeys.OpeningWorkspace,
+                        stageText: "Opening workspace",
+                        logStage: "WorkspaceMigrationStarting",
+                        logMessage: "Starting workspace migration.",
+                        detailText: "Opening workspace and checking database state."
+                    );
+                    var migrationSucceeded = await EnsureWorkspaceMigratedOrShowErrorAsync(
+                        "Startup workspace migration failed."
+                    );
+                    if (!migrationSucceeded)
+                    {
+                        return;
+                    }
 
-            ApplicationThemeManager.Apply(ApplicationTheme.Light);
+                    LogStartupStage("WorkspaceMigrationCompleted", "Workspace migration completed.");
 
-            ReportStartupStage(
-                stageKey: StartupStageKeys.FinalizingStartup,
-                stageText: "Finalizing startup",
-                logStage: "StartupFinalizeCompleted",
-                logMessage: "Startup shell checks completed.",
-                detailText: "Startup shell checks completed."
+                    if (_selfTestMode)
+                    {
+                        var selfTestExitCode = await RunSelfTestAsync();
+                        await ShutdownAsync(selfTestExitCode);
+                        return;
+                    }
+
+                    LogStartupStage("HostStarting", "Starting host.");
+                    await _host.StartAsync(CancellationToken.None);
+                    LogStartupStage("HostStarted", "Host started.");
+                    RegisterHostLifetimeBreadcrumbs();
+
+                    ApplicationThemeManager.Apply(ApplicationTheme.Light);
+
+                    ReportStartupStage(
+                        stageKey: StartupStageKeys.FinalizingStartup,
+                        stageText: "Finalizing startup",
+                        logStage: "StartupFinalizeCompleted",
+                        logMessage: "Startup shell checks completed.",
+                        detailText: "Startup shell checks completed."
+                    );
+                    ReportStartupStage(
+                        stageKey: StartupStageKeys.OpeningMainWindow,
+                        stageText: "Opening main window",
+                        logStage: "MainWindowResolving",
+                        logMessage: "Resolving main window.",
+                        detailText: "Preparing the main window."
+                    );
+                    var mainWindow = _host.Services.GetRequiredService<MainWindow>();
+                    ReportStartupStage(
+                        stageKey: StartupStageKeys.OpeningMainWindow,
+                        stageText: "Opening main window",
+                        logStage: "MainWindowResolved",
+                        logMessage: "Main window resolved.",
+                        detailText: "Main window resolved."
+                    );
+                    ReportStartupStage(
+                        stageKey: StartupStageKeys.OpeningMainWindow,
+                        stageText: "Opening main window",
+                        logStage: "MainWindowShowing",
+                        logMessage: "Showing main window.",
+                        detailText: "Showing main window."
+                    );
+                    MainWindow = mainWindow;
+                    mainWindow.Show();
+                    ReportStartupStage(
+                        stageKey: StartupStageKeys.OpeningMainWindow,
+                        stageText: "Opening main window",
+                        logStage: "MainWindowShown",
+                        logMessage: "Main window shown.",
+                        detailText: "Main window shown."
+                    );
+                    ReportStartupCompleted("Startup complete.");
+                    CloseStartupProgressWindow();
+                    ShutdownMode = ShutdownMode.OnMainWindowClose;
+                    _sessionJournal?.RecordStartupComplete();
+                },
+                CancellationToken.None
             );
-            ReportStartupStage(
-                stageKey: StartupStageKeys.OpeningMainWindow,
-                stageText: "Opening main window",
-                logStage: "MainWindowResolving",
-                logMessage: "Resolving main window.",
-                detailText: "Preparing the main window."
-            );
-            var mainWindow = _host.Services.GetRequiredService<MainWindow>();
-            ReportStartupStage(
-                stageKey: StartupStageKeys.OpeningMainWindow,
-                stageText: "Opening main window",
-                logStage: "MainWindowResolved",
-                logMessage: "Main window resolved.",
-                detailText: "Main window resolved."
-            );
-            ReportStartupStage(
-                stageKey: StartupStageKeys.OpeningMainWindow,
-                stageText: "Opening main window",
-                logStage: "MainWindowShowing",
-                logMessage: "Showing main window.",
-                detailText: "Showing main window."
-            );
-            MainWindow = mainWindow;
-            mainWindow.Show();
-            ReportStartupStage(
-                stageKey: StartupStageKeys.OpeningMainWindow,
-                stageText: "Opening main window",
-                logStage: "MainWindowShown",
-                logMessage: "Main window shown.",
-                detailText: "Main window shown."
-            );
-            ReportStartupCompleted("Startup complete.");
-            CloseStartupProgressWindow();
-            ShutdownMode = ShutdownMode.OnMainWindowClose;
-            _sessionJournal?.RecordStartupComplete();
         }
         catch (Exception ex)
         {

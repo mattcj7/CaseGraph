@@ -1,5 +1,6 @@
 using CaseGraph.Core.Abstractions;
 using CaseGraph.Core.Diagnostics;
+using CaseGraph.Infrastructure.Diagnostics;
 using CaseGraph.Infrastructure.Persistence;
 using CaseGraph.Infrastructure.Persistence.Entities;
 using DocumentFormat.OpenXml.Packaging;
@@ -56,13 +57,15 @@ public sealed class MessageIngestService : IMessageIngestService
     private readonly IWorkspacePathProvider _workspacePathProvider;
     private readonly IWorkspaceWriteGate _workspaceWriteGate;
     private readonly IClock _clock;
+    private readonly IPerformanceInstrumentation _performanceInstrumentation;
 
     public MessageIngestService(
         IDbContextFactory<WorkspaceDbContext> dbContextFactory,
         IWorkspaceDatabaseInitializer databaseInitializer,
         IWorkspacePathProvider workspacePathProvider,
         IWorkspaceWriteGate workspaceWriteGate,
-        IClock clock
+        IClock clock,
+        IPerformanceInstrumentation? performanceInstrumentation = null
     )
     {
         _dbContextFactory = dbContextFactory;
@@ -70,6 +73,8 @@ public sealed class MessageIngestService : IMessageIngestService
         _workspacePathProvider = workspacePathProvider;
         _workspaceWriteGate = workspaceWriteGate;
         _clock = clock;
+        _performanceInstrumentation = performanceInstrumentation
+            ?? new PerformanceInstrumentation(new PerformanceBudgetOptions(), TimeProvider.System);
     }
 
     public async Task<int> IngestMessagesFromEvidenceAsync(
@@ -105,68 +110,97 @@ public sealed class MessageIngestService : IMessageIngestService
         CancellationToken ct
     )
     {
-        await _databaseInitializer.EnsureInitializedAsync(ct);
-        var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+        return await _performanceInstrumentation.TrackAsync(
+            new PerformanceOperationContext(
+                PerformanceOperationKinds.ImportMaintenance,
+                "IngestEvidence",
+                FeatureName: "MessagesIngest",
+                CaseId: caseId,
+                EvidenceItemId: evidence.EvidenceItemId
+            ),
+            async innerCt =>
+            {
+                await _databaseInitializer.EnsureInitializedAsync(innerCt);
+                var stopwatch = System.Diagnostics.Stopwatch.StartNew();
 
-        var storedAbsolutePath = Path.Combine(
-            _workspacePathProvider.CasesRoot,
-            caseId.ToString("D"),
-            evidence.StoredRelativePath.Replace('/', Path.DirectorySeparatorChar)
-        );
-        if (!File.Exists(storedAbsolutePath))
-        {
-            throw new FileNotFoundException("Stored evidence file is missing.", storedAbsolutePath);
-        }
+                var storedAbsolutePath = Path.Combine(
+                    _workspacePathProvider.CasesRoot,
+                    caseId.ToString("D"),
+                    evidence.StoredRelativePath.Replace('/', Path.DirectorySeparatorChar)
+                );
+                if (!File.Exists(storedAbsolutePath))
+                {
+                    throw new FileNotFoundException(
+                        "Stored evidence file is missing.",
+                        storedAbsolutePath
+                    );
+                }
 
-        AppFileLogger.Log(
-            BuildLogMessage(
-                logContext,
-                $"[MessagesIngest] Begin case={caseId:D} evidence={evidence.EvidenceItemId:D} file={evidence.OriginalFileName} ext={evidence.FileExtension}"
-            )
-        );
+                AppFileLogger.Log(
+                    BuildLogMessage(
+                        logContext,
+                        $"[MessagesIngest] Begin case={caseId:D} evidence={evidence.EvidenceItemId:D} file={evidence.OriginalFileName} ext={evidence.FileExtension}"
+                    )
+                );
 
-        var parseBatch = evidence.FileExtension.ToLowerInvariant() switch
-        {
-            ".xlsx" => await ParseXlsxAsync(storedAbsolutePath, evidence.OriginalFileName, progress, logContext, ct),
-            ".ufdr" => await ParseUfdrAsync(storedAbsolutePath, progress, logContext, ct),
-            _ => ParseBatch.Empty("No message parser is available for this evidence type.")
-        };
+                var parseBatch = evidence.FileExtension.ToLowerInvariant() switch
+                {
+                    ".xlsx" => await ParseXlsxAsync(
+                        storedAbsolutePath,
+                        evidence.OriginalFileName,
+                        progress,
+                        logContext,
+                        innerCt
+                    ),
+                    ".ufdr" => await ParseUfdrAsync(storedAbsolutePath, progress, logContext, innerCt),
+                    _ => ParseBatch.Empty("No message parser is available for this evidence type.")
+                };
 
-        if (parseBatch.Messages.Count == 0)
-        {
-            var emptySummary = parseBatch.EmptyStatusMessage ?? "Extracted 0 message(s).";
-            AppFileLogger.Log(
-                BuildLogMessage(
-                    logContext,
-                    $"[MessagesIngest] Complete case={caseId:D} evidence={evidence.EvidenceItemId:D} parsed=0 threads=0 elapsedMs={stopwatch.ElapsedMilliseconds} summary=\"{emptySummary}\""
-                )
-            );
-            return new MessageIngestResult(
-                MessagesExtracted: 0,
-                ThreadsCreated: 0,
-                SummaryOverride: emptySummary
-            );
-        }
+                if (parseBatch.Messages.Count == 0)
+                {
+                    var emptySummary = parseBatch.EmptyStatusMessage ?? "Extracted 0 message(s).";
+                    AppFileLogger.Log(
+                        BuildLogMessage(
+                            logContext,
+                            $"[MessagesIngest] Complete case={caseId:D} evidence={evidence.EvidenceItemId:D} parsed=0 threads=0 elapsedMs={stopwatch.ElapsedMilliseconds} summary=\"{emptySummary}\""
+                        )
+                    );
+                    return new MessageIngestResult(
+                        MessagesExtracted: 0,
+                        ThreadsCreated: 0,
+                        SummaryOverride: emptySummary
+                    );
+                }
 
-        progress?.Report(new MessageIngestProgress(
-            FractionComplete: 1,
-            Phase: "Persisting parsed messages...",
-            Processed: parseBatch.Messages.Count,
-            Total: parseBatch.Messages.Count
-        ));
+                progress?.Report(
+                    new MessageIngestProgress(
+                        FractionComplete: 1,
+                        Phase: "Persisting parsed messages...",
+                        Processed: parseBatch.Messages.Count,
+                        Total: parseBatch.Messages.Count
+                    )
+                );
 
-        var threadsCreated = await PersistAsync(caseId, evidence.EvidenceItemId, parseBatch.Messages, ct);
-        var summaryOverride = (string?)null;
-        AppFileLogger.Log(
-            BuildLogMessage(
-                logContext,
-                $"[MessagesIngest] Complete case={caseId:D} evidence={evidence.EvidenceItemId:D} parsed={parseBatch.Messages.Count} threads={threadsCreated} elapsedMs={stopwatch.ElapsedMilliseconds} summary=\"{summaryOverride ?? $"Extracted {parseBatch.Messages.Count} message(s)."}\""
-            )
-        );
-        return new MessageIngestResult(
-            MessagesExtracted: parseBatch.Messages.Count,
-            ThreadsCreated: threadsCreated,
-            SummaryOverride: summaryOverride
+                var threadsCreated = await PersistAsync(
+                    caseId,
+                    evidence.EvidenceItemId,
+                    parseBatch.Messages,
+                    innerCt
+                );
+                var summaryOverride = (string?)null;
+                AppFileLogger.Log(
+                    BuildLogMessage(
+                        logContext,
+                        $"[MessagesIngest] Complete case={caseId:D} evidence={evidence.EvidenceItemId:D} parsed={parseBatch.Messages.Count} threads={threadsCreated} elapsedMs={stopwatch.ElapsedMilliseconds} summary=\"{summaryOverride ?? $"Extracted {parseBatch.Messages.Count} message(s)."}\""
+                    )
+                );
+                return new MessageIngestResult(
+                    MessagesExtracted: parseBatch.Messages.Count,
+                    ThreadsCreated: threadsCreated,
+                    SummaryOverride: summaryOverride
+                );
+            },
+            ct
         );
     }
 

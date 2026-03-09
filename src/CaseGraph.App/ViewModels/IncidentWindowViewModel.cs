@@ -1,6 +1,7 @@
 using CaseGraph.App.Services;
 using CaseGraph.Core.Abstractions;
 using CaseGraph.Core.Diagnostics;
+using CaseGraph.Infrastructure.Diagnostics;
 using CaseGraph.Infrastructure.IncidentWindow;
 using CaseGraph.Infrastructure.Locations;
 using CaseGraph.Infrastructure.Timeline;
@@ -17,6 +18,7 @@ public partial class IncidentWindowViewModel : ObservableObject, IDisposable
     private readonly IncidentWindowQueryService _queryService;
     private readonly ITargetRegistryService _targetRegistryService;
     private readonly IUserInteractionService _userInteractionService;
+    private readonly IPerformanceInstrumentation _performanceInstrumentation;
 
     private CancellationTokenSource? _loadCts;
     private bool _isActive;
@@ -27,13 +29,16 @@ public partial class IncidentWindowViewModel : ObservableObject, IDisposable
         IFeatureReadinessService featureReadinessService,
         IncidentWindowQueryService queryService,
         ITargetRegistryService targetRegistryService,
-        IUserInteractionService userInteractionService
+        IUserInteractionService userInteractionService,
+        IPerformanceInstrumentation? performanceInstrumentation = null
     )
     {
         _featureReadinessService = featureReadinessService;
         _queryService = queryService;
         _targetRegistryService = targetRegistryService;
         _userInteractionService = userInteractionService;
+        _performanceInstrumentation = performanceInstrumentation
+            ?? new PerformanceInstrumentation(new PerformanceBudgetOptions(), TimeProvider.System);
 
         SubjectFilters.Add(IncidentWindowSubjectFilterOption.AllSubjects);
         SelectedSubjectFilter = IncidentWindowSubjectFilterOption.AllSubjects;
@@ -220,18 +225,30 @@ public partial class IncidentWindowViewModel : ObservableObject, IDisposable
 
     public async Task ActivateAsync(CancellationToken ct)
     {
-        _isActive = true;
-        if (!CurrentCaseId.HasValue)
-        {
-            StatusText = "Open a case to run Incident Window.";
-            return;
-        }
+        await _performanceInstrumentation.TrackAsync(
+            new PerformanceOperationContext(
+                PerformanceOperationKinds.FeatureOpen,
+                "Activate",
+                FeatureName: ReadinessFeature.IncidentWindow.ToString(),
+                CaseId: CurrentCaseId
+            ),
+            async innerCt =>
+            {
+                _isActive = true;
+                if (!CurrentCaseId.HasValue)
+                {
+                    StatusText = "Open a case to run Incident Window.";
+                    return;
+                }
 
-        await LoadFeatureContextAsync(ct);
-        if (!_hasExecuted)
-        {
-            StatusText = "Incident Window ready. Adjust the window and run it.";
-        }
+                await LoadFeatureContextAsync(innerCt);
+                if (!_hasExecuted)
+                {
+                    StatusText = "Incident Window ready. Adjust the window and run it.";
+                }
+            },
+            ct
+        );
     }
 
     public void Deactivate()
