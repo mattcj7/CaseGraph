@@ -1,8 +1,6 @@
 using CaseGraph.App.ViewModels;
+using CaseGraph.Core.Diagnostics;
 using CaseGraph.Core.Models;
-using Microsoft.Msagl.Drawing;
-using Microsoft.Msagl.Layout.MDS;
-using Microsoft.Msagl.Miscellaneous;
 using System.ComponentModel;
 using System.IO;
 using System.Windows;
@@ -17,8 +15,6 @@ namespace CaseGraph.App.Views.Pages;
 
 public partial class AssociationGraphView : UserControl
 {
-    private const double MinimumNodeWidth = 88;
-    private const double MinimumNodeHeight = 40;
     private const double GraphMargin = 36;
     private const double ZoomFactor = 1.12;
 
@@ -27,6 +23,7 @@ public partial class AssociationGraphView : UserControl
     private Point _panStart;
     private double _panOriginX;
     private double _panOriginY;
+    private AssociationGraphRenderPipeline.AssociationGraphRenderPlan? _lastRenderPlan;
 
     public AssociationGraphView()
     {
@@ -119,19 +116,11 @@ public partial class AssociationGraphView : UserControl
         GraphCanvas.Width = Math.Max(GraphViewport.ActualWidth, 1);
         GraphCanvas.Height = Math.Max(GraphViewport.ActualHeight, 1);
 
-        if (graphResult is null || graphResult.Nodes.Count == 0)
+        var renderPlan = AssociationGraphRenderPipeline.BuildRenderPlan(graphResult);
+        _lastRenderPlan = renderPlan;
+        if (renderPlan.IsEmpty || renderPlan.Nodes.Count == 0)
         {
-            ResetPanAndZoom();
-            return;
-        }
-
-        var nodeMap = graphResult.Nodes.ToDictionary(node => node.NodeId, StringComparer.Ordinal);
-        var msaglGraph = BuildMsaglLayoutGraph(graphResult);
-        var positionedNodes = msaglGraph.Nodes
-            .Where(node => nodeMap.ContainsKey(node.Id))
-            .ToList();
-        if (positionedNodes.Count == 0)
-        {
+            RenderPlaceholder(renderPlan.Message);
             ResetPanAndZoom();
             return;
         }
@@ -141,18 +130,22 @@ public partial class AssociationGraphView : UserControl
         var minY = double.PositiveInfinity;
         var maxY = double.NegativeInfinity;
 
-        foreach (var node in positionedNodes)
+        foreach (var placement in renderPlan.Placements.Values)
         {
-            var width = Math.Max(node.Width, MinimumNodeWidth);
-            var height = Math.Max(node.Height, MinimumNodeHeight);
-            minX = Math.Min(minX, node.Pos.X - (width / 2d));
-            maxX = Math.Max(maxX, node.Pos.X + (width / 2d));
-            minY = Math.Min(minY, node.Pos.Y - (height / 2d));
-            maxY = Math.Max(maxY, node.Pos.Y + (height / 2d));
+            minX = Math.Min(minX, placement.CenterX - (placement.Width / 2d));
+            maxX = Math.Max(maxX, placement.CenterX + (placement.Width / 2d));
+            minY = Math.Min(minY, placement.CenterY - (placement.Height / 2d));
+            maxY = Math.Max(maxY, placement.CenterY + (placement.Height / 2d));
         }
 
         if (double.IsInfinity(minX) || double.IsInfinity(maxX) || double.IsInfinity(minY) || double.IsInfinity(maxY))
         {
+            _lastRenderPlan = renderPlan with
+            {
+                IsEmpty = true,
+                Message = "Association graph could not be positioned safely."
+            };
+            RenderPlaceholder("Association graph could not be positioned safely.");
             ResetPanAndZoom();
             return;
         }
@@ -163,21 +156,21 @@ public partial class AssociationGraphView : UserControl
         GraphCanvas.Height = contentHeight;
 
         var toCanvasX = new Func<double, double>(x => (x - minX) + GraphMargin);
-        var toCanvasY = new Func<double, double>(y => (maxY - y) + GraphMargin);
+        var toCanvasY = new Func<double, double>(y => (y - minY) + GraphMargin);
 
-        foreach (var edge in msaglGraph.Edges)
+        foreach (var edge in renderPlan.Edges)
         {
-            if (edge.SourceNode is null || edge.TargetNode is null)
+            if (!renderPlan.Placements.TryGetValue(edge.SourceNodeId, out var sourcePlacement)
+                || !renderPlan.Placements.TryGetValue(edge.TargetNodeId, out var targetPlacement))
             {
                 continue;
             }
 
-            var x1 = toCanvasX(edge.SourceNode.Pos.X);
-            var y1 = toCanvasY(edge.SourceNode.Pos.Y);
-            var x2 = toCanvasX(edge.TargetNode.Pos.X);
-            var y2 = toCanvasY(edge.TargetNode.Pos.Y);
+            var x1 = toCanvasX(sourcePlacement.CenterX);
+            var y1 = toCanvasY(sourcePlacement.CenterY);
+            var x2 = toCanvasX(targetPlacement.CenterX);
+            var y2 = toCanvasY(targetPlacement.CenterY);
 
-            var edgeId = edge.UserData as string;
             var line = new Line
             {
                 X1 = x1,
@@ -186,7 +179,7 @@ public partial class AssociationGraphView : UserControl
                 Y2 = y2,
                 Stroke = Brushes.DarkSlateGray,
                 StrokeThickness = 2,
-                Tag = edgeId,
+                Tag = edge.EdgeId,
                 SnapsToDevicePixels = true
             };
             line.MouseEnter += OnEdgeMouseEnter;
@@ -195,7 +188,7 @@ public partial class AssociationGraphView : UserControl
 
             var label = new TextBlock
             {
-                Text = edge.LabelText,
+                Text = edge.Weight.ToString(),
                 Foreground = Brushes.DimGray,
                 Background = Brushes.WhiteSmoke,
                 Padding = new Thickness(3, 0, 3, 0),
@@ -207,25 +200,23 @@ public partial class AssociationGraphView : UserControl
         }
 
         var nodeSearchQuery = _viewModel?.AssociationGraphNodeSearchQuery?.Trim() ?? string.Empty;
-        foreach (var drawingNode in positionedNodes)
+        foreach (var node in renderPlan.Nodes)
         {
-            if (!nodeMap.TryGetValue(drawingNode.Id, out var node))
+            if (!renderPlan.Placements.TryGetValue(node.NodeId, out var placement))
             {
                 continue;
             }
 
-            var width = Math.Max(drawingNode.Width, MinimumNodeWidth);
-            var height = Math.Max(drawingNode.Height, MinimumNodeHeight);
-            var centerX = toCanvasX(drawingNode.Pos.X);
-            var centerY = toCanvasY(drawingNode.Pos.Y);
+            var centerX = toCanvasX(placement.CenterX);
+            var centerY = toCanvasY(placement.CenterY);
 
             var highlighted = nodeSearchQuery.Length > 0
                 && node.Label.Contains(nodeSearchQuery, StringComparison.OrdinalIgnoreCase);
             var background = new SolidColorBrush(ToMediaColor(ResolveFillColor(node, highlighted)));
             var border = new Border
             {
-                Width = width,
-                Height = height,
+                Width = placement.Width,
+                Height = placement.Height,
                 Background = background,
                 BorderBrush = Brushes.Gray,
                 BorderThickness = new Thickness(1),
@@ -246,50 +237,12 @@ public partial class AssociationGraphView : UserControl
             };
             border.Child = textBlock;
 
-            Canvas.SetLeft(border, centerX - (width / 2d));
-            Canvas.SetTop(border, centerY - (height / 2d));
+            Canvas.SetLeft(border, centerX - (placement.Width / 2d));
+            Canvas.SetTop(border, centerY - (placement.Height / 2d));
             GraphCanvas.Children.Add(border);
         }
 
         ResetPanAndZoom();
-    }
-
-    private static Graph BuildMsaglLayoutGraph(AssociationGraphResult graphResult)
-    {
-        var graph = new Graph
-        {
-            LayoutAlgorithmSettings = new MdsLayoutSettings()
-        };
-
-        foreach (var node in graphResult.Nodes)
-        {
-            var drawingNode = graph.AddNode(node.NodeId);
-            drawingNode.LabelText = node.Label;
-            drawingNode.Attr.Shape = Microsoft.Msagl.Drawing.Shape.Box;
-            drawingNode.Attr.Color = MsaglColor.Gray;
-            drawingNode.Attr.FillColor = ResolveFillColor(node, highlighted: false);
-            drawingNode.Attr.LabelMargin = 6;
-            drawingNode.UserData = node.NodeId;
-        }
-
-        foreach (var edge in graphResult.Edges)
-        {
-            var drawingEdge = graph.AddEdge(edge.SourceNodeId, edge.TargetNodeId);
-            drawingEdge.Attr.ArrowheadAtTarget = ArrowStyle.None;
-            drawingEdge.Attr.Color = MsaglColor.DarkSlateGray;
-            drawingEdge.Attr.LineWidth = 1.2;
-            drawingEdge.LabelText = edge.Weight.ToString();
-            drawingEdge.UserData = edge.EdgeId;
-        }
-
-        graph.CreateGeometryGraph();
-        LayoutHelpers.CalculateLayout(
-            graph.GeometryGraph,
-            graph.LayoutAlgorithmSettings,
-            null,
-            "AssociationGraph"
-        );
-        return graph;
     }
 
     private static MsaglColor ResolveFillColor(AssociationGraphNode node, bool highlighted)
@@ -313,18 +266,121 @@ public partial class AssociationGraphView : UserControl
         return System.Windows.Media.Color.FromArgb(color.A, color.R, color.G, color.B);
     }
 
+    private void RenderPlaceholder(string message)
+    {
+        var text = new TextBlock
+        {
+            Text = string.IsNullOrWhiteSpace(message)
+                ? "No association graph content is available."
+                : message,
+            Foreground = Brushes.DimGray,
+            TextWrapping = TextWrapping.Wrap,
+            TextAlignment = TextAlignment.Center,
+            Width = Math.Max(GraphViewport.ActualWidth - 48, 240)
+        };
+
+        var border = new Border
+        {
+            Background = Brushes.Transparent,
+            Child = text
+        };
+
+        Canvas.SetLeft(border, 24);
+        Canvas.SetTop(border, 24);
+        GraphCanvas.Children.Add(border);
+    }
+
     private Task ExportSnapshotAsync(string outputPath)
     {
-        var width = Math.Max((int)Math.Ceiling(GraphViewport.ActualWidth), 1);
-        var height = Math.Max((int)Math.Ceiling(GraphViewport.ActualHeight), 1);
-        var bitmap = new RenderTargetBitmap(
-            width,
-            height,
-            96,
-            96,
-            PixelFormats.Pbgra32
+        var renderPlan = _lastRenderPlan;
+        var exportInfo = AssociationGraphRenderPipeline.BuildSnapshotExportInfo(
+            renderPlan,
+            GraphViewport.ActualWidth,
+            GraphViewport.ActualHeight,
+            Math.Max(GraphCanvas.ActualWidth, GraphCanvas.Width),
+            Math.Max(GraphCanvas.ActualHeight, GraphCanvas.Height)
         );
-        bitmap.Render(GraphViewport);
+        var originalScaleX = GraphScaleTransform.ScaleX;
+        var originalScaleY = GraphScaleTransform.ScaleY;
+        var originalTranslateX = GraphTranslateTransform.X;
+        var originalTranslateY = GraphTranslateTransform.Y;
+        var originalCanvasWidth = Math.Max(GraphCanvas.Width, GraphCanvas.ActualWidth);
+        var originalCanvasHeight = Math.Max(GraphCanvas.Height, GraphCanvas.ActualHeight);
+
+        AppFileLogger.LogEvent(
+            eventName: "AssociationGraphSnapshotExportPrepared",
+            level: "INFO",
+            message: "Association graph snapshot export prepared.",
+            fields: new Dictionary<string, object?>
+            {
+                ["width"] = exportInfo.Width,
+                ["height"] = exportInfo.Height,
+                ["nodeCount"] = exportInfo.NodeCount,
+                ["edgeCount"] = exportInfo.EdgeCount,
+                ["layoutAlgorithm"] = exportInfo.LayoutAlgorithm,
+                ["fallbackUsed"] = exportInfo.FallbackUsed,
+                ["isEmpty"] = exportInfo.IsEmpty,
+                ["preferredSurface"] = exportInfo.PreferredSurface,
+                ["targetVisualName"] = nameof(GraphCanvas),
+                ["targetVisualType"] = GraphCanvas.GetType().FullName,
+                ["viewScaleX"] = originalScaleX,
+                ["viewScaleY"] = originalScaleY,
+                ["viewTranslateX"] = originalTranslateX,
+                ["viewTranslateY"] = originalTranslateY
+            }
+        );
+
+        RenderTargetBitmap bitmap;
+        try
+        {
+            GraphScaleTransform.ScaleX = 1d;
+            GraphScaleTransform.ScaleY = 1d;
+            GraphTranslateTransform.X = 0d;
+            GraphTranslateTransform.Y = 0d;
+            EnsureExportSurfaceReady(exportInfo.Width, exportInfo.Height);
+
+            bitmap = new RenderTargetBitmap(
+                exportInfo.Width,
+                exportInfo.Height,
+                96,
+                96,
+                PixelFormats.Pbgra32
+            );
+            bitmap.Render(GraphCanvas);
+        }
+        catch (Exception ex)
+        {
+            AppFileLogger.LogEvent(
+                eventName: "AssociationGraphSnapshotExportFailed",
+                level: "ERROR",
+                message: "Association graph snapshot export failed before PNG save.",
+                ex: ex,
+                fields: new Dictionary<string, object?>
+                {
+                    ["width"] = exportInfo.Width,
+                    ["height"] = exportInfo.Height,
+                    ["nodeCount"] = exportInfo.NodeCount,
+                    ["edgeCount"] = exportInfo.EdgeCount,
+                    ["layoutAlgorithm"] = exportInfo.LayoutAlgorithm,
+                    ["fallbackUsed"] = exportInfo.FallbackUsed,
+                    ["preferredSurface"] = exportInfo.PreferredSurface,
+                    ["targetVisualName"] = nameof(GraphCanvas),
+                    ["targetVisualType"] = GraphCanvas.GetType().FullName
+                }
+            );
+            throw;
+        }
+        finally
+        {
+            GraphScaleTransform.ScaleX = originalScaleX;
+            GraphScaleTransform.ScaleY = originalScaleY;
+            GraphTranslateTransform.X = originalTranslateX;
+            GraphTranslateTransform.Y = originalTranslateY;
+            EnsureExportSurfaceReady(
+                Math.Max((int)Math.Ceiling(originalCanvasWidth), 1),
+                Math.Max((int)Math.Ceiling(originalCanvasHeight), 1)
+            );
+        }
 
         var directory = System.IO.Path.GetDirectoryName(outputPath);
         if (!string.IsNullOrWhiteSpace(directory))
@@ -336,7 +392,36 @@ public partial class AssociationGraphView : UserControl
         encoder.Frames.Add(BitmapFrame.Create(bitmap));
         using var fileStream = File.Open(outputPath, FileMode.Create, FileAccess.Write, FileShare.None);
         encoder.Save(fileStream);
+        AppFileLogger.LogEvent(
+            eventName: "AssociationGraphSnapshotExportCompleted",
+            level: "INFO",
+            message: "Association graph snapshot export completed.",
+            fields: new Dictionary<string, object?>
+            {
+                ["path"] = outputPath,
+                ["width"] = exportInfo.Width,
+                ["height"] = exportInfo.Height,
+                ["nodeCount"] = exportInfo.NodeCount,
+                ["edgeCount"] = exportInfo.EdgeCount,
+                ["layoutAlgorithm"] = exportInfo.LayoutAlgorithm,
+                ["fallbackUsed"] = exportInfo.FallbackUsed,
+                ["preferredSurface"] = exportInfo.PreferredSurface,
+                ["targetVisualName"] = nameof(GraphCanvas),
+                ["targetVisualType"] = GraphCanvas.GetType().FullName
+            }
+        );
         return Task.CompletedTask;
+    }
+
+    private void EnsureExportSurfaceReady(int width, int height)
+    {
+        var surfaceSize = new Size(Math.Max(width, 1), Math.Max(height, 1));
+        GraphCanvas.Width = surfaceSize.Width;
+        GraphCanvas.Height = surfaceSize.Height;
+        GraphCanvas.Measure(surfaceSize);
+        GraphCanvas.Arrange(new Rect(new Point(0, 0), surfaceSize));
+        GraphCanvas.UpdateLayout();
+        GraphViewport.UpdateLayout();
     }
 
     private void OnNodeMouseLeftButtonUp(object sender, MouseButtonEventArgs e)
