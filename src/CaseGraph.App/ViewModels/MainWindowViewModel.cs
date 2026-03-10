@@ -17,6 +17,7 @@ using System.IO;
 using System.Linq;
 using System.Text.Json;
 using System.Windows;
+using System.Windows.Threading;
 
 namespace CaseGraph.App.ViewModels;
 
@@ -34,6 +35,7 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
     private readonly ICaseQueryService _caseQueryService;
     private readonly IEvidenceVaultService _evidenceVaultService;
     private readonly IFeatureReadinessService _featureReadinessService;
+    private readonly IBackgroundMaintenanceManager _backgroundMaintenanceManager;
     private readonly IMessageSearchService _messageSearchService;
     private readonly IAuditQueryService _auditQueryService;
     private readonly IJobQueueService _jobQueueService;
@@ -59,6 +61,7 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
     private bool _isInitialized;
     private bool _isDisposed;
     private bool _isRefreshingDiagnosticsSnapshot;
+    private bool _isAwaitingMessageSearchMaintenance;
     private int _selectedTargetWhereSeenCount;
     private DateTimeOffset? _selectedTargetWhereSeenLastSeenUtc;
     private Guid? _selectedTargetGlobalEntityId;
@@ -267,6 +270,9 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
     private bool isMessageSearchInProgress;
 
     [ObservableProperty]
+    private ReadinessBannerState searchMaintenanceBanner = ReadinessBannerState.Hidden;
+
+    [ObservableProperty]
     private string diagnosticsAppVersion = "(loading)";
 
     [ObservableProperty]
@@ -462,6 +468,7 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
         ICaseQueryService caseQueryService,
         IEvidenceVaultService evidenceVaultService,
         IFeatureReadinessService featureReadinessService,
+        IBackgroundMaintenanceManager backgroundMaintenanceManager,
         IMessageSearchService messageSearchService,
         IAuditQueryService auditQueryService,
         IJobQueueService jobQueueService,
@@ -489,6 +496,7 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
         _caseQueryService = caseQueryService;
         _evidenceVaultService = evidenceVaultService;
         _featureReadinessService = featureReadinessService;
+        _backgroundMaintenanceManager = backgroundMaintenanceManager;
         _messageSearchService = messageSearchService;
         _auditQueryService = auditQueryService;
         _jobQueueService = jobQueueService;
@@ -508,6 +516,7 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
         _safeAsyncActionRunner = safeAsyncActionRunner;
         _sessionJournal = sessionJournal;
         _appSessionState = appSessionState;
+        _backgroundMaintenanceManager.SnapshotChanged += OnMaintenanceSnapshotChanged;
         Timeline.ViewSourceRequested = OpenTimelineSource;
         IncidentWindow.ViewCommsSourceRequested = OpenTimelineSource;
         IncidentWindow.ViewGeoSourceRequested = OpenLocationSource;
@@ -783,6 +792,8 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
         );
 
         ResetAssociationGraphStateOnCaseChanged(value?.CaseId);
+        _isAwaitingMessageSearchMaintenance = false;
+        UpdateSearchMaintenanceBanner();
         OnPropertyChanged(nameof(CurrentCaseSummary));
         OnPropertyChanged(nameof(SelectedStoredAbsolutePath));
         UpdateSelectedEvidenceVerifyStatus();
@@ -2695,6 +2706,8 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
     {
         if (CurrentCaseInfo is null)
         {
+            _isAwaitingMessageSearchMaintenance = false;
+            UpdateSearchMaintenanceBanner();
             MessageSearchStatusText = "Open a case before searching messages.";
             MessageSearchResults.Clear();
             SelectedMessageSearchResult = null;
@@ -2729,6 +2742,8 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
 
         if (query is null && !hasStructuredFilter)
         {
+            _isAwaitingMessageSearchMaintenance = false;
+            UpdateSearchMaintenanceBanner();
             MessageSearchStatusText = "Enter a query or apply at least one filter.";
             MessageSearchResults.Clear();
             SelectedMessageSearchResult = null;
@@ -2770,6 +2785,8 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
 
             if (readinessResult.IsPreparing)
             {
+                _isAwaitingMessageSearchMaintenance = true;
+                UpdateSearchMaintenanceBanner();
                 MessageSearchResults.Clear();
                 SelectedMessageSearchResult = null;
                 MessageSearchStatusText = readinessResult.Summary;
@@ -2786,6 +2803,8 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
                 return;
             }
 
+            _isAwaitingMessageSearchMaintenance = false;
+            UpdateSearchMaintenanceBanner();
             await ExecuteMessageSearchRequestAsync(searchRequest, searchCts.Token);
         }
         catch (OperationCanceledException) when (searchCts.IsCancellationRequested)
@@ -2795,12 +2814,16 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
                 return;
             }
 
+            _isAwaitingMessageSearchMaintenance = false;
+            UpdateSearchMaintenanceBanner();
             MessageSearchStatusText = "Search canceled.";
         }
         finally
         {
             if (ownsSearchLifetime)
             {
+                _isAwaitingMessageSearchMaintenance = false;
+                UpdateSearchMaintenanceBanner();
                 EndMessageSearch(searchCts);
             }
         }
@@ -2820,6 +2843,8 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
                 return;
             }
 
+            _isAwaitingMessageSearchMaintenance = false;
+            UpdateSearchMaintenanceBanner();
             MessageSearchStatusText = "Searching messages...";
             await ExecuteMessageSearchRequestAsync(request, searchCts.Token);
         }
@@ -2830,12 +2855,16 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
                 return;
             }
 
+            _isAwaitingMessageSearchMaintenance = false;
+            UpdateSearchMaintenanceBanner();
             MessageSearchStatusText = "Search canceled.";
         }
         catch (Exception)
         {
             if (ReferenceEquals(_messageSearchCts, searchCts))
             {
+                _isAwaitingMessageSearchMaintenance = false;
+                UpdateSearchMaintenanceBanner();
                 MessageSearchResults.Clear();
                 SelectedMessageSearchResult = null;
                 MessageSearchStatusText = "Search preparation failed. Check diagnostics logs.";
@@ -2845,6 +2874,8 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
         }
         finally
         {
+            _isAwaitingMessageSearchMaintenance = false;
+            UpdateSearchMaintenanceBanner();
             EndMessageSearch(searchCts);
         }
     }
@@ -3517,6 +3548,30 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
         });
     }
 
+    private void OnMaintenanceSnapshotChanged(object? sender, MaintenanceTaskSnapshot snapshot)
+    {
+        if (CurrentCaseInfo is null || snapshot.CaseId != CurrentCaseInfo.CaseId)
+        {
+            return;
+        }
+
+        DispatchToUi(UpdateSearchMaintenanceBanner);
+    }
+
+    private void UpdateSearchMaintenanceBanner()
+    {
+        var snapshot = CurrentCaseInfo is null
+            ? null
+            : _backgroundMaintenanceManager.GetSnapshot(
+                MaintenanceTaskKeys.MessageSearchIndex(CurrentCaseInfo.CaseId)
+            );
+        SearchMaintenanceBanner = ReadinessBannerStateFactory.FromMaintenance(
+            ReadinessFeature.Search,
+            snapshot,
+            _isAwaitingMessageSearchMaintenance
+        );
+    }
+
     private OperationScope BeginOperation(string operationText)
     {
         _operationCts?.Cancel();
@@ -3698,10 +3753,23 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
         _messageSearchCts?.Dispose();
         _messageSearchCts = null;
 
+        _backgroundMaintenanceManager.SnapshotChanged -= OnMaintenanceSnapshotChanged;
         _jobUpdateSubscription.Dispose();
         _jobCompletionRefreshGate.Dispose();
         Locations.Dispose();
         Reports.Dispose();
+    }
+
+    private static void DispatchToUi(Action action)
+    {
+        var dispatcher = Application.Current?.Dispatcher;
+        if (dispatcher is null || dispatcher.CheckAccess())
+        {
+            action();
+            return;
+        }
+
+        dispatcher.BeginInvoke(DispatcherPriority.Background, action);
     }
 
     public sealed record SearchTargetFilterOption(Guid? TargetId, string DisplayName)

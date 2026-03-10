@@ -7,14 +7,17 @@ namespace CaseGraph.App.Services;
 public sealed class FeatureReadinessService : IFeatureReadinessService
 {
     private readonly WorkspaceDbInitializer _workspaceDbInitializer;
+    private readonly IBackgroundMaintenanceManager _backgroundMaintenanceManager;
     private readonly IPerformanceInstrumentation _performanceInstrumentation;
 
     public FeatureReadinessService(
         WorkspaceDbInitializer workspaceDbInitializer,
+        IBackgroundMaintenanceManager backgroundMaintenanceManager,
         IPerformanceInstrumentation? performanceInstrumentation = null
     )
     {
         _workspaceDbInitializer = workspaceDbInitializer;
+        _backgroundMaintenanceManager = backgroundMaintenanceManager;
         _performanceInstrumentation = performanceInstrumentation
             ?? new PerformanceInstrumentation(new PerformanceBudgetOptions(), TimeProvider.System);
     }
@@ -135,12 +138,40 @@ public sealed class FeatureReadinessService : IFeatureReadinessService
                             Feature: feature
                         )
                     );
-                    var pendingWork = await _workspaceDbInitializer.EnsureMessageSearchMaintenanceScheduledAsync(
-                        innerCt
+                    var maintenanceRequest = _backgroundMaintenanceManager.QueueOrJoin(
+                        new MaintenanceTaskRequest(
+                            MaintenanceTaskKeys.MessageSearchIndex(caseId ?? Guid.Empty),
+                            "Message search index maintenance",
+                            MaintenanceTaskCategory.MessageSearchIndex,
+                            caseId,
+                            feature,
+                            SupportsCancellation: false,
+                            PendingStatusText: "Message search index maintenance queued.",
+                            RunningStatusText: "Message search index maintenance running."
+                        ),
+                        async (maintenanceProgress, maintenanceCt) =>
+                        {
+                            maintenanceProgress.Report(
+                                new MaintenanceProgressUpdate(
+                                    "Message search index maintenance running.",
+                                    "Reconciling message-search FTS state in the background."
+                                )
+                            );
+                            var scheduledWork = await _workspaceDbInitializer
+                                .EnsureMessageSearchMaintenanceScheduledAsync(maintenanceCt);
+                            await scheduledWork.WaitAsync(maintenanceCt);
+                            maintenanceProgress.Report(
+                                new MaintenanceProgressUpdate(
+                                    "Message search index maintenance completed.",
+                                    "Message-search readiness is current."
+                                )
+                            );
+                        }
                     );
-                    var summary = readinessStatus.State == MessageSearchReadinessState.MaintenanceInProgress
-                        ? "Search is still preparing the message index. Your query will run when ready."
-                        : "Preparing Search. Message index maintenance is running before the query starts.";
+                    var summary = maintenanceRequest.WasDeduplicated
+                        || readinessStatus.State == MessageSearchReadinessState.MaintenanceInProgress
+                        ? $"{ToDisplayName(feature)} is still preparing the message index. Your request will continue when ready."
+                        : $"Preparing {ToDisplayName(feature)}. Message index maintenance is running before the request starts.";
                     LogEvent(
                         "FeatureReadinessDeferred",
                         $"{ToDisplayName(feature)} readiness deferred while message search maintenance runs.",
@@ -154,7 +185,7 @@ public sealed class FeatureReadinessService : IFeatureReadinessService
                         WorkPerformed: true,
                         Summary: summary,
                         IsReady: false,
-                        PendingWork: pendingWork
+                        PendingWork: maintenanceRequest.ExecutionTask
                     );
                 }
                 catch (Exception ex)

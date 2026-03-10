@@ -6,12 +6,15 @@ using CaseGraph.Infrastructure.Timeline;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using System.Collections.ObjectModel;
+using System.Windows;
+using System.Windows.Threading;
 
 namespace CaseGraph.App.ViewModels;
 
 public partial class TimelineViewModel : ObservableObject, IDisposable
 {
     private readonly IFeatureReadinessService _featureReadinessService;
+    private readonly IBackgroundMaintenanceManager _backgroundMaintenanceManager;
     private readonly TimelineQueryService _timelineQueryService;
     private readonly ITargetRegistryService _targetRegistryService;
     private readonly IUserInteractionService _userInteractionService;
@@ -21,9 +24,11 @@ public partial class TimelineViewModel : ObservableObject, IDisposable
     private bool _isActive;
     private bool _isInitializing;
     private bool _isDisposed;
+    private bool _isAwaitingMessageIndexMaintenance;
 
     public TimelineViewModel(
         IFeatureReadinessService featureReadinessService,
+        IBackgroundMaintenanceManager backgroundMaintenanceManager,
         TimelineQueryService timelineQueryService,
         ITargetRegistryService targetRegistryService,
         IUserInteractionService userInteractionService,
@@ -32,11 +37,13 @@ public partial class TimelineViewModel : ObservableObject, IDisposable
     {
         _isInitializing = true;
         _featureReadinessService = featureReadinessService;
+        _backgroundMaintenanceManager = backgroundMaintenanceManager;
         _timelineQueryService = timelineQueryService;
         _targetRegistryService = targetRegistryService;
         _userInteractionService = userInteractionService;
         _performanceInstrumentation = performanceInstrumentation
             ?? new PerformanceInstrumentation(new PerformanceBudgetOptions(), TimeProvider.System);
+        _backgroundMaintenanceManager.SnapshotChanged += OnMaintenanceSnapshotChanged;
 
         SearchCommand = new AsyncRelayCommand(SearchAsync);
         ClearFiltersCommand = new AsyncRelayCommand(ClearFiltersAsync);
@@ -139,6 +146,9 @@ public partial class TimelineViewModel : ObservableObject, IDisposable
     [ObservableProperty]
     private int totalCount;
 
+    [ObservableProperty]
+    private ReadinessBannerState maintenanceBanner = ReadinessBannerState.Hidden;
+
     public async Task SetCurrentCaseAsync(Guid? caseId, CancellationToken ct)
     {
         LogLifecycleEvent("TimelineCaseContextStarting", "Updating Timeline case context.", caseId);
@@ -150,16 +160,20 @@ public partial class TimelineViewModel : ObservableObject, IDisposable
 
             if (!caseId.HasValue)
             {
+                _isAwaitingMessageIndexMaintenance = false;
                 ClearRows();
                 TotalCount = 0;
                 CurrentPage = 1;
                 StatusText = "Open a case to load the timeline.";
                 ResetFiltersToDefaults();
+                UpdateMaintenanceBanner();
                 LogLifecycleEvent("TimelineCaseContextCompleted", "Timeline case context cleared.");
                 return;
             }
 
             ResetFiltersToDefaults();
+            _isAwaitingMessageIndexMaintenance = false;
+            UpdateMaintenanceBanner();
             if (_isActive)
             {
                 await PrepareAndLoadAsync(0, ct);
@@ -272,58 +286,55 @@ public partial class TimelineViewModel : ObservableObject, IDisposable
     {
         if (!CurrentCaseId.HasValue)
         {
+            _isAwaitingMessageIndexMaintenance = false;
             ClearRows();
             TotalCount = 0;
             CurrentPage = 1;
             StatusText = "Open a case to load the timeline.";
+            UpdateMaintenanceBanner();
             return;
         }
 
         var loadCts = BeginLoad(outerCt);
         var correlationId = AppFileLogger.NewCorrelationId();
+        var request = BuildTimelineQueryRequest(zeroBasedPageIndex, correlationId);
+        var ownsLoadLifetime = true;
         IsLoading = true;
-        if (NullIfWhiteSpace(QueryText) is not null)
-        {
-            await _featureReadinessService.EnsureReadyAsync(
-                ReadinessFeature.Timeline,
-                CurrentCaseId,
-                requiresMessageSearchIndex: true,
-                CreateReadinessProgress(),
-                loadCts.Token
-            );
-        }
-
-        StatusText = "Loading timeline...";
 
         try
         {
-            var page = await _timelineQueryService.SearchAsync(
-                new TimelineQueryRequest(
-                    CaseId: CurrentCaseId.Value,
-                    QueryText: NullIfWhiteSpace(QueryText),
-                    TargetId: SelectedTargetFilter?.TargetId,
-                    GlobalEntityId: SelectedGlobalPersonFilter?.GlobalEntityId,
-                    Direction: NormalizeDirectionFilter(SelectedDirection),
-                    FromUtc: ConvertLocalDateToStartUtc(FromDateLocal),
-                    ToUtc: ConvertLocalDateToInclusiveEndUtc(ToDateLocal),
-                    Take: PageSize,
-                    Skip: zeroBasedPageIndex * PageSize,
-                    CorrelationId: correlationId
-                ),
-                loadCts.Token
-            );
-
-            if (!ReferenceEquals(_loadCts, loadCts))
+            if (request.QueryText is not null)
             {
-                return;
+                var readinessResult = await _featureReadinessService.EnsureReadyAsync(
+                    ReadinessFeature.Timeline,
+                    CurrentCaseId,
+                    requiresMessageSearchIndex: true,
+                    CreateReadinessProgress(),
+                    loadCts.Token
+                );
+                if (!ReferenceEquals(_loadCts, loadCts))
+                {
+                    return;
+                }
+
+                if (readinessResult.IsPreparing)
+                {
+                    _isAwaitingMessageIndexMaintenance = true;
+                    UpdateMaintenanceBanner();
+                    ClearRows();
+                    TotalCount = 0;
+                    CurrentPage = 1;
+                    StatusText = readinessResult.Summary;
+                    ownsLoadLifetime = false;
+                    ContinueLoadAfterReadinessAsync(request, zeroBasedPageIndex, loadCts, readinessResult.PendingWork!)
+                        .Forget("ContinueTimelineLoadAfterReadiness", caseId: CurrentCaseId);
+                    return;
+                }
             }
 
-            CurrentPage = zeroBasedPageIndex + 1;
-            TotalCount = page.TotalCount;
-            SetRows(page.Rows);
-            StatusText = page.TotalCount == 0
-                ? "No timeline events match the current filters."
-                : $"Loaded {page.Rows.Count:0} timeline row(s).";
+            _isAwaitingMessageIndexMaintenance = false;
+            UpdateMaintenanceBanner();
+            await ExecuteTimelineQueryAsync(request, zeroBasedPageIndex, loadCts.Token);
         }
         catch (OperationCanceledException) when (loadCts.IsCancellationRequested)
         {
@@ -332,12 +343,127 @@ public partial class TimelineViewModel : ObservableObject, IDisposable
                 return;
             }
 
+            _isAwaitingMessageIndexMaintenance = false;
+            UpdateMaintenanceBanner();
             StatusText = "Timeline load canceled.";
+        }
+        finally
+        {
+            if (ownsLoadLifetime)
+            {
+                EndLoad(loadCts);
+            }
+        }
+    }
+
+    private async Task ContinueLoadAfterReadinessAsync(
+        TimelineQueryRequest request,
+        int zeroBasedPageIndex,
+        CancellationTokenSource loadCts,
+        Task pendingWork
+    )
+    {
+        try
+        {
+            await pendingWork.WaitAsync(loadCts.Token);
+            if (!ReferenceEquals(_loadCts, loadCts))
+            {
+                return;
+            }
+
+            _isAwaitingMessageIndexMaintenance = false;
+            UpdateMaintenanceBanner();
+            await ExecuteTimelineQueryAsync(request, zeroBasedPageIndex, loadCts.Token);
+        }
+        catch (OperationCanceledException) when (loadCts.IsCancellationRequested)
+        {
+            if (!ReferenceEquals(_loadCts, loadCts))
+            {
+                return;
+            }
+
+            _isAwaitingMessageIndexMaintenance = false;
+            UpdateMaintenanceBanner();
+            StatusText = "Timeline load canceled.";
+        }
+        catch (Exception)
+        {
+            if (ReferenceEquals(_loadCts, loadCts))
+            {
+                _isAwaitingMessageIndexMaintenance = false;
+                UpdateMaintenanceBanner();
+                ClearRows();
+                TotalCount = 0;
+                CurrentPage = 1;
+                StatusText = "Timeline preparation failed. Check diagnostics logs.";
+            }
+
+            throw;
         }
         finally
         {
             EndLoad(loadCts);
         }
+    }
+
+    private async Task ExecuteTimelineQueryAsync(
+        TimelineQueryRequest request,
+        int zeroBasedPageIndex,
+        CancellationToken ct
+    )
+    {
+        StatusText = "Loading timeline...";
+
+        var page = await _timelineQueryService.SearchAsync(request, ct);
+        if (ct.IsCancellationRequested)
+        {
+            return;
+        }
+
+        CurrentPage = zeroBasedPageIndex + 1;
+        TotalCount = page.TotalCount;
+        SetRows(page.Rows);
+        StatusText = page.TotalCount == 0
+            ? "No timeline events match the current filters."
+            : $"Loaded {page.Rows.Count:0} timeline row(s).";
+    }
+
+    private TimelineQueryRequest BuildTimelineQueryRequest(int zeroBasedPageIndex, string correlationId)
+    {
+        return new TimelineQueryRequest(
+            CaseId: CurrentCaseId!.Value,
+            QueryText: NullIfWhiteSpace(QueryText),
+            TargetId: SelectedTargetFilter?.TargetId,
+            GlobalEntityId: SelectedGlobalPersonFilter?.GlobalEntityId,
+            Direction: NormalizeDirectionFilter(SelectedDirection),
+            FromUtc: ConvertLocalDateToStartUtc(FromDateLocal),
+            ToUtc: ConvertLocalDateToInclusiveEndUtc(ToDateLocal),
+            Take: PageSize,
+            Skip: zeroBasedPageIndex * PageSize,
+            CorrelationId: correlationId
+        );
+    }
+
+    private void OnMaintenanceSnapshotChanged(object? sender, MaintenanceTaskSnapshot snapshot)
+    {
+        if (!CurrentCaseId.HasValue || snapshot.CaseId != CurrentCaseId.Value)
+        {
+            return;
+        }
+
+        DispatchToUi(UpdateMaintenanceBanner);
+    }
+
+    private void UpdateMaintenanceBanner()
+    {
+        var snapshot = CurrentCaseId.HasValue
+            ? _backgroundMaintenanceManager.GetSnapshot(MaintenanceTaskKeys.MessageSearchIndex(CurrentCaseId.Value))
+            : null;
+        MaintenanceBanner = ReadinessBannerStateFactory.FromMaintenance(
+            ReadinessFeature.Timeline,
+            snapshot,
+            _isAwaitingMessageIndexMaintenance
+        );
     }
 
     private async Task RefreshFilterOptionsAsync(CancellationToken ct)
@@ -646,7 +772,20 @@ public partial class TimelineViewModel : ObservableObject, IDisposable
         }
 
         _isDisposed = true;
+        _backgroundMaintenanceManager.SnapshotChanged -= OnMaintenanceSnapshotChanged;
         CancelLoad();
+    }
+
+    private static void DispatchToUi(Action action)
+    {
+        var dispatcher = Application.Current?.Dispatcher;
+        if (dispatcher is null || dispatcher.CheckAccess())
+        {
+            action();
+            return;
+        }
+
+        dispatcher.BeginInvoke(DispatcherPriority.Background, action);
     }
 
     public sealed record TimelineTargetFilterOption(Guid? TargetId, string DisplayName)

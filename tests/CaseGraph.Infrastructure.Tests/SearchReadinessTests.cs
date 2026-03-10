@@ -317,6 +317,7 @@ public sealed class SearchReadinessTests
             services.AddSingleton<IJobQueueService>(
                 provider => provider.GetRequiredService<JobQueueService>()
             );
+            services.AddSingleton<IBackgroundMaintenanceManager, BackgroundMaintenanceManager>();
             services.AddSingleton<IFeatureReadinessService, FeatureReadinessService>();
 
             return Task.FromResult(new ReadinessFixture(services.BuildServiceProvider(), pathProvider));

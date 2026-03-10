@@ -19,6 +19,7 @@ namespace CaseGraph.App.ViewModels;
 public partial class ReportsViewModel : ObservableObject, IDisposable
 {
     private readonly IFeatureReadinessService _featureReadinessService;
+    private readonly IBackgroundMaintenanceManager _backgroundMaintenanceManager;
     private readonly ITargetRegistryService _targetRegistryService;
     private readonly ICaseQueryService _caseQueryService;
     private readonly IUserInteractionService _userInteractionService;
@@ -38,6 +39,7 @@ public partial class ReportsViewModel : ObservableObject, IDisposable
 
     public ReportsViewModel(
         IFeatureReadinessService featureReadinessService,
+        IBackgroundMaintenanceManager backgroundMaintenanceManager,
         ITargetRegistryService targetRegistryService,
         ICaseQueryService caseQueryService,
         IUserInteractionService userInteractionService,
@@ -48,6 +50,7 @@ public partial class ReportsViewModel : ObservableObject, IDisposable
     {
         _isInitializing = true;
         _featureReadinessService = featureReadinessService;
+        _backgroundMaintenanceManager = backgroundMaintenanceManager;
         _targetRegistryService = targetRegistryService;
         _caseQueryService = caseQueryService;
         _userInteractionService = userInteractionService;
@@ -72,6 +75,7 @@ public partial class ReportsViewModel : ObservableObject, IDisposable
         _isInitializing = false;
         NotifyStateChanged();
 
+        _backgroundMaintenanceManager.SnapshotChanged += OnMaintenanceSnapshotChanged;
         _jobUpdateSubscription = _jobQueueService.JobUpdates.Subscribe(new JobObserver(DispatchJobUpdate));
     }
 
@@ -155,6 +159,9 @@ public partial class ReportsViewModel : ObservableObject, IDisposable
     [ObservableProperty]
     private string lastCompletedOutputPath = string.Empty;
 
+    [ObservableProperty]
+    private ReadinessBannerState maintenanceBanner = ReadinessBannerState.Hidden;
+
     public async Task SetCurrentCaseAsync(Guid? caseId, CancellationToken ct)
     {
         LogLifecycleEvent("ReportsCaseContextStarting", "Updating Reports case context.", caseId);
@@ -177,11 +184,13 @@ public partial class ReportsViewModel : ObservableObject, IDisposable
             {
                 OutputPath = string.Empty;
                 ExportStatusText = "Open a case to create a dossier.";
+                UpdateMaintenanceBanner();
                 NotifyStateChanged();
                 LogLifecycleEvent("ReportsCaseContextCompleted", "Reports case context cleared.");
                 return;
             }
 
+            UpdateMaintenanceBanner();
             if (_isActive)
             {
                 await LoadCaseContextAsync(ct);
@@ -553,6 +562,16 @@ public partial class ReportsViewModel : ObservableObject, IDisposable
         dispatcher.BeginInvoke(DispatcherPriority.Background, new Action(() => ApplyJobUpdate(job)));
     }
 
+    private void OnMaintenanceSnapshotChanged(object? sender, MaintenanceTaskSnapshot snapshot)
+    {
+        if (!_currentCaseId.HasValue || snapshot.CaseId != _currentCaseId.Value)
+        {
+            return;
+        }
+
+        DispatchToUi(UpdateMaintenanceBanner);
+    }
+
     private void ApplyJobUpdate(JobInfo job)
     {
         if (!_currentCaseId.HasValue
@@ -584,6 +603,18 @@ public partial class ReportsViewModel : ObservableObject, IDisposable
         }
 
         NotifyStateChanged();
+    }
+
+    private void UpdateMaintenanceBanner()
+    {
+        var snapshot = _currentCaseId.HasValue
+            ? _backgroundMaintenanceManager.GetSnapshot(MaintenanceTaskKeys.MessageSearchIndex(_currentCaseId.Value))
+            : null;
+        MaintenanceBanner = ReadinessBannerStateFactory.FromMaintenance(
+            ReadinessFeature.Reports,
+            snapshot,
+            blocksCurrentAction: false
+        );
     }
 
     private void OpenFolder()
@@ -802,7 +833,20 @@ public partial class ReportsViewModel : ObservableObject, IDisposable
         }
 
         _isDisposed = true;
+        _backgroundMaintenanceManager.SnapshotChanged -= OnMaintenanceSnapshotChanged;
         _jobUpdateSubscription.Dispose();
+    }
+
+    private static void DispatchToUi(Action action)
+    {
+        var dispatcher = Application.Current?.Dispatcher;
+        if (dispatcher is null || dispatcher.CheckAccess())
+        {
+            action();
+            return;
+        }
+
+        dispatcher.BeginInvoke(DispatcherPriority.Background, action);
     }
 
     public sealed record SubjectKindOption(string Value, string DisplayName);

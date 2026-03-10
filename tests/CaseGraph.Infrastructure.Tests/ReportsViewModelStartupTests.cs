@@ -25,6 +25,7 @@ public sealed class ReportsViewModelStartupTests
     {
         var services = new ServiceCollection();
         services.AddSingleton<IFeatureReadinessService, FakeFeatureReadinessService>();
+        services.AddSingleton<IBackgroundMaintenanceManager, FakeBackgroundMaintenanceManager>();
         services.AddSingleton<ITargetRegistryService, FakeTargetRegistryService>();
         services.AddSingleton<ICaseQueryService, FakeCaseQueryService>();
         services.AddSingleton<IUserInteractionService, FakeUserInteractionService>();
@@ -52,6 +53,7 @@ public sealed class ReportsViewModelStartupTests
     {
         var services = new ServiceCollection();
         services.AddSingleton<IFeatureReadinessService, FakeFeatureReadinessService>();
+        services.AddSingleton<IBackgroundMaintenanceManager, FakeBackgroundMaintenanceManager>();
         services.AddSingleton<ITargetRegistryService, FakeTargetRegistryService>();
         services.AddSingleton<IUserInteractionService, FakeUserInteractionService>();
         services.AddSingleton<IWorkspaceDatabaseInitializer, FakeWorkspaceDatabaseInitializer>();
@@ -95,6 +97,48 @@ public sealed class ReportsViewModelStartupTests
     }
 
     [Fact]
+    public async Task Timeline_MaintenanceBanner_TracksSharedSnapshotTransitions()
+    {
+        var manager = new FakeBackgroundMaintenanceManager();
+        var viewModel = CreateTimelineViewModel(manager);
+        var caseId = Guid.NewGuid();
+
+        await viewModel.SetCurrentCaseAsync(caseId, CancellationToken.None);
+        manager.Publish(
+            new MaintenanceTaskSnapshot(
+                MaintenanceTaskKeys.MessageSearchIndex(caseId),
+                "Message search index maintenance",
+                MaintenanceTaskCategory.MessageSearchIndex,
+                MaintenanceTaskState.Pending,
+                caseId,
+                ReadinessFeature.Timeline,
+                StatusText: "Queued.",
+                DetailText: "Waiting for background maintenance."
+            )
+        );
+
+        Assert.True(viewModel.MaintenanceBanner.IsVisible);
+        Assert.Equal(ReadinessBannerTone.Info, viewModel.MaintenanceBanner.Tone);
+        Assert.Equal("Timeline maintenance queued", viewModel.MaintenanceBanner.Title);
+
+        manager.Publish(
+            new MaintenanceTaskSnapshot(
+                MaintenanceTaskKeys.MessageSearchIndex(caseId),
+                "Message search index maintenance",
+                MaintenanceTaskCategory.MessageSearchIndex,
+                MaintenanceTaskState.Completed,
+                caseId,
+                ReadinessFeature.Timeline,
+                StatusText: "Completed.",
+                DetailText: "Background maintenance completed successfully."
+            )
+        );
+
+        Assert.Equal(ReadinessBannerTone.Success, viewModel.MaintenanceBanner.Tone);
+        Assert.Equal("Timeline ready", viewModel.MaintenanceBanner.Title);
+    }
+
+    [Fact]
     public void NavigationService_Creates_Reports_And_Timeline_Views()
     {
         var exception = Record.Exception(static () => RunOnStaThread(() =>
@@ -126,6 +170,7 @@ public sealed class ReportsViewModelStartupTests
     {
         return new ReportsViewModel(
             new FakeFeatureReadinessService(),
+            new FakeBackgroundMaintenanceManager(),
             new FakeTargetRegistryService(),
             new FakeCaseQueryService(),
             new FakeUserInteractionService(),
@@ -134,10 +179,11 @@ public sealed class ReportsViewModelStartupTests
         );
     }
 
-    private static TimelineViewModel CreateTimelineViewModel()
+    private static TimelineViewModel CreateTimelineViewModel(FakeBackgroundMaintenanceManager? manager = null)
     {
         return new TimelineViewModel(
             new FakeFeatureReadinessService(),
+            manager ?? new FakeBackgroundMaintenanceManager(),
             new TimelineQueryService(
                 new FakeWorkspaceDatabaseInitializer(),
                 new FakeWorkspacePathProvider(),
@@ -272,6 +318,48 @@ public sealed class ReportsViewModelStartupTests
     private sealed class FakeWorkspaceDatabaseInitializer : IWorkspaceDatabaseInitializer
     {
         public Task EnsureInitializedAsync(CancellationToken ct) => Task.CompletedTask;
+    }
+
+    private sealed class FakeBackgroundMaintenanceManager : IBackgroundMaintenanceManager
+    {
+        private readonly Dictionary<string, MaintenanceTaskSnapshot> _snapshots = new(StringComparer.Ordinal);
+
+        public event EventHandler<MaintenanceTaskSnapshot>? SnapshotChanged;
+
+        public MaintenanceTaskSnapshot? GetSnapshot(string taskKey)
+        {
+            return _snapshots.TryGetValue(taskKey, out var snapshot)
+                ? snapshot
+                : null;
+        }
+
+        public MaintenanceRequestResult QueueOrJoin(
+            MaintenanceTaskRequest request,
+            Func<IProgress<MaintenanceProgressUpdate>, CancellationToken, Task> work
+        )
+        {
+            var snapshot = new MaintenanceTaskSnapshot(
+                request.TaskKey,
+                request.DisplayName,
+                request.Category,
+                MaintenanceTaskState.Completed,
+                request.CaseId,
+                request.Feature,
+                StatusText: "Completed.",
+                DetailText: "No-op."
+            );
+            _snapshots[request.TaskKey] = snapshot;
+            SnapshotChanged?.Invoke(this, snapshot);
+            return new MaintenanceRequestResult(true, false, Task.CompletedTask, snapshot);
+        }
+
+        public bool TryCancel(string taskKey) => false;
+
+        public void Publish(MaintenanceTaskSnapshot snapshot)
+        {
+            _snapshots[snapshot.TaskKey] = snapshot;
+            SnapshotChanged?.Invoke(this, snapshot);
+        }
     }
 
     private sealed class FakeFeatureReadinessService : IFeatureReadinessService

@@ -56,6 +56,7 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<IDiagnosticsService, DiagnosticsService>();
         services.AddSingleton<IWorkspaceMigrationService, WorkspaceMigrationService>();
         services.AddSingleton<ICaseOpenReadinessService, CaseOpenReadinessService>();
+        services.AddSingleton<IBackgroundMaintenanceManager, BackgroundMaintenanceManager>();
         services.AddSingleton<IFeatureReadinessService, FeatureReadinessService>();
         services.AddSingleton<IClock, SystemClock>();
         services.AddSingleton<WorkspaceDbRebuilder>();

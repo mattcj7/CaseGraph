@@ -9,12 +9,15 @@ using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using System.Collections.ObjectModel;
 using System.Globalization;
+using System.Windows;
+using System.Windows.Threading;
 
 namespace CaseGraph.App.ViewModels;
 
 public partial class IncidentWindowViewModel : ObservableObject, IDisposable
 {
     private readonly IFeatureReadinessService _featureReadinessService;
+    private readonly IBackgroundMaintenanceManager _backgroundMaintenanceManager;
     private readonly IncidentWindowQueryService _queryService;
     private readonly ITargetRegistryService _targetRegistryService;
     private readonly IUserInteractionService _userInteractionService;
@@ -27,6 +30,7 @@ public partial class IncidentWindowViewModel : ObservableObject, IDisposable
 
     public IncidentWindowViewModel(
         IFeatureReadinessService featureReadinessService,
+        IBackgroundMaintenanceManager backgroundMaintenanceManager,
         IncidentWindowQueryService queryService,
         ITargetRegistryService targetRegistryService,
         IUserInteractionService userInteractionService,
@@ -34,11 +38,13 @@ public partial class IncidentWindowViewModel : ObservableObject, IDisposable
     )
     {
         _featureReadinessService = featureReadinessService;
+        _backgroundMaintenanceManager = backgroundMaintenanceManager;
         _queryService = queryService;
         _targetRegistryService = targetRegistryService;
         _userInteractionService = userInteractionService;
         _performanceInstrumentation = performanceInstrumentation
             ?? new PerformanceInstrumentation(new PerformanceBudgetOptions(), TimeProvider.System);
+        _backgroundMaintenanceManager.SnapshotChanged += OnMaintenanceSnapshotChanged;
 
         SubjectFilters.Add(IncidentWindowSubjectFilterOption.AllSubjects);
         SelectedSubjectFilter = IncidentWindowSubjectFilterOption.AllSubjects;
@@ -195,6 +201,9 @@ public partial class IncidentWindowViewModel : ObservableObject, IDisposable
     [ObservableProperty]
     private int coLocationTotalCount;
 
+    [ObservableProperty]
+    private ReadinessBannerState maintenanceBanner = ReadinessBannerState.Hidden;
+
     public async Task SetCurrentCaseAsync(Guid? caseId, CancellationToken ct)
     {
         CurrentCaseId = caseId;
@@ -209,10 +218,12 @@ public partial class IncidentWindowViewModel : ObservableObject, IDisposable
             SelectedSubjectFilter = IncidentWindowSubjectFilterOption.AllSubjects;
             ResetInputsToDefaults();
             StatusText = "Open a case to run Incident Window.";
+            UpdateMaintenanceBanner();
             return;
         }
 
         ResetInputsToDefaults();
+        UpdateMaintenanceBanner();
         if (_isActive)
         {
             await LoadFeatureContextAsync(ct);
@@ -417,6 +428,28 @@ public partial class IncidentWindowViewModel : ObservableObject, IDisposable
             ct
         );
         await RefreshSubjectFiltersAsync(ct);
+    }
+
+    private void OnMaintenanceSnapshotChanged(object? sender, MaintenanceTaskSnapshot snapshot)
+    {
+        if (!CurrentCaseId.HasValue || snapshot.CaseId != CurrentCaseId.Value)
+        {
+            return;
+        }
+
+        DispatchToUi(UpdateMaintenanceBanner);
+    }
+
+    private void UpdateMaintenanceBanner()
+    {
+        var snapshot = CurrentCaseId.HasValue
+            ? _backgroundMaintenanceManager.GetSnapshot(MaintenanceTaskKeys.MessageSearchIndex(CurrentCaseId.Value))
+            : null;
+        MaintenanceBanner = ReadinessBannerStateFactory.FromMaintenance(
+            ReadinessFeature.IncidentWindow,
+            snapshot,
+            blocksCurrentAction: false
+        );
     }
 
     private void ResetInputsToDefaults()
@@ -797,7 +830,20 @@ public partial class IncidentWindowViewModel : ObservableObject, IDisposable
         }
 
         _isDisposed = true;
+        _backgroundMaintenanceManager.SnapshotChanged -= OnMaintenanceSnapshotChanged;
         CancelLoad();
+    }
+
+    private static void DispatchToUi(Action action)
+    {
+        var dispatcher = Application.Current?.Dispatcher;
+        if (dispatcher is null || dispatcher.CheckAccess())
+        {
+            action();
+            return;
+        }
+
+        dispatcher.BeginInvoke(DispatcherPriority.Background, action);
     }
 
     public sealed record IncidentWindowSubjectFilterOption(string? SubjectType, Guid? SubjectId, string DisplayName)

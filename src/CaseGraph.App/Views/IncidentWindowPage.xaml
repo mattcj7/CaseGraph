@@ -1,10 +1,12 @@
 <UserControl x:Class="CaseGraph.App.Views.IncidentWindowPage"
              xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:controls="clr-namespace:CaseGraph.App.Controls"
              Background="{DynamicResource ContentBackgroundBrush}">
     <Grid Margin="{StaticResource Space16}"
           DataContext="{Binding IncidentWindow}">
         <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
             <RowDefinition Height="Auto" />
             <RowDefinition Height="Auto" />
             <RowDefinition Height="*" />
@@ -17,7 +19,11 @@
                        Text="{Binding StatusText}" />
         </StackPanel>
 
-        <Border Grid.Row="1"
+        <controls:ReadinessBanner Grid.Row="1"
+                                  Margin="{StaticResource SpaceTop12}"
+                                  State="{Binding MaintenanceBanner}" />
+
+        <Border Grid.Row="2"
                 Margin="{StaticResource SpaceTop12}"
                 Style="{StaticResource PlaceholderHintBorderStyle}">
             <StackPanel>
@@ -131,7 +137,7 @@
             </StackPanel>
         </Border>
 
-        <TabControl Grid.Row="2" Margin="{StaticResource SpaceTop12}">
+        <TabControl Grid.Row="3" Margin="{StaticResource SpaceTop12}">
             <TabItem Header="Comms Hits">
                 <Grid Margin="{StaticResource Space16}">
                     <Grid.RowDefinitions>

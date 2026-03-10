@@ -1,12 +1,14 @@
 <UserControl x:Class="CaseGraph.App.Views.Pages.ReportsView"
              xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:controls="clr-namespace:CaseGraph.App.Controls"
              Background="{DynamicResource ContentBackgroundBrush}">
     <ScrollViewer VerticalScrollBarVisibility="Auto"
                   Background="{DynamicResource ContentBackgroundBrush}">
         <Grid Margin="{StaticResource Space16}"
               DataContext="{Binding Reports}">
             <Grid.RowDefinitions>
+                <RowDefinition Height="Auto" />
                 <RowDefinition Height="Auto" />
                 <RowDefinition Height="Auto" />
                 <RowDefinition Height="Auto" />
@@ -42,7 +44,11 @@
                 </StackPanel>
             </DockPanel>
 
-            <Border Grid.Row="1"
+            <controls:ReadinessBanner Grid.Row="1"
+                                      Margin="{StaticResource SpaceTop12}"
+                                      State="{Binding MaintenanceBanner}" />
+
+            <Border Grid.Row="2"
                     Margin="{StaticResource SpaceTop12}"
                     Style="{StaticResource PlaceholderHintBorderStyle}">
                 <StackPanel>
@@ -62,7 +68,7 @@
                 </StackPanel>
             </Border>
 
-            <Border Grid.Row="2"
+            <Border Grid.Row="3"
                     Margin="{StaticResource SpaceTop12}"
                     Style="{StaticResource PlaceholderHintBorderStyle}">
                 <StackPanel>
@@ -142,7 +148,7 @@
                 </StackPanel>
             </Border>
 
-            <Border Grid.Row="3"
+            <Border Grid.Row="4"
                     Margin="{StaticResource SpaceTop12}"
                     Style="{StaticResource PlaceholderHintBorderStyle}">
                 <StackPanel>
