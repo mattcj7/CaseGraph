@@ -1,8 +1,10 @@
 <ui:FluentWindow x:Class="CaseGraph.App.MainWindow"
+                 x:Name="RootWindow"
                  xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
                  xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
                  xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
                  xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+                 xmlns:local="clr-namespace:CaseGraph.App"
                  xmlns:ui="http://schemas.lepo.co/wpfui/2022/xaml"
                  mc:Ignorable="d"
                  Title="CaseGraph Offline"
@@ -21,42 +23,128 @@
         </Grid.RowDefinitions>
 
         <Border Grid.Row="0" Style="{StaticResource TopBarBorderStyle}">
-            <DockPanel LastChildFill="False">
-                <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
-                    <TextBlock Text="CaseGraph Offline" Style="{StaticResource AppTitleTextStyle}" />
-                    <TextBlock Text="Case workspace + evidence vault baseline" Style="{StaticResource AppSubtitleTextStyle}" />
+            <Grid x:Name="ShellTitleBar">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="136" />
+                </Grid.ColumnDefinitions>
+
+                <Grid Grid.Column="0"
+                      Background="Transparent"
+                      ClipToBounds="True"
+                      VerticalAlignment="Center"
+                      MouseLeftButtonDown="OnTitleBarMouseLeftButtonDown"
+                      MouseLeftButtonUp="OnTitleBarMouseLeftButtonUp"
+                      MouseMove="OnTitleBarMouseMove"
+                      LostMouseCapture="OnTitleBarLostMouseCapture">
+                    <Grid ClipToBounds="True">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" MinWidth="0" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+
+                        <Grid Grid.Column="0"
+                              Margin="0,0,12,0"
+                              MinWidth="0"
+                              IsHitTestVisible="False"
+                              VerticalAlignment="Center">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto" />
+                                <ColumnDefinition Width="*" MinWidth="0" />
+                            </Grid.ColumnDefinitions>
+
+                            <TextBlock Grid.Column="0"
+                                       Text="CaseGraph Offline"
+                                       TextTrimming="CharacterEllipsis"
+                                       Style="{StaticResource AppTitleTextStyle}" />
+                            <TextBlock Grid.Column="1"
+                                       Text="Case workspace + evidence vault baseline"
+                                       TextTrimming="CharacterEllipsis"
+                                       Style="{StaticResource AppSubtitleTextStyle}" />
+                        </Grid>
+
+                        <StackPanel Grid.Column="1"
+                                    Orientation="Horizontal"
+                                    VerticalAlignment="Center">
+                            <TextBox Width="260"
+                                     Margin="{StaticResource SpaceRight12}"
+                                     Text="{Binding GlobalSearchQuery, UpdateSourceTrigger=PropertyChanged}"
+                                     Style="{StaticResource TopBarTextBoxStyle}"
+                                     ToolTip="Global search placeholder" />
+
+                            <ComboBox Width="240"
+                                      Margin="{StaticResource SpaceRight12}"
+                                      ItemsSource="{Binding AvailableCases}"
+                                      SelectedItem="{Binding SelectedCase, Mode=TwoWay}"
+                                      DisplayMemberPath="Name"
+                                      Style="{StaticResource TopBarComboBoxStyle}" />
+
+                            <Button Content="Open Case"
+                                    Margin="{StaticResource SpaceRight12}"
+                                    Command="{Binding OpenSelectedCaseCommand}"
+                                    ToolTip="{Binding OpenCaseAvailabilityText}"
+                                    Style="{StaticResource TopBarButtonStyle}" />
+
+                            <Button Content="Toggle Theme"
+                                    Margin="{StaticResource SpaceRight12}"
+                                    Command="{Binding ToggleThemeCommand}"
+                                    Style="{StaticResource TopBarButtonStyle}" />
+
+                            <Button Content="Evidence Drawer"
+                                    Style="{StaticResource TopBarButtonStyle}"
+                                    Command="{Binding ToggleEvidenceDrawerCommand}" />
+                        </StackPanel>
+                    </Grid>
+                </Grid>
+
+                <StackPanel Grid.Column="1"
+                            Orientation="Horizontal"
+                            VerticalAlignment="Center"
+                            HorizontalAlignment="Right">
+                    <Button Width="{x:Static local:MainWindow.WindowControlButtonWidth}"
+                            Height="32"
+                            Padding="0"
+                            Click="OnMinimizeButtonClick"
+                            ToolTip="Minimize"
+                            Style="{StaticResource TopBarButtonStyle}">
+                        <TextBlock FontSize="13"
+                                   FontWeight="SemiBold"
+                                   Text="_"
+                                   VerticalAlignment="Center"
+                                   HorizontalAlignment="Center" />
+                    </Button>
+
+                    <Button x:Name="MaximizeRestoreButton"
+                            Width="{x:Static local:MainWindow.WindowControlButtonWidth}"
+                            Height="32"
+                            Padding="0"
+                            Margin="{x:Static local:MainWindow.WindowControlButtonSpacing}"
+                            Click="OnMaximizeRestoreButtonClick"
+                            ToolTip="Maximize"
+                            Style="{StaticResource TopBarButtonStyle}">
+                        <TextBlock x:Name="MaximizeRestoreGlyph"
+                                   FontFamily="Segoe UI Symbol"
+                                   FontSize="13"
+                                   Text="□"
+                                   VerticalAlignment="Center"
+                                   HorizontalAlignment="Center" />
+                    </Button>
+
+                    <Button Width="{x:Static local:MainWindow.WindowControlButtonWidth}"
+                            Height="32"
+                            Padding="0"
+                            Margin="{x:Static local:MainWindow.WindowControlButtonSpacing}"
+                            Click="OnCloseButtonClick"
+                            ToolTip="Close"
+                            Style="{StaticResource TopBarButtonStyle}">
+                        <TextBlock FontSize="13"
+                                   FontWeight="SemiBold"
+                                   Text="X"
+                                   VerticalAlignment="Center"
+                                   HorizontalAlignment="Center" />
+                    </Button>
                 </StackPanel>
-
-                <StackPanel Orientation="Horizontal" DockPanel.Dock="Right" VerticalAlignment="Center">
-                    <TextBox Width="260"
-                             Margin="{StaticResource SpaceRight12}"
-                             Text="{Binding GlobalSearchQuery, UpdateSourceTrigger=PropertyChanged}"
-                             Style="{StaticResource TopBarTextBoxStyle}"
-                             ToolTip="Global search placeholder" />
-
-                    <ComboBox Width="240"
-                              Margin="{StaticResource SpaceRight12}"
-                              ItemsSource="{Binding AvailableCases}"
-                              SelectedItem="{Binding SelectedCase, Mode=TwoWay}"
-                              DisplayMemberPath="Name"
-                              Style="{StaticResource TopBarComboBoxStyle}" />
-
-                    <Button Content="Open Case"
-                            Margin="{StaticResource SpaceRight12}"
-                            Command="{Binding OpenSelectedCaseCommand}"
-                            ToolTip="{Binding OpenCaseAvailabilityText}"
-                            Style="{StaticResource TopBarButtonStyle}" />
-
-                    <Button Content="Toggle Theme"
-                            Margin="{StaticResource SpaceRight12}"
-                            Command="{Binding ToggleThemeCommand}"
-                            Style="{StaticResource TopBarButtonStyle}" />
-
-                    <Button Content="Evidence Drawer"
-                            Command="{Binding ToggleEvidenceDrawerCommand}"
-                            Style="{StaticResource TopBarButtonStyle}" />
-                </StackPanel>
-            </DockPanel>
+            </Grid>
         </Border>
 
         <Grid Grid.Row="1" Margin="{StaticResource Space16}">
