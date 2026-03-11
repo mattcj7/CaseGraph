@@ -1,4 +1,5 @@
 using CaseGraph.Core.Abstractions;
+using CaseGraph.Core.Diagnostics;
 using CaseGraph.Core.Models;
 using CaseGraph.Infrastructure.Persistence;
 using CaseGraph.Infrastructure.Persistence.Entities;
@@ -15,6 +16,7 @@ using System.Text.Json;
 
 namespace CaseGraph.Infrastructure.Tests;
 
+[Collection("PerformanceInstrumentationLogEnvironment")]
 public sealed class MessageIngestAndSearchTests
 {
     [Fact]
@@ -1363,6 +1365,198 @@ public sealed class MessageIngestAndSearchTests
         Assert.Equal(first, totalRows);
     }
 
+    [Fact]
+    public async Task IngestMessagesFromEvidenceAsync_CsvAliasHeaders_ParsesAndLogsDiagnostics()
+    {
+        var logsRoot = CreateLogDirectory();
+
+        try
+        {
+            using var logOverride = new LogDirectoryOverrideScope(logsRoot);
+            await using var fixture = await WorkspaceFixture.CreateAsync();
+            var workspace = fixture.Services.GetRequiredService<ICaseWorkspaceService>();
+            var vault = fixture.Services.GetRequiredService<IEvidenceVaultService>();
+            var ingest = fixture.Services.GetRequiredService<IMessageIngestService>();
+
+            var caseInfo = await workspace.CreateCaseAsync("Alias CSV Case", CancellationToken.None);
+            var sourceCsv = fixture.CreateMessagesCsv(
+                "messages-alias.csv",
+                new[]
+                {
+                    "Sent Time",
+                    "Incoming/Outgoing",
+                    "From",
+                    "To",
+                    "Message Content",
+                    "Chat ID",
+                    "Service",
+                    "Mystery Header"
+                },
+                new[]
+                {
+                    new[]
+                    {
+                        "2026-02-13T12:00:00Z",
+                        "Incoming",
+                        "+15550001",
+                        "+15550002",
+                        "Meet at checkpoint alpha.",
+                        "thread-alpha",
+                        "Signal",
+                        "ignored"
+                    },
+                    new[]
+                    {
+                        "2026-02-13T12:01:00Z",
+                        "Outgoing",
+                        "+15550002",
+                        "+15550001",
+                        "Move now.",
+                        "thread-alpha",
+                        "Signal",
+                        "ignored"
+                    }
+                }
+            );
+            var imported = await vault.ImportEvidenceFileAsync(caseInfo, sourceCsv, null, CancellationToken.None);
+
+            EvidenceItemRecord evidenceRecord;
+            await using (var db = await fixture.CreateDbContextAsync())
+            {
+                evidenceRecord = await db.EvidenceItems
+                    .AsNoTracking()
+                    .FirstAsync(e => e.EvidenceItemId == imported.EvidenceItemId);
+            }
+
+            var extracted = await ingest.IngestMessagesFromEvidenceAsync(
+                caseInfo.CaseId,
+                evidenceRecord,
+                progress: null,
+                CancellationToken.None
+            );
+
+            Assert.Equal(2, extracted);
+
+            await using (var verifyDb = await fixture.CreateDbContextAsync())
+            {
+                var messages = await verifyDb.MessageEvents
+                    .Where(e => e.EvidenceItemId == imported.EvidenceItemId)
+                    .ToListAsync();
+                messages = messages
+                    .OrderBy(message => message.TimestampUtc)
+                    .ToList();
+
+                Assert.Equal(2, messages.Count);
+                Assert.All(messages, message => Assert.StartsWith("csv:messages-alias.csv#row=", message.SourceLocator, StringComparison.Ordinal));
+                Assert.All(messages, message => Assert.Equal("Signal", message.Platform));
+            }
+
+            var events = ReadStructuredEvents(AppFileLogger.GetCurrentLogPath());
+            var schema = events.Last(e => TryGetString(e, "eventName") == "MessagesIngestSchemaMatched"
+                && TryGetString(e, "parserFamily") == "CSV");
+            var result = events.Last(e => TryGetString(e, "eventName") == "MessagesIngestParserResult"
+                && TryGetString(e, "parserFamily") == "CSV");
+
+            Assert.Contains("Body", TryGetString(schema, "matchedFields") ?? string.Empty, StringComparison.Ordinal);
+            Assert.Contains("Mystery Header", TryGetString(schema, "unmappedHeaders") ?? string.Empty, StringComparison.Ordinal);
+            Assert.Equal("2", TryGetString(result, "parsedRows"));
+            Assert.Equal("0", TryGetString(result, "skippedRows"));
+        }
+        finally
+        {
+            TryDeleteDirectory(logsRoot);
+        }
+    }
+
+    [Fact]
+    public async Task IngestMessagesFromEvidenceAsync_T0036SyntheticCsv_ParsesThroughNormalPath()
+    {
+        await using var fixture = await WorkspaceFixture.CreateAsync();
+        var workspace = fixture.Services.GetRequiredService<ICaseWorkspaceService>();
+        var vault = fixture.Services.GetRequiredService<IEvidenceVaultService>();
+        var ingest = fixture.Services.GetRequiredService<IMessageIngestService>();
+
+        var caseInfo = await workspace.CreateCaseAsync("Synthetic CSV Case", CancellationToken.None);
+        var sourceCsv = fixture.CreateMessagesCsv(
+            "messages.csv",
+            new[]
+            {
+                "MessageId",
+                "ThreadId",
+                "ThreadName",
+                "Sender",
+                "Recipients",
+                "SentUtc",
+                "Direction",
+                "Body",
+                "Notes"
+            },
+            new[]
+            {
+                new[]
+                {
+                    "msg-0001",
+                    "thread-001",
+                    "Pre-event coordination",
+                    "Synthetic Avery Harbor 01",
+                    "Synthetic Jordan Marlowe 02; Synthetic Riley Vale 03",
+                    "2025-02-13T21:10:05.0000000+00:00",
+                    "Outgoing",
+                    "Synthetic Avery Harbor 01: check south camera near North Lot before 21:00. Keep this synthetic scenario quiet.",
+                    "Synthetic fictional message content."
+                },
+                new[]
+                {
+                    "msg-0002",
+                    "thread-001",
+                    "Pre-event coordination",
+                    "Synthetic Jordan Marlowe 02",
+                    "Synthetic Avery Harbor 01",
+                    "2025-02-13T21:13:12.0000000+00:00",
+                    "Incoming",
+                    "Synthetic Jordan Marlowe 02: window is open at North Lot. Move now and keep eyes on the south camera.",
+                    "Synthetic fictional message content."
+                }
+            }
+        );
+        var imported = await vault.ImportEvidenceFileAsync(caseInfo, sourceCsv, null, CancellationToken.None);
+
+        EvidenceItemRecord evidenceRecord;
+        await using (var db = await fixture.CreateDbContextAsync())
+        {
+            evidenceRecord = await db.EvidenceItems
+                .AsNoTracking()
+                .FirstAsync(e => e.EvidenceItemId == imported.EvidenceItemId);
+        }
+
+        var extracted = await ingest.IngestMessagesFromEvidenceAsync(
+            caseInfo.CaseId,
+            evidenceRecord,
+            progress: null,
+            CancellationToken.None
+        );
+
+        Assert.Equal(2, extracted);
+
+        await using var verifyDb = await fixture.CreateDbContextAsync();
+        var threads = await verifyDb.MessageThreads
+            .Where(thread => thread.EvidenceItemId == imported.EvidenceItemId)
+            .ToListAsync();
+        var messages = await verifyDb.MessageEvents
+            .Where(message => message.EvidenceItemId == imported.EvidenceItemId)
+            .ToListAsync();
+        messages = messages
+            .OrderBy(message => message.TimestampUtc)
+            .ToList();
+
+        Assert.Single(threads);
+        Assert.Equal("thread-001", threads[0].ThreadKey);
+        Assert.Equal("Pre-event coordination", threads[0].Title);
+        Assert.Equal(2, messages.Count);
+        Assert.All(messages, message => Assert.StartsWith("csv:messages.csv#row=", message.SourceLocator, StringComparison.Ordinal));
+        Assert.Contains(messages, message => (message.Body ?? string.Empty).Contains("south camera", StringComparison.Ordinal));
+    }
+
     private static async Task<JobRecord> WaitForJobStatusAsync(
         WorkspaceFixture fixture,
         Guid jobId,
@@ -1443,6 +1637,90 @@ public sealed class MessageIngestAndSearchTests
         }
 
         return null;
+    }
+
+    private static IReadOnlyList<JsonElement> ReadStructuredEvents(string logPath)
+    {
+        if (!File.Exists(logPath))
+        {
+            return Array.Empty<JsonElement>();
+        }
+
+        var events = new List<JsonElement>();
+        foreach (var line in File.ReadLines(logPath))
+        {
+            if (string.IsNullOrWhiteSpace(line))
+            {
+                continue;
+            }
+
+            try
+            {
+                using var document = JsonDocument.Parse(line);
+                events.Add(document.RootElement.Clone());
+            }
+            catch (JsonException)
+            {
+            }
+        }
+
+        return events;
+    }
+
+    private static string? TryGetString(JsonElement element, string propertyName)
+    {
+        if (!element.TryGetProperty(propertyName, out var value))
+        {
+            return null;
+        }
+
+        return value.ValueKind == JsonValueKind.Null
+            ? null
+            : value.ToString();
+    }
+
+    private static string CreateLogDirectory()
+    {
+        var path = Path.Combine(
+            Path.GetTempPath(),
+            "CaseGraph.MessageIngestLogs",
+            Guid.NewGuid().ToString("N")
+        );
+        Directory.CreateDirectory(path);
+        return path;
+    }
+
+    private static void TryDeleteDirectory(string path)
+    {
+        if (!Directory.Exists(path))
+        {
+            return;
+        }
+
+        for (var attempt = 1; attempt <= 5; attempt++)
+        {
+            try
+            {
+                Directory.Delete(path, recursive: true);
+                return;
+            }
+            catch (IOException) when (attempt < 5)
+            {
+                Thread.Sleep(50);
+            }
+            catch (UnauthorizedAccessException) when (attempt < 5)
+            {
+                Thread.Sleep(50);
+            }
+            catch (IOException)
+            {
+                return;
+            }
+            catch (UnauthorizedAccessException)
+            {
+                return;
+            }
+        }
     }
 
     private sealed class WorkspaceFixture : IAsyncDisposable
@@ -1599,6 +1877,27 @@ public sealed class MessageIngestAndSearchTests
             return path;
         }
 
+        public string CreateMessagesCsv(
+            string fileName,
+            IReadOnlyList<string> headers,
+            IReadOnlyList<IReadOnlyList<string>> rows
+        )
+        {
+            var sourceDirectory = Path.Combine(_pathProvider.WorkspaceRoot, "source");
+            Directory.CreateDirectory(sourceDirectory);
+
+            var path = Path.Combine(sourceDirectory, fileName);
+            var builder = new StringBuilder();
+            builder.AppendLine(string.Join(",", headers.Select(CsvEscape)));
+            foreach (var row in rows)
+            {
+                builder.AppendLine(string.Join(",", row.Select(CsvEscape)));
+            }
+
+            File.WriteAllText(path, builder.ToString(), Encoding.UTF8);
+            return path;
+        }
+
         public string CreateUfdrArchive(string fileName, params (string entryPath, string content)[] entries)
         {
             var sourceDirectory = Path.Combine(_pathProvider.WorkspaceRoot, "source");
@@ -1626,6 +1925,12 @@ public sealed class MessageIngestAndSearchTests
                 DataType = CellValues.InlineString,
                 InlineString = new InlineString(new Text(value))
             };
+        }
+
+        private static string CsvEscape(string value)
+        {
+            var normalized = value.Replace("\"", "\"\"", StringComparison.Ordinal);
+            return $"\"{normalized}\"";
         }
 
         public Task<WorkspaceDbContext> CreateDbContextAsync()
@@ -1676,6 +1981,22 @@ public sealed class MessageIngestAndSearchTests
                     await Task.Delay(50);
                 }
             }
+        }
+    }
+
+    private sealed class LogDirectoryOverrideScope : IDisposable
+    {
+        private readonly string? _previous;
+
+        public LogDirectoryOverrideScope(string logsDirectory)
+        {
+            _previous = Environment.GetEnvironmentVariable("CASEGRAPH_LOG_DIRECTORY");
+            Environment.SetEnvironmentVariable("CASEGRAPH_LOG_DIRECTORY", logsDirectory);
+        }
+
+        public void Dispose()
+        {
+            Environment.SetEnvironmentVariable("CASEGRAPH_LOG_DIRECTORY", _previous);
         }
     }
 

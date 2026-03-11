@@ -1,6 +1,7 @@
 using CaseGraph.Core.Abstractions;
 using CaseGraph.Core.Diagnostics;
 using CaseGraph.Infrastructure.Diagnostics;
+using CaseGraph.Infrastructure.Import;
 using CaseGraph.Infrastructure.Persistence;
 using CaseGraph.Infrastructure.Persistence.Entities;
 using DocumentFormat.OpenXml.Packaging;
@@ -18,8 +19,9 @@ namespace CaseGraph.Infrastructure.Services;
 
 public sealed class MessageIngestService : IMessageIngestService
 {
-    private const string IngestModuleVersion = "CaseGraph.MessagesIngest/v1";
+    private const string IngestModuleVersion = "CaseGraph.MessagesIngest/v2";
     private const string NoMessageSheetsStatus = "No message sheets found; verify export settings.";
+    private const string NoRecognizedMessageColumnsStatus = "No recognizable message columns found; verify export settings.";
     private const string UfdrUnsupportedStatus = "UFDR message parsing not supported in this build. Generate a Cellebrite XLSX message export and import that.";
     private const string UfdrEncryptedStatus = "UFDR content appears encrypted or unavailable in this build. Generate a Cellebrite XLSX message export and import that.";
 
@@ -35,7 +37,7 @@ public sealed class MessageIngestService : IMessageIngestService
         "Instagram"
     };
 
-    private static readonly string[] UfdrKeywords =
+    private static readonly string[] MessageSheetKeywords =
     {
         "message",
         "sms",
@@ -145,14 +147,30 @@ public sealed class MessageIngestService : IMessageIngestService
 
                 var parseBatch = evidence.FileExtension.ToLowerInvariant() switch
                 {
-                    ".xlsx" => await ParseXlsxAsync(
+                    ".csv" => await ParseCsvAsync(
                         storedAbsolutePath,
+                        evidence.EvidenceItemId,
                         evidence.OriginalFileName,
                         progress,
                         logContext,
                         innerCt
                     ),
-                    ".ufdr" => await ParseUfdrAsync(storedAbsolutePath, progress, logContext, innerCt),
+                    ".xlsx" => await ParseXlsxAsync(
+                        storedAbsolutePath,
+                        evidence.EvidenceItemId,
+                        evidence.OriginalFileName,
+                        progress,
+                        logContext,
+                        innerCt
+                    ),
+                    ".ufdr" => await ParseUfdrAsync(
+                        storedAbsolutePath,
+                        evidence.EvidenceItemId,
+                        evidence.OriginalFileName,
+                        progress,
+                        logContext,
+                        innerCt
+                    ),
                     _ => ParseBatch.Empty("No message parser is available for this evidence type.")
                 };
 
@@ -204,15 +222,122 @@ public sealed class MessageIngestService : IMessageIngestService
         );
     }
 
-    private async Task<ParseBatch> ParseXlsxAsync(
+    private async Task<ParseBatch> ParseCsvAsync(
         string filePath,
+        Guid evidenceItemId,
         string originalFileName,
         IProgress<MessageIngestProgress>? progress,
         string? logContext,
         CancellationToken ct
     )
     {
-        var result = new List<ParsedMessage>();
+        var result = new List<CanonicalMessageRecord>();
+        var processedRows = 0;
+        var skippedRows = 0;
+        var warningsCount = 0;
+        var rowsVisited = 0;
+
+        await using var stream = new FileStream(
+            filePath,
+            FileMode.Open,
+            FileAccess.Read,
+            FileShare.Read,
+            bufferSize: 1024 * 64,
+            FileOptions.Asynchronous | FileOptions.SequentialScan
+        );
+        using var reader = new StreamReader(stream);
+        var headerLine = await reader.ReadLineAsync(ct);
+        if (string.IsNullOrWhiteSpace(headerLine))
+        {
+            return ParseBatch.Empty(NoRecognizedMessageColumnsStatus);
+        }
+
+        var headerValues = ParseCsvLine(headerLine);
+        var fieldMap = MessageCanonicalFieldMap.Create(headerValues);
+        if (!fieldMap.LooksLikeMessageExport)
+        {
+            LogParserSelected(logContext, "CSV", originalFileName, null, "header-alias-miss");
+            LogSchemaMatched(logContext, "CSV", originalFileName, null, fieldMap);
+            LogParserResult(logContext, "CSV", originalFileName, null, fieldMap, 0, 0, 0, 0);
+            return ParseBatch.Empty(NoRecognizedMessageColumnsStatus);
+        }
+
+        LogParserSelected(logContext, "CSV", originalFileName, null, "header-alias-match");
+        LogSchemaMatched(logContext, "CSV", originalFileName, null, fieldMap);
+
+        ReportProgress(progress, 0.03, "Parsing message export...", 0, null);
+
+        var rowNumber = 1;
+        while (true)
+        {
+            ct.ThrowIfCancellationRequested();
+            var line = await reader.ReadLineAsync(ct);
+            if (line is null)
+            {
+                break;
+            }
+
+            rowNumber++;
+            rowsVisited++;
+            var rowValues = ParseCsvLine(line);
+            if (!fieldMap.LooksPopulated(rowValues))
+            {
+                ReportCsvProgress(progress, stream, rowsVisited, result.Count + skippedRows);
+                continue;
+            }
+
+            processedRows++;
+            var sourceLocator = $"csv:{originalFileName}#row={rowNumber}";
+            var parseResult = CanonicalMessageRecord.TryCreate(
+                fieldMap.ReadRow(rowValues),
+                new CanonicalMessageContext(
+                    evidenceItemId,
+                    sourceLocator,
+                    "CSV",
+                    IngestModuleVersion,
+                    PlatformHint: null
+                )
+            );
+            if (!parseResult.Success)
+            {
+                skippedRows++;
+                ReportCsvProgress(progress, stream, rowsVisited, result.Count + skippedRows);
+                continue;
+            }
+
+            var record = parseResult.Record!;
+            warningsCount += record.ParseWarnings.Count;
+            result.Add(record);
+            ReportCsvProgress(progress, stream, rowsVisited, result.Count + skippedRows);
+        }
+
+        LogParserResult(
+            logContext,
+            "CSV",
+            originalFileName,
+            containerLabel: null,
+            fieldMap,
+            processedRows,
+            result.Count,
+            skippedRows,
+            warningsCount
+        );
+
+        return result.Count == 0
+            ? new ParseBatch(Array.Empty<CanonicalMessageRecord>(), EmptyStatusMessage: null)
+            : new ParseBatch(result, EmptyStatusMessage: null);
+    }
+
+    private async Task<ParseBatch> ParseXlsxAsync(
+        string filePath,
+        Guid evidenceItemId,
+        string originalFileName,
+        IProgress<MessageIngestProgress>? progress,
+        string? logContext,
+        CancellationToken ct
+    )
+    {
+        var result = new List<CanonicalMessageRecord>();
         await using var stream = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.Read);
         using var doc = SpreadsheetDocument.Open(stream, false);
         var workbookPart = doc.WorkbookPart ?? throw new InvalidOperationException("XLSX workbook not found.");
@@ -222,166 +347,166 @@ public sealed class MessageIngestService : IMessageIngestService
             return ParseBatch.Empty(NoMessageSheetsStatus);
         }
 
-        var selected = new List<Sheet>();
-        foreach (var preferred in PreferredSheets)
+        var candidates = new List<WorksheetCandidate>();
+        foreach (var sheet in sheets)
         {
-            var found = sheets.FirstOrDefault(s => string.Equals(s.Name?.Value, preferred, StringComparison.OrdinalIgnoreCase));
-            if (found is not null && !selected.Contains(found))
+            ct.ThrowIfCancellationRequested();
+            var rows = GetRows(workbookPart, sheet);
+            if (rows.Count == 0)
             {
-                selected.Add(found);
+                continue;
             }
+
+            var headerValues = ReadWorksheetValues(rows[0], workbookPart.SharedStringTablePart?.SharedStringTable);
+            var fieldMap = MessageCanonicalFieldMap.Create(headerValues);
+            var sheetName = sheet.Name?.Value;
+            var isCandidate = fieldMap.LooksLikeMessageExport
+                || (SheetNameLooksMessageLike(sheetName) && fieldMap.Matches.Count >= 2);
+            if (!isCandidate)
+            {
+                continue;
+            }
+
+            candidates.Add(new WorksheetCandidate(sheet, rows, fieldMap));
         }
 
-        if (selected.Count == 0)
+        if (candidates.Count == 0)
         {
             return ParseBatch.Empty(NoMessageSheetsStatus);
         }
 
-        AppFileLogger.Log(
-            BuildLogMessage(
+        candidates = candidates
+            .OrderBy(candidate => PreferredSheetRank(candidate.Sheet.Name?.Value))
+            .ThenBy(candidate => candidate.Sheet.Name?.Value, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        LogParserSelected(
+            logContext,
+            "XLSX",
+            originalFileName,
+            null,
+            $"sheet-candidates={candidates.Count}"
+        );
+
+        foreach (var candidate in candidates)
+        {
+            LogSchemaMatched(
                 logContext,
-                $"[MessagesIngest] XLSX sheets={string.Join(",", selected.Select(s => s.Name?.Value ?? "Sheet"))}"
-            )
-        );
+                "XLSX",
+                originalFileName,
+                candidate.Sheet.Name?.Value,
+                candidate.FieldMap
+            );
+        }
 
-        var shared = workbookPart.SharedStringTablePart?.SharedStringTable;
-        var totalRows = selected.Sum(s => Math.Max(0, GetRows(workbookPart, s).Count - 1));
-        var processed = 0;
-        ReportProgress(
-            progress,
-            0.03,
-            "Parsing \"Messages\"...",
-            0,
-            totalRows
-        );
+        var totalRows = candidates.Sum(candidate => Math.Max(0, candidate.Rows.Count - 1));
+        var rowsVisited = 0;
+        var processedRows = 0;
+        var skippedRows = 0;
+        var warningsCount = 0;
 
-        foreach (var sheet in selected)
+        ReportProgress(progress, 0.03, "Parsing message export...", 0, totalRows);
+        foreach (var candidate in candidates)
         {
             ct.ThrowIfCancellationRequested();
-            var rows = GetRows(workbookPart, sheet);
-            if (rows.Count <= 1)
-            {
-                continue;
-            }
+            var shared = workbookPart.SharedStringTablePart?.SharedStringTable;
+            var sheetName = candidate.Sheet.Name?.Value ?? "Sheet";
 
-            var header = rows[0].Elements<Cell>()
-                .Select(c => (Index: ColumnIndex(c.CellReference?.Value), Name: HeaderKey(CellText(c, shared))))
-                .Where(x => x.Index >= 0 && x.Name is not null)
-                .ToDictionary(x => x.Index, x => x.Name!, EqualityComparer<int>.Default);
-
-            if (header.Count == 0)
-            {
-                continue;
-            }
-
-            var rowOrdinal = 1u;
-            foreach (var row in rows.Skip(1))
+            for (var rowIndex = 1; rowIndex < candidate.Rows.Count; rowIndex++)
             {
                 ct.ThrowIfCancellationRequested();
-                processed++;
-                rowOrdinal++;
-
-                var map = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
-                foreach (var cell in row.Elements<Cell>())
+                rowsVisited++;
+                var row = candidate.Rows[rowIndex];
+                var rowValues = ReadWorksheetValues(row, shared);
+                if (!candidate.FieldMap.LooksPopulated(rowValues))
                 {
-                    var idx = ColumnIndex(cell.CellReference?.Value);
-                    if (idx < 0 || !header.TryGetValue(idx, out var key))
-                    {
-                        continue;
-                    }
-
-                    map[key] = CellText(cell, shared);
-                }
-
-                var body = map.GetValueOrDefault("body");
-                var sender = map.GetValueOrDefault("sender");
-                var recipients = map.GetValueOrDefault("recipients");
-                if (string.IsNullOrWhiteSpace(body) && string.IsNullOrWhiteSpace(sender) && string.IsNullOrWhiteSpace(recipients))
-                {
-                    if (processed % 5 == 0 || processed == totalRows)
-                    {
-                        ReportProgress(
-                            progress,
-                            totalRows == 0 ? 0.7 : 0.03 + (processed / (double)totalRows) * 0.67,
-                            "Parsing \"Messages\"...",
-                            processed,
-                            totalRows
-                        );
-                    }
-
+                    ReportXlsxProgress(progress, rowsVisited, totalRows);
                     continue;
                 }
 
-                var rowNumber = row.RowIndex?.Value ?? rowOrdinal;
-                var sheetName = sheet.Name?.Value ?? "Sheet";
-                var platform = NormalizePlatform(map.GetValueOrDefault("platform") ?? sheetName);
-                result.Add(new ParsedMessage(
-                    Platform: platform,
-                    ThreadKey: NullIfWhiteSpace(map.GetValueOrDefault("threadkey"))
-                        ?? BuildDeterministicThreadKey(platform, sender, recipients),
-                    ThreadTitle: NullIfWhiteSpace(map.GetValueOrDefault("threadtitle")),
-                    TimestampUtc: ParseTimestamp(map.GetValueOrDefault("timestamp")),
-                    Direction: NormalizeDirection(map.GetValueOrDefault("direction")),
-                    Sender: NullIfWhiteSpace(sender),
-                    Recipients: NullIfWhiteSpace(recipients),
-                    Body: NullIfWhiteSpace(body),
-                    IsDeleted: ParseBoolean(map.GetValueOrDefault("deleted")),
-                    SourceLocator: $"xlsx:{originalFileName}#{sheetName}:R{rowNumber}"
-                ));
-                if (processed % 5 == 0 || processed == totalRows)
+                processedRows++;
+                var rowNumber = row.RowIndex?.Value ?? (uint)(rowIndex + 1);
+                var sourceLocator = $"xlsx:{originalFileName}#{sheetName}:R{rowNumber}";
+                var parseResult = CanonicalMessageRecord.TryCreate(
+                    candidate.FieldMap.ReadRow(rowValues),
+                    new CanonicalMessageContext(
+                        evidenceItemId,
+                        sourceLocator,
+                        "XLSX",
+                        IngestModuleVersion,
+                        PlatformHint: sheetName
+                    )
+                );
+                if (!parseResult.Success)
                 {
-                    ReportProgress(
-                        progress,
-                        totalRows == 0 ? 0.7 : 0.03 + (processed / (double)totalRows) * 0.67,
-                        "Parsing \"Messages\"...",
-                        processed,
-                        totalRows
-                    );
+                    skippedRows++;
+                    ReportXlsxProgress(progress, rowsVisited, totalRows);
+                    continue;
                 }
+
+                var record = parseResult.Record!;
+                warningsCount += record.ParseWarnings.Count;
+                result.Add(record);
+                ReportXlsxProgress(progress, rowsVisited, totalRows);
             }
         }
 
-        AppFileLogger.Log(
-            BuildLogMessage(
-                logContext,
-                $"[MessagesIngest] XLSX rowsProcessed={processed} candidateRows={totalRows} parsedMessages={result.Count}"
-            )
+        LogParserResult(
+            logContext,
+            "XLSX",
+            originalFileName,
+            null,
+            BuildAggregateFieldMap(candidates.Select(candidate => candidate.FieldMap)),
+            processedRows,
+            result.Count,
+            skippedRows,
+            warningsCount
         );
-        return new ParseBatch(result, EmptyStatusMessage: null);
+
+        return result.Count == 0
+            ? new ParseBatch(Array.Empty<CanonicalMessageRecord>(), EmptyStatusMessage: null)
+            : new ParseBatch(result, EmptyStatusMessage: null);
     }
 
     private static List<Row> GetRows(WorkbookPart workbookPart, Sheet sheet)
     {
-        var wsPart = (WorksheetPart)workbookPart.GetPartById(sheet.Id!);
-        return wsPart.Worksheet.GetFirstChild<SheetData>()?.Elements<Row>().ToList() ?? new List<Row>();
+        var worksheetPart = (WorksheetPart)workbookPart.GetPartById(sheet.Id!);
+        return worksheetPart.Worksheet.GetFirstChild<SheetData>()?.Elements<Row>().ToList() ?? new List<Row>();
     }
 
     private async Task<ParseBatch> ParseUfdrAsync(
         string filePath,
+        Guid evidenceItemId,
+        string originalFileName,
         IProgress<MessageIngestProgress>? progress,
         string? logContext,
         CancellationToken ct
     )
     {
-        var result = new List<ParsedMessage>();
+        var result = new List<CanonicalMessageRecord>();
+        var warningsCount = 0;
         await using var stream = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.Read);
         using var archive = new ZipArchive(stream, ZipArchiveMode.Read, leaveOpen: true);
         var candidateEntries = archive.Entries
-            .Where(e => UfdrKeywords.Any(keyword => e.FullName.Contains(keyword, StringComparison.OrdinalIgnoreCase)))
+            .Where(entry => MessageSheetKeywords.Any(keyword =>
+                entry.FullName.Contains(keyword, StringComparison.OrdinalIgnoreCase)))
             .ToList();
         var entries = candidateEntries
-            .Where(e => e.FullName.EndsWith(".json", StringComparison.OrdinalIgnoreCase) || e.FullName.EndsWith(".xml", StringComparison.OrdinalIgnoreCase))
+            .Where(entry =>
+                entry.FullName.EndsWith(".json", StringComparison.OrdinalIgnoreCase)
+                || entry.FullName.EndsWith(".xml", StringComparison.OrdinalIgnoreCase))
             .ToList();
         if (entries.Count == 0)
         {
             return ParseBatch.Empty(UfdrUnsupportedStatus);
         }
 
-        AppFileLogger.Log(
-            BuildLogMessage(
-                logContext,
-                $"[MessagesIngest] UFDR candidateEntries={candidateEntries.Count} parseEntries={entries.Count}"
-            )
+        LogParserSelected(
+            logContext,
+            "UFDR",
+            originalFileName,
+            null,
+            $"candidateEntries={candidateEntries.Count};parseEntries={entries.Count}"
         );
 
         ReportProgress(
@@ -392,6 +517,7 @@ public sealed class MessageIngestService : IMessageIngestService
             entries.Count
         );
 
+        var candidateArtifacts = 0;
         for (var i = 0; i < entries.Count; i++)
         {
             ct.ThrowIfCancellationRequested();
@@ -413,7 +539,15 @@ public sealed class MessageIngestService : IMessageIngestService
                 await using var jsonStream = entry.Open();
                 using var doc = await JsonDocument.ParseAsync(jsonStream, cancellationToken: ct);
                 var artifact = 0;
-                ParseJson(doc.RootElement, $"ufdr:{entry.FullName}", result, ref artifact);
+                ParseJson(
+                    doc.RootElement,
+                    $"ufdr:{entry.FullName}",
+                    evidenceItemId,
+                    result,
+                    ref artifact,
+                    ref candidateArtifacts,
+                    ref warningsCount
+                );
             }
             else
             {
@@ -423,34 +557,47 @@ public sealed class MessageIngestService : IMessageIngestService
                 while (reader.Read())
                 {
                     ct.ThrowIfCancellationRequested();
-                    if (reader.NodeType != XmlNodeType.Element || !(reader.Name.Contains("message", StringComparison.OrdinalIgnoreCase) || reader.Name.Contains("chat", StringComparison.OrdinalIgnoreCase) || reader.Name.Contains("sms", StringComparison.OrdinalIgnoreCase)))
+                    if (reader.NodeType != XmlNodeType.Element
+                        || !(reader.Name.Contains("message", StringComparison.OrdinalIgnoreCase)
+                            || reader.Name.Contains("chat", StringComparison.OrdinalIgnoreCase)
+                            || reader.Name.Contains("sms", StringComparison.OrdinalIgnoreCase)))
                     {
                         continue;
                     }
 
                     using var subtree = reader.ReadSubtree();
-                    var el = XElement.Load(subtree);
+                    var element = XElement.Load(subtree);
                     artifact++;
-                    var body = XmlValue(el, "body", "text", "content", "message");
-                    var sender = XmlValue(el, "sender", "from", "author");
-                    var recipients = XmlValue(el, "recipients", "recipient", "to", "targets");
-                    if (string.IsNullOrWhiteSpace(body) && string.IsNullOrWhiteSpace(sender) && string.IsNullOrWhiteSpace(recipients))
+                    candidateArtifacts++;
+                    var parseResult = CanonicalMessageRecord.TryCreate(
+                        new Dictionary<CanonicalMessageField, string?>
+                        {
+                            [CanonicalMessageField.Platform] = XmlValue(element, "platform", "app", "source"),
+                            [CanonicalMessageField.ThreadExternalId] = XmlValue(element, "threadid", "conversationid", "chatid", "thread", "conversation"),
+                            [CanonicalMessageField.ThreadTitle] = XmlValue(element, "threadtitle", "title", "chattitle"),
+                            [CanonicalMessageField.SentUtc] = XmlValue(element, "timestamp", "time", "date", "createdat", "sentat"),
+                            [CanonicalMessageField.Direction] = XmlValue(element, "direction", "type"),
+                            [CanonicalMessageField.SenderDisplay] = XmlValue(element, "sender", "from", "author"),
+                            [CanonicalMessageField.RecipientDisplays] = XmlValue(element, "recipients", "recipient", "to", "targets"),
+                            [CanonicalMessageField.Body] = XmlValue(element, "body", "text", "content", "message"),
+                            [CanonicalMessageField.DeletedFlag] = XmlValue(element, "deleted", "isdeleted", "removed")
+                        },
+                        new CanonicalMessageContext(
+                            evidenceItemId,
+                            $"ufdr:{entry.FullName}#xpath:/{element.Name.LocalName}[{artifact}]",
+                            "UFDR",
+                            IngestModuleVersion,
+                            PlatformHint: null
+                        )
+                    );
+                    if (!parseResult.Success)
                     {
                         continue;
                     }
 
-                    result.Add(new ParsedMessage(
-                        Platform: NormalizePlatform(XmlValue(el, "platform", "app", "source")),
-                        ThreadKey: XmlValue(el, "threadid", "conversationid", "chatid", "thread", "conversation") ?? $"ufdr-xml-{artifact}",
-                        ThreadTitle: XmlValue(el, "threadtitle", "title", "chattitle"),
-                        TimestampUtc: ParseTimestamp(XmlValue(el, "timestamp", "time", "date", "createdat", "sentat")),
-                        Direction: NormalizeDirection(XmlValue(el, "direction", "type")),
-                        Sender: NullIfWhiteSpace(sender),
-                        Recipients: NullIfWhiteSpace(recipients),
-                        Body: NullIfWhiteSpace(body),
-                        IsDeleted: ParseBoolean(XmlValue(el, "deleted", "isdeleted", "removed")),
-                        SourceLocator: $"ufdr:{entry.FullName}#xpath:/{el.Name.LocalName}[{artifact}]"
-                    ));
+                    var record = parseResult.Record!;
+                    warningsCount += record.ParseWarnings.Count;
+                    result.Add(record);
                 }
             }
 
@@ -463,11 +610,23 @@ public sealed class MessageIngestService : IMessageIngestService
             );
         }
 
+        LogParserResult(
+            logContext,
+            "UFDR",
+            originalFileName,
+            null,
+            fieldMap: null,
+            processedRows: candidateArtifacts,
+            parsedRows: result.Count,
+            skippedRows: Math.Max(candidateArtifacts - result.Count, 0),
+            warningsCount: warningsCount
+        );
+
         if (result.Count == 0)
         {
-            var encrypted = candidateEntries.Any(
-                e => UfdrEncryptedKeywords.Any(keyword => e.FullName.Contains(keyword, StringComparison.OrdinalIgnoreCase))
-            );
+            var encrypted = candidateEntries.Any(entry =>
+                UfdrEncryptedKeywords.Any(keyword =>
+                    entry.FullName.Contains(keyword, StringComparison.OrdinalIgnoreCase)));
             return ParseBatch.Empty(encrypted ? UfdrEncryptedStatus : UfdrUnsupportedStatus);
         }
 
@@ -477,7 +636,7 @@ public sealed class MessageIngestService : IMessageIngestService
     private async Task<int> PersistAsync(
         Guid caseId,
         Guid evidenceItemId,
-        IReadOnlyList<ParsedMessage> parsed,
+        IReadOnlyList<CanonicalMessageRecord> parsed,
         CancellationToken ct
     )
     {
@@ -497,7 +656,7 @@ public sealed class MessageIngestService : IMessageIngestService
     private async Task<int> PersistCoreAsync(
         Guid caseId,
         Guid evidenceItemId,
-        IReadOnlyList<ParsedMessage> parsed,
+        IReadOnlyList<CanonicalMessageRecord> parsed,
         CancellationToken ct
     )
     {
@@ -505,15 +664,15 @@ public sealed class MessageIngestService : IMessageIngestService
         await using var tx = await db.Database.BeginTransactionAsync(ct);
 
         var threadIds = await db.MessageThreads
-            .Where(t => t.EvidenceItemId == evidenceItemId)
-            .Select(t => t.ThreadId)
+            .Where(thread => thread.EvidenceItemId == evidenceItemId)
+            .Select(thread => thread.ThreadId)
             .ToListAsync(ct);
 
         if (threadIds.Count > 0)
         {
-            var participants = await db.MessageParticipants.Where(p => threadIds.Contains(p.ThreadId)).ToListAsync(ct);
-            var events = await db.MessageEvents.Where(e => threadIds.Contains(e.ThreadId)).ToListAsync(ct);
-            var threads = await db.MessageThreads.Where(t => threadIds.Contains(t.ThreadId)).ToListAsync(ct);
+            var participants = await db.MessageParticipants.Where(participant => threadIds.Contains(participant.ThreadId)).ToListAsync(ct);
+            var events = await db.MessageEvents.Where(message => threadIds.Contains(message.ThreadId)).ToListAsync(ct);
+            var threads = await db.MessageThreads.Where(thread => threadIds.Contains(thread.ThreadId)).ToListAsync(ct);
             db.MessageParticipants.RemoveRange(participants);
             db.MessageEvents.RemoveRange(events);
             db.MessageThreads.RemoveRange(threads);
@@ -532,8 +691,9 @@ public sealed class MessageIngestService : IMessageIngestService
         foreach (var item in parsed)
         {
             ct.ThrowIfCancellationRequested();
-            var platform = NormalizePlatform(item.Platform);
-            var threadKey = string.IsNullOrWhiteSpace(item.ThreadKey) ? $"{platform}:{item.SourceLocator}" : item.ThreadKey;
+
+            var platform = CanonicalMessageRecord.NormalizePlatform(item.Platform);
+            var threadKey = ResolveThreadKey(item);
             var compositeKey = $"{platform}|{threadKey}";
             if (!threadMap.TryGetValue(compositeKey, out var thread))
             {
@@ -545,11 +705,15 @@ public sealed class MessageIngestService : IMessageIngestService
                     Platform = platform,
                     ThreadKey = threadKey,
                     Title = item.ThreadTitle,
-                    CreatedAtUtc = item.TimestampUtc ?? _clock.UtcNow.ToUniversalTime(),
+                    CreatedAtUtc = item.SentUtc ?? _clock.UtcNow.ToUniversalTime(),
                     SourceLocator = item.SourceLocator,
-                    IngestModuleVersion = IngestModuleVersion
+                    IngestModuleVersion = item.ParserVersion
                 };
                 threadMap[compositeKey] = thread;
+            }
+            else if (string.IsNullOrWhiteSpace(thread.Title) && !string.IsNullOrWhiteSpace(item.ThreadTitle))
+            {
+                thread.Title = item.ThreadTitle;
             }
 
             eventRecords.Add(new MessageEventRecord
@@ -559,14 +723,14 @@ public sealed class MessageIngestService : IMessageIngestService
                 CaseId = caseId,
                 EvidenceItemId = evidenceItemId,
                 Platform = platform,
-                TimestampUtc = item.TimestampUtc,
-                Direction = NormalizeDirection(item.Direction),
-                Sender = item.Sender,
-                Recipients = item.Recipients,
+                TimestampUtc = item.SentUtc,
+                Direction = CanonicalMessageRecord.NormalizeDirection(item.Direction),
+                Sender = item.SenderValue,
+                Recipients = item.RecipientValue,
                 Body = item.Body,
-                IsDeleted = item.IsDeleted,
+                IsDeleted = item.DeletedFlag,
                 SourceLocator = item.SourceLocator,
-                IngestModuleVersion = IngestModuleVersion
+                IngestModuleVersion = item.ParserVersion
             });
         }
 
@@ -583,7 +747,7 @@ public sealed class MessageIngestService : IMessageIngestService
         IEnumerable<MessageEventRecord> events
     )
     {
-        var byThread = events.GroupBy(e => e.ThreadId).ToDictionary(g => g.Key, g => g.ToList());
+        var byThread = events.GroupBy(message => message.ThreadId).ToDictionary(group => group.Key, group => group.ToList());
         var result = new List<MessageParticipantRecord>();
         foreach (var thread in threads)
         {
@@ -593,9 +757,9 @@ public sealed class MessageIngestService : IMessageIngestService
             }
 
             var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            foreach (var e in threadEvents)
+            foreach (var message in threadEvents)
             {
-                foreach (var value in SplitIdentifiers(e.Sender).Concat(SplitIdentifiers(e.Recipients)))
+                foreach (var value in SplitIdentifiers(message.Sender).Concat(SplitIdentifiers(message.Recipients)))
                 {
                     if (!seen.Add(value))
                     {
@@ -608,8 +772,8 @@ public sealed class MessageIngestService : IMessageIngestService
                         ThreadId = thread.ThreadId,
                         Value = value,
                         Kind = IdentifierKind(value),
-                        SourceLocator = e.SourceLocator,
-                        IngestModuleVersion = IngestModuleVersion
+                        SourceLocator = message.SourceLocator,
+                        IngestModuleVersion = message.IngestModuleVersion
                     });
                 }
             }
@@ -626,8 +790,8 @@ public sealed class MessageIngestService : IMessageIngestService
         }
 
         return raw.Split([',', ';', '|'], StringSplitOptions.RemoveEmptyEntries)
-            .Select(v => v.Trim())
-            .Where(v => v.Length > 0);
+            .Select(value => value.Trim())
+            .Where(value => value.Length > 0);
     }
 
     private static string IdentifierKind(string value)
@@ -640,40 +804,64 @@ public sealed class MessageIngestService : IMessageIngestService
         return value.Count(char.IsDigit) >= 7 ? "phone" : "handle";
     }
 
-    private static void ParseJson(JsonElement element, string sourcePrefix, List<ParsedMessage> output, ref int artifact)
+    private static void ParseJson(
+        JsonElement element,
+        string sourcePrefix,
+        Guid evidenceItemId,
+        List<CanonicalMessageRecord> output,
+        ref int artifact,
+        ref int candidateArtifacts,
+        ref int warningsCount
+    )
     {
         switch (element.ValueKind)
         {
             case JsonValueKind.Array:
                 foreach (var item in element.EnumerateArray())
                 {
-                    ParseJson(item, sourcePrefix, output, ref artifact);
+                    ParseJson(item, sourcePrefix, evidenceItemId, output, ref artifact, ref candidateArtifacts, ref warningsCount);
                 }
                 break;
+
             case JsonValueKind.Object:
                 artifact++;
-                var body = JsonValue(element, "body", "text", "message", "content");
-                var sender = JsonValue(element, "sender", "from", "author");
-                var recipients = JsonValue(element, "recipients", "recipient", "to", "targets");
-                if (!string.IsNullOrWhiteSpace(body) || !string.IsNullOrWhiteSpace(sender) || !string.IsNullOrWhiteSpace(recipients))
+                var values = new Dictionary<CanonicalMessageField, string?>
                 {
-                    output.Add(new ParsedMessage(
-                        Platform: NormalizePlatform(JsonValue(element, "platform", "app", "source")),
-                        ThreadKey: JsonValue(element, "threadid", "conversationid", "chatid", "thread", "conversation") ?? $"ufdr-{artifact}",
-                        ThreadTitle: JsonValue(element, "threadtitle", "title", "chattitle"),
-                        TimestampUtc: ParseTimestamp(JsonValue(element, "timestamp", "time", "date", "createdat", "sentat")),
-                        Direction: NormalizeDirection(JsonValue(element, "direction", "type")),
-                        Sender: NullIfWhiteSpace(sender),
-                        Recipients: NullIfWhiteSpace(recipients),
-                        Body: NullIfWhiteSpace(body),
-                        IsDeleted: ParseBoolean(JsonValue(element, "deleted", "isdeleted", "removed")),
-                        SourceLocator: $"{sourcePrefix}#artifact:{artifact}"
-                    ));
+                    [CanonicalMessageField.Platform] = JsonValue(element, "platform", "app", "source"),
+                    [CanonicalMessageField.ThreadExternalId] = JsonValue(element, "threadid", "conversationid", "chatid", "thread", "conversation"),
+                    [CanonicalMessageField.ThreadTitle] = JsonValue(element, "threadtitle", "title", "chattitle"),
+                    [CanonicalMessageField.SentUtc] = JsonValue(element, "timestamp", "time", "date", "createdat", "sentat"),
+                    [CanonicalMessageField.Direction] = JsonValue(element, "direction", "type"),
+                    [CanonicalMessageField.SenderDisplay] = JsonValue(element, "sender", "from", "author"),
+                    [CanonicalMessageField.RecipientDisplays] = JsonValue(element, "recipients", "recipient", "to", "targets"),
+                    [CanonicalMessageField.Body] = JsonValue(element, "body", "text", "message", "content"),
+                    [CanonicalMessageField.DeletedFlag] = JsonValue(element, "deleted", "isdeleted", "removed")
+                };
+
+                if (values.Values.Any(value => !string.IsNullOrWhiteSpace(value)))
+                {
+                    candidateArtifacts++;
+                    var parseResult = CanonicalMessageRecord.TryCreate(
+                        values,
+                        new CanonicalMessageContext(
+                            evidenceItemId,
+                            $"{sourcePrefix}#artifact:{artifact}",
+                            "UFDR",
+                            IngestModuleVersion,
+                            PlatformHint: null
+                        )
+                    );
+                    if (parseResult.Success)
+                    {
+                        var record = parseResult.Record!;
+                        warningsCount += record.ParseWarnings.Count;
+                        output.Add(record);
+                    }
                 }
 
                 foreach (var property in element.EnumerateObject())
                 {
-                    ParseJson(property.Value, sourcePrefix, output, ref artifact);
+                    ParseJson(property.Value, sourcePrefix, evidenceItemId, output, ref artifact, ref candidateArtifacts, ref warningsCount);
                 }
                 break;
         }
@@ -703,13 +891,15 @@ public sealed class MessageIngestService : IMessageIngestService
     {
         foreach (var name in names)
         {
-            var attr = element.Attributes().FirstOrDefault(a => string.Equals(a.Name.LocalName, name, StringComparison.OrdinalIgnoreCase));
-            if (attr is not null && !string.IsNullOrWhiteSpace(attr.Value))
+            var attribute = element.Attributes().FirstOrDefault(item =>
+                string.Equals(item.Name.LocalName, name, StringComparison.OrdinalIgnoreCase));
+            if (attribute is not null && !string.IsNullOrWhiteSpace(attribute.Value))
             {
-                return attr.Value.Trim();
+                return attribute.Value.Trim();
             }
 
-            var child = element.Descendants().FirstOrDefault(d => string.Equals(d.Name.LocalName, name, StringComparison.OrdinalIgnoreCase));
+            var child = element.Descendants().FirstOrDefault(item =>
+                string.Equals(item.Name.LocalName, name, StringComparison.OrdinalIgnoreCase));
             if (child is not null && !string.IsNullOrWhiteSpace(child.Value))
             {
                 return child.Value.Trim();
@@ -724,9 +914,9 @@ public sealed class MessageIngestService : IMessageIngestService
         if (cell.DataType?.Value == CellValues.SharedString)
         {
             var raw = cell.CellValue?.InnerText ?? cell.InnerText;
-            if (int.TryParse(raw, NumberStyles.Integer, CultureInfo.InvariantCulture, out var idx) && shared is not null)
+            if (int.TryParse(raw, NumberStyles.Integer, CultureInfo.InvariantCulture, out var index) && shared is not null)
             {
-                return shared.ElementAtOrDefault(idx)?.InnerText ?? string.Empty;
+                return shared.ElementAtOrDefault(index)?.InnerText ?? string.Empty;
             }
         }
 
@@ -741,6 +931,35 @@ public sealed class MessageIngestService : IMessageIngestService
         }
 
         return cell.CellValue?.InnerText ?? cell.InnerText ?? string.Empty;
+    }
+
+    private static List<string?> ReadWorksheetValues(Row row, SharedStringTable? shared)
+    {
+        var values = new List<string?>();
+        foreach (var cell in row.Elements<Cell>())
+        {
+            var index = ColumnIndex(cell.CellReference?.Value);
+            if (index < 0)
+            {
+                continue;
+            }
+
+            while (values.Count < index)
+            {
+                values.Add(null);
+            }
+
+            if (values.Count == index)
+            {
+                values.Add(CellText(cell, shared));
+            }
+            else
+            {
+                values[index] = CellText(cell, shared);
+            }
+        }
+
+        return values;
     }
 
     private static int ColumnIndex(string? cellReference)
@@ -765,115 +984,135 @@ public sealed class MessageIngestService : IMessageIngestService
         return value - 1;
     }
 
-    private static string? HeaderKey(string? value)
+    private static List<string?> ParseCsvLine(string line)
     {
-        if (string.IsNullOrWhiteSpace(value))
+        var values = new List<string?>();
+        if (line.Length == 0)
         {
-            return null;
+            values.Add(string.Empty);
+            return values;
         }
 
-        var normalized = new string(value.Trim().ToLowerInvariant().Where(char.IsLetterOrDigit).ToArray());
-        return normalized switch
-        {
-            "timestamp" or "time" or "date" or "datetime" or "sentat" or "createdat" => "timestamp",
-            "direction" or "type" or "incomingoutgoing" => "direction",
-            "sender" or "from" or "author" or "source" => "sender",
-            "recipient" or "recipients" or "to" or "targets" or "destination" => "recipients",
-            "body" or "message" or "text" or "content" or "messagebody" => "body",
-            "deleted" or "isdeleted" or "removed" => "deleted",
-            "conversationid" or "threadid" or "chatid" or "thread" or "conversation" => "threadkey",
-            "platform" or "app" or "sourceapp" => "platform",
-            "threadtitle" or "conversationtitle" or "chattitle" or "title" => "threadtitle",
-            _ => null
-        };
-    }
+        var current = new StringBuilder(line.Length);
+        var insideQuotes = false;
 
-    private static DateTimeOffset? ParseTimestamp(string? value)
-    {
-        if (string.IsNullOrWhiteSpace(value))
+        for (var i = 0; i < line.Length; i++)
         {
-            return null;
-        }
-
-        if (DateTimeOffset.TryParse(value, CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal, out var dto))
-        {
-            return dto.ToUniversalTime();
-        }
-
-        if (DateTime.TryParse(value, CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal, out var dt))
-        {
-            return new DateTimeOffset(dt.ToUniversalTime());
-        }
-
-        if (double.TryParse(value, NumberStyles.Any, CultureInfo.InvariantCulture, out var serial))
-        {
-            try
+            var ch = line[i];
+            if (insideQuotes)
             {
-                return new DateTimeOffset(DateTime.SpecifyKind(DateTime.FromOADate(serial), DateTimeKind.Utc));
+                if (ch == '"')
+                {
+                    var isEscapedQuote = i + 1 < line.Length && line[i + 1] == '"';
+                    if (isEscapedQuote)
+                    {
+                        current.Append('"');
+                        i++;
+                        continue;
+                    }
+
+                    insideQuotes = false;
+                    continue;
+                }
+
+                current.Append(ch);
+                continue;
             }
-            catch (ArgumentException)
+
+            if (ch == ',')
             {
+                values.Add(current.ToString());
+                current.Clear();
+                continue;
+            }
+
+            if (ch == '"')
+            {
+                insideQuotes = true;
+                continue;
+            }
+
+            current.Append(ch);
+        }
+
+        values.Add(current.ToString());
+        return values;
+    }
+
+    private static bool SheetNameLooksMessageLike(string? sheetName)
+    {
+        if (string.IsNullOrWhiteSpace(sheetName))
+        {
+            return false;
+        }
+
+        return MessageSheetKeywords.Any(keyword =>
+            sheetName.Contains(keyword, StringComparison.OrdinalIgnoreCase));
+    }
+
+    private static int PreferredSheetRank(string? sheetName)
+    {
+        if (string.IsNullOrWhiteSpace(sheetName))
+        {
+            return int.MaxValue;
+        }
+
+        for (var index = 0; index < PreferredSheets.Length; index++)
+        {
+            if (string.Equals(PreferredSheets[index], sheetName, StringComparison.OrdinalIgnoreCase))
+            {
+                return index;
             }
         }
 
-        return null;
+        return PreferredSheets.Length + 1;
     }
 
-    private static string NormalizeDirection(string? value)
+    private static MessageCanonicalFieldMap BuildAggregateFieldMap(IEnumerable<MessageCanonicalFieldMap> maps)
     {
-        if (string.IsNullOrWhiteSpace(value))
-        {
-            return "Unknown";
-        }
+        var matches = maps
+            .SelectMany(map => map.Matches)
+            .GroupBy(match => $"{match.Field}|{match.Header}", StringComparer.Ordinal)
+            .Select(group => group.First())
+            .OrderBy(match => match.Field.ToString(), StringComparer.Ordinal)
+            .ThenBy(match => match.Header, StringComparer.Ordinal)
+            .ToArray();
+        var unmappedHeaders = maps
+            .SelectMany(map => map.UnmappedHeaders)
+            .Distinct(StringComparer.Ordinal)
+            .OrderBy(value => value, StringComparer.Ordinal)
+            .ToArray();
 
-        var normalized = value.Trim().ToLowerInvariant();
-        if (normalized.Contains("in"))
-        {
-            return "Incoming";
-        }
-
-        if (normalized.Contains("out"))
-        {
-            return "Outgoing";
-        }
-
-        return "Unknown";
+        return new MessageCanonicalFieldMap(
+            columns: new Dictionary<int, CanonicalMessageField>(),
+            matches: matches,
+            unmappedHeaders: unmappedHeaders,
+            looksLikeMessageExport: true
+        );
     }
 
-    private static string NormalizePlatform(string? value)
+    private static string ResolveThreadKey(CanonicalMessageRecord item)
     {
-        if (string.IsNullOrWhiteSpace(value))
+        if (!string.IsNullOrWhiteSpace(item.ThreadExternalId))
         {
-            return "OTHER";
+            return item.ThreadExternalId;
         }
 
-        var normalized = value.Trim().ToLowerInvariant();
-        if (normalized.Contains("sms"))
+        if (!string.IsNullOrWhiteSpace(item.SenderValue) || !string.IsNullOrWhiteSpace(item.RecipientValue))
         {
-            return "SMS";
+            return BuildDeterministicThreadKey(
+                item.Platform,
+                item.SenderValue,
+                item.RecipientValue
+            );
         }
 
-        if (normalized.Contains("imessage"))
+        if (!string.IsNullOrWhiteSpace(item.MessageExternalId))
         {
-            return "iMessage";
+            return $"message:{item.MessageExternalId}";
         }
 
-        if (normalized.Contains("whatsapp"))
-        {
-            return "WhatsApp";
-        }
-
-        if (normalized.Contains("signal"))
-        {
-            return "Signal";
-        }
-
-        if (normalized.Contains("instagram"))
-        {
-            return "Instagram";
-        }
-
-        return "OTHER";
+        return $"source:{item.SourceLocator}";
     }
 
     private static string BuildDeterministicThreadKey(
@@ -884,7 +1123,7 @@ public sealed class MessageIngestService : IMessageIngestService
     {
         var canonical = string.Join(
             "|",
-            NormalizePlatform(platform),
+            CanonicalMessageRecord.NormalizePlatform(platform),
             CanonicalIdentifierSet(sender),
             CanonicalIdentifierSet(recipients)
         );
@@ -908,16 +1147,6 @@ public sealed class MessageIngestService : IMessageIngestService
         );
     }
 
-    private static bool ParseBoolean(string? value)
-    {
-        if (string.IsNullOrWhiteSpace(value))
-        {
-            return false;
-        }
-
-        return value.Trim().ToLowerInvariant() is "1" or "true" or "yes" or "y" or "deleted";
-    }
-
     private static void ReportProgress(
         IProgress<MessageIngestProgress>? progress,
         double fraction,
@@ -936,6 +1165,138 @@ public sealed class MessageIngestService : IMessageIngestService
         );
     }
 
+    private static void ReportCsvProgress(
+        IProgress<MessageIngestProgress>? progress,
+        FileStream stream,
+        int rowsVisited,
+        int totalConsidered
+    )
+    {
+        if (progress is null)
+        {
+            return;
+        }
+
+        if (rowsVisited > 0 && rowsVisited % 25 != 0)
+        {
+            return;
+        }
+
+        var fraction = stream.Length <= 0
+            ? 0.7
+            : 0.03 + (Math.Clamp(stream.Position / (double)stream.Length, 0, 1) * 0.67);
+        ReportProgress(progress, fraction, "Parsing message export...", totalConsidered, null);
+    }
+
+    private static void ReportXlsxProgress(
+        IProgress<MessageIngestProgress>? progress,
+        int rowsVisited,
+        int totalRows
+    )
+    {
+        if (progress is null)
+        {
+            return;
+        }
+
+        if (rowsVisited > 0 && rowsVisited % 5 != 0 && rowsVisited != totalRows)
+        {
+            return;
+        }
+
+        var fraction = totalRows == 0
+            ? 0.7
+            : 0.03 + (rowsVisited / (double)totalRows) * 0.67;
+        ReportProgress(progress, fraction, "Parsing message export...", rowsVisited, totalRows);
+    }
+
+    private static void LogParserSelected(
+        string? logContext,
+        string parserFamily,
+        string sourceLabel,
+        string? containerLabel,
+        string detection
+    )
+    {
+        AppFileLogger.LogEvent(
+            eventName: "MessagesIngestParserSelected",
+            level: "INFO",
+            message: BuildLogMessage(logContext, "Message ingest parser selected."),
+            fields: new Dictionary<string, object?>
+            {
+                ["parserFamily"] = parserFamily,
+                ["sourceLabel"] = sourceLabel,
+                ["containerLabel"] = containerLabel,
+                ["detection"] = detection
+            }
+        );
+    }
+
+    private static void LogSchemaMatched(
+        string? logContext,
+        string parserFamily,
+        string sourceLabel,
+        string? containerLabel,
+        MessageCanonicalFieldMap fieldMap
+    )
+    {
+        AppFileLogger.LogEvent(
+            eventName: "MessagesIngestSchemaMatched",
+            level: "INFO",
+            message: BuildLogMessage(logContext, "Message ingest schema matched canonical fields."),
+            fields: new Dictionary<string, object?>
+            {
+                ["parserFamily"] = parserFamily,
+                ["sourceLabel"] = sourceLabel,
+                ["containerLabel"] = containerLabel,
+                ["matchedFields"] = string.Join(",", fieldMap.MatchedFields.Select(field => field.ToString())),
+                ["matchedColumns"] = string.Join(
+                    " | ",
+                    fieldMap.Matches
+                        .OrderBy(match => match.ColumnIndex)
+                        .Select(match => $"{match.Field}:{match.Header}")),
+                ["unmappedHeaders"] = string.Join(",", fieldMap.UnmappedHeaders),
+                ["recognizedHeaderCount"] = fieldMap.Matches.Count,
+                ["looksLikeMessageExport"] = fieldMap.LooksLikeMessageExport
+            }
+        );
+    }
+
+    private static void LogParserResult(
+        string? logContext,
+        string parserFamily,
+        string sourceLabel,
+        string? containerLabel,
+        MessageCanonicalFieldMap? fieldMap,
+        int processedRows,
+        int parsedRows,
+        int skippedRows,
+        int warningsCount
+    )
+    {
+        AppFileLogger.LogEvent(
+            eventName: "MessagesIngestParserResult",
+            level: "INFO",
+            message: BuildLogMessage(logContext, "Message ingest parser completed."),
+            fields: new Dictionary<string, object?>
+            {
+                ["parserFamily"] = parserFamily,
+                ["sourceLabel"] = sourceLabel,
+                ["containerLabel"] = containerLabel,
+                ["processedRows"] = processedRows,
+                ["parsedRows"] = parsedRows,
+                ["skippedRows"] = skippedRows,
+                ["warningCount"] = warningsCount,
+                ["matchedFields"] = fieldMap is null
+                    ? null
+                    : string.Join(",", fieldMap.MatchedFields.Select(field => field.ToString())),
+                ["unmappedHeaders"] = fieldMap is null
+                    ? null
+                    : string.Join(",", fieldMap.UnmappedHeaders)
+            }
+        );
+    }
+
     private static string BuildLogMessage(string? context, string message)
     {
         return string.IsNullOrWhiteSpace(context)
@@ -943,26 +1304,14 @@ public sealed class MessageIngestService : IMessageIngestService
             : $"{context} {message}";
     }
 
-    private static string? NullIfWhiteSpace(string? value)
+    private sealed record ParseBatch(IReadOnlyList<CanonicalMessageRecord> Messages, string? EmptyStatusMessage)
     {
-        return string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+        public static ParseBatch Empty(string statusMessage) => new(Array.Empty<CanonicalMessageRecord>(), statusMessage);
     }
 
-    private sealed record ParseBatch(IReadOnlyList<ParsedMessage> Messages, string? EmptyStatusMessage)
-    {
-        public static ParseBatch Empty(string statusMessage) => new(Array.Empty<ParsedMessage>(), statusMessage);
-    }
-
-    private sealed record ParsedMessage(
-        string Platform,
-        string ThreadKey,
-        string? ThreadTitle,
-        DateTimeOffset? TimestampUtc,
-        string Direction,
-        string? Sender,
-        string? Recipients,
-        string? Body,
-        bool IsDeleted,
-        string SourceLocator
+    private sealed record WorksheetCandidate(
+        Sheet Sheet,
+        IReadOnlyList<Row> Rows,
+        MessageCanonicalFieldMap FieldMap
     );
 }

@@ -4,6 +4,7 @@ using CaseGraph.Infrastructure.Services;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
+using System.Diagnostics;
 using System.Text.Json;
 
 namespace CaseGraph.Infrastructure.Tests;
@@ -162,7 +163,27 @@ public sealed class WorkspaceDbInitializerTests
         try
         {
             await runner.StartAsync(CancellationToken.None);
-            await Task.Delay(200);
+            await WaitUntilAsync(
+                async () =>
+                {
+                    var backupFiles = Directory.GetFiles(
+                        fixture.PathProvider.WorkspaceRoot,
+                        "workspace.broken.*.db",
+                        SearchOption.TopDirectoryOnly
+                    );
+                    if (backupFiles.Length == 0)
+                    {
+                        return false;
+                    }
+
+                    await using var connection = new SqliteConnection(
+                        $"Data Source={fixture.PathProvider.WorkspaceDbPath}"
+                    );
+                    await connection.OpenAsync();
+                    return await TableExistsAsync(connection, "JobRecord");
+                },
+                TimeSpan.FromSeconds(5)
+            );
         }
         finally
         {
@@ -199,6 +220,25 @@ public sealed class WorkspaceDbInitializerTests
         command.Parameters.AddWithValue("$name", tableName);
         var value = await command.ExecuteScalarAsync();
         return value is not null;
+    }
+
+    private static async Task WaitUntilAsync(
+        Func<Task<bool>> predicate,
+        TimeSpan timeout
+    )
+    {
+        var stopwatch = Stopwatch.StartNew();
+        while (stopwatch.Elapsed < timeout)
+        {
+            if (await predicate())
+            {
+                return;
+            }
+
+            await Task.Delay(50);
+        }
+
+        Assert.Fail($"Condition was not satisfied within {timeout.TotalSeconds:0.##} second(s).");
     }
 
     private sealed class WorkspaceFixture : IAsyncDisposable
