@@ -1,0 +1,143 @@
+<Window x:Class="CaseGraph.SyntheticDataGenerator.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="CaseGraph Synthetic Evidence Generator"
+        Width="900"
+        Height="720"
+        MinWidth="760"
+        MinHeight="640"
+        WindowStartupLocation="CenterScreen">
+    <Grid Margin="18">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <StackPanel Grid.Row="0">
+            <TextBlock FontSize="24"
+                       FontWeight="SemiBold"
+                       Text="Synthetic Evidence Generator" />
+            <TextBlock Margin="0,8,0,0"
+                       Foreground="DimGray"
+                       TextWrapping="Wrap"
+                       Text="Generate reproducible fictional Cellebrite-like export packs for CaseGraph QA. All output is synthetic and clearly marked as such." />
+        </StackPanel>
+
+        <Border Grid.Row="1"
+                Margin="0,18,0,18"
+                Padding="18"
+                Background="#FFF7F5EE"
+                BorderBrush="#FFD2C6A7"
+                BorderThickness="1"
+                CornerRadius="10">
+            <Grid>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="*" />
+                </Grid.RowDefinitions>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="220" />
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+
+                <TextBlock Grid.Row="0"
+                           Grid.Column="0"
+                           VerticalAlignment="Center"
+                           Text="Seed" />
+                <TextBox Grid.Row="0"
+                         Grid.Column="1"
+                         Margin="0,0,0,10"
+                         Text="{Binding Seed, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
+
+                <TextBlock Grid.Row="1"
+                           Grid.Column="0"
+                           VerticalAlignment="Center"
+                           Text="Dataset count" />
+                <TextBox Grid.Row="1"
+                         Grid.Column="1"
+                         Margin="0,0,0,10"
+                         Text="{Binding DatasetCount, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
+
+                <TextBlock Grid.Row="2"
+                           Grid.Column="0"
+                           VerticalAlignment="Center"
+                           Text="Persons" />
+                <TextBox Grid.Row="2"
+                         Grid.Column="1"
+                         Margin="0,0,0,10"
+                         Text="{Binding PersonCount, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
+
+                <TextBlock Grid.Row="3"
+                           Grid.Column="0"
+                           VerticalAlignment="Center"
+                           Text="Approximate messages" />
+                <TextBox Grid.Row="3"
+                         Grid.Column="1"
+                         Margin="0,0,0,10"
+                         Text="{Binding ApproximateMessageCount, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
+
+                <TextBlock Grid.Row="4"
+                           Grid.Column="0"
+                           VerticalAlignment="Center"
+                           Text="Approximate locations" />
+                <TextBox Grid.Row="4"
+                         Grid.Column="1"
+                         Margin="0,0,0,10"
+                         Text="{Binding ApproximateLocationCount, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
+
+                <TextBlock Grid.Row="5"
+                           Grid.Column="0"
+                           VerticalAlignment="Center"
+                           Text="Profile" />
+                <ComboBox Grid.Row="5"
+                          Grid.Column="1"
+                          Margin="0,0,0,10"
+                          ItemsSource="{Binding Profiles}"
+                          SelectedItem="{Binding SelectedProfile, Mode=TwoWay}" />
+
+                <TextBlock Grid.Row="6"
+                           Grid.Column="0"
+                           VerticalAlignment="Center"
+                           Text="Output folder" />
+                <TextBox Grid.Row="6"
+                         Grid.Column="1"
+                         Margin="0,0,10,10"
+                         Text="{Binding OutputFolder, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
+                <Button Grid.Row="6"
+                        Grid.Column="2"
+                        Margin="0,0,0,10"
+                        Padding="14,6"
+                        Command="{Binding BrowseOutputFolderCommand}"
+                        Content="Browse..." />
+
+                <TextBlock Grid.Row="7"
+                           Grid.ColumnSpan="3"
+                           Margin="0,12,0,0"
+                           FontFamily="Consolas"
+                           TextWrapping="Wrap"
+                           VerticalAlignment="Stretch">
+                    <Run Text="{Binding StatusText}" />
+                </TextBlock>
+            </Grid>
+        </Border>
+
+        <DockPanel Grid.Row="2">
+            <TextBlock DockPanel.Dock="Left"
+                       VerticalAlignment="Center"
+                       Foreground="DimGray"
+                       Text="Required profile: offense_window" />
+            <Button DockPanel.Dock="Right"
+                    Padding="18,8"
+                    Command="{Binding GenerateCommand}"
+                    Content="Generate Synthetic Packs" />
+        </DockPanel>
+    </Grid>
+</Window>
