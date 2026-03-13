@@ -52,6 +52,12 @@ public sealed class WorkspaceDbContext : DbContext
 
     public DbSet<LocationObservationRecord> LocationObservations => Set<LocationObservationRecord>();
 
+    public DbSet<IncidentRecordEntity> Incidents => Set<IncidentRecordEntity>();
+
+    public DbSet<IncidentLocationRecord> IncidentLocations => Set<IncidentLocationRecord>();
+
+    public DbSet<IncidentPinnedResultRecord> IncidentPinnedResults => Set<IncidentPinnedResultRecord>();
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         modelBuilder.Entity<CaseRecord>(entity =>
@@ -408,6 +414,55 @@ public sealed class WorkspaceDbContext : DbContext
             entity.HasOne<EvidenceItemRecord>()
                 .WithMany()
                 .HasForeignKey(e => e.SourceEvidenceItemId)
+                .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.Entity<IncidentRecordEntity>(entity =>
+        {
+            entity.ToTable("IncidentRecord");
+            entity.HasKey(e => e.IncidentId);
+            entity.Property(e => e.Title).IsRequired();
+            entity.Property(e => e.IncidentType).IsRequired();
+            entity.Property(e => e.Status).IsRequired();
+            entity.Property(e => e.SummaryNotes).IsRequired();
+            entity.HasIndex(e => new { e.CaseId, e.UpdatedUtc });
+            entity.HasIndex(e => new { e.CaseId, e.OffenseWindowStartUtc, e.OffenseWindowEndUtc });
+
+            entity.HasOne(e => e.Case)
+                .WithMany()
+                .HasForeignKey(e => e.CaseId)
+                .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.Entity<IncidentLocationRecord>(entity =>
+        {
+            entity.ToTable("IncidentLocationRecord");
+            entity.HasKey(e => e.IncidentLocationId);
+            entity.Property(e => e.Label).IsRequired();
+            entity.Property(e => e.Notes).IsRequired();
+            entity.HasIndex(e => new { e.IncidentId, e.SortOrder });
+
+            entity.HasOne(e => e.Incident)
+                .WithMany(e => e.Locations)
+                .HasForeignKey(e => e.IncidentId)
+                .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.Entity<IncidentPinnedResultRecord>(entity =>
+        {
+            entity.ToTable("IncidentPinnedResultRecord");
+            entity.HasKey(e => e.IncidentPinnedResultId);
+            entity.Property(e => e.ResultType).IsRequired();
+            entity.Property(e => e.SourceLocator).IsRequired();
+            entity.Property(e => e.Citation).IsRequired();
+            entity.Property(e => e.Title).IsRequired();
+            entity.Property(e => e.Summary).IsRequired();
+            entity.HasIndex(e => e.IncidentId);
+            entity.HasIndex(e => new { e.IncidentId, e.ResultType, e.SourceRecordId }).IsUnique();
+
+            entity.HasOne(e => e.Incident)
+                .WithMany(e => e.PinnedResults)
+                .HasForeignKey(e => e.IncidentId)
                 .OnDelete(DeleteBehavior.Cascade);
         });
     }

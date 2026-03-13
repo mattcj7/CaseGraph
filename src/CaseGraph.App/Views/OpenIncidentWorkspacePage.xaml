@@ -1,0 +1,366 @@
+<UserControl x:Class="CaseGraph.App.Views.OpenIncidentWorkspacePage"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             Background="{DynamicResource ContentBackgroundBrush}">
+    <Grid Margin="{StaticResource Space16}"
+          DataContext="{Binding OpenIncidentWorkspace}">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+        </Grid.RowDefinitions>
+        <StackPanel Grid.Row="0">
+            <TextBlock Text="Open Incident Workspace"
+                       Style="{StaticResource PageTitleTextStyle}" />
+            <TextBlock Margin="{StaticResource SpaceTop8}"
+                       Style="{StaticResource SecondaryBodyTextStyle}"
+                       Text="{Binding StatusText}"
+                       TextWrapping="Wrap" />
+        </StackPanel>
+
+        <Grid Grid.Row="1" Margin="{StaticResource SpaceTop12}">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="280" />
+                <ColumnDefinition Width="16" />
+                <ColumnDefinition Width="1.1*" />
+                <ColumnDefinition Width="16" />
+                <ColumnDefinition Width="1.5*" />
+            </Grid.ColumnDefinitions>
+
+            <Border Grid.Column="0" Style="{StaticResource PlaceholderHintBorderStyle}">
+                <Grid>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="*" />
+                    </Grid.RowDefinitions>
+
+                    <DockPanel Grid.Row="0" LastChildFill="False">
+                        <TextBlock DockPanel.Dock="Left"
+                                   Text="Incidents"
+                                   Style="{StaticResource SectionTitleTextStyle}" />
+                        <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
+                            <Button Content="New"
+                                    Command="{Binding NewIncidentCommand}"
+                                    Style="{StaticResource TopBarButtonStyle}" />
+                            <Button Margin="{StaticResource SpaceLeft8}"
+                                    Content="Refresh"
+                                    Command="{Binding RefreshIncidentsCommand}"
+                                    Style="{StaticResource TopBarButtonStyle}" />
+                        </StackPanel>
+                    </DockPanel>
+
+                    <ListBox Grid.Row="1"
+                             Margin="{StaticResource SpaceTop12}"
+                             ItemsSource="{Binding Incidents}"
+                             SelectedItem="{Binding SelectedIncident, Mode=TwoWay}"
+                             BorderThickness="0"
+                             Background="Transparent">
+                        <ListBox.ItemTemplate>
+                            <DataTemplate>
+                                <Border Margin="0,0,0,8"
+                                        Padding="10"
+                                        BorderThickness="1"
+                                        CornerRadius="8"
+                                        BorderBrush="{DynamicResource ControlStrokeColorDefaultBrush}">
+                                    <StackPanel>
+                                        <TextBlock Text="{Binding Title}"
+                                                   Style="{StaticResource BodyTextStyle}"
+                                                   FontWeight="SemiBold"
+                                                   TextWrapping="Wrap" />
+                                        <TextBlock Margin="{StaticResource SpaceTop8}"
+                                                   Style="{StaticResource SecondaryBodyTextStyle}"
+                                                   Text="{Binding IncidentType}" />
+                                        <TextBlock Style="{StaticResource SecondaryBodyTextStyle}"
+                                                   Text="{Binding Status}" />
+                                        <TextBlock Style="{StaticResource SecondaryBodyTextStyle}"
+                                                   Text="{Binding OffenseWindowStartUtc, StringFormat=Start {0:g}}" />
+                                        <TextBlock Style="{StaticResource SecondaryBodyTextStyle}"
+                                                   Text="{Binding OffenseWindowEndUtc, StringFormat=End {0:g}}" />
+                                    </StackPanel>
+                                </Border>
+                            </DataTemplate>
+                        </ListBox.ItemTemplate>
+                    </ListBox>
+                </Grid>
+            </Border>
+
+            <Border Grid.Column="2" Style="{StaticResource PlaceholderHintBorderStyle}">
+                <ScrollViewer VerticalScrollBarVisibility="Auto">
+                    <StackPanel>
+                        <DockPanel LastChildFill="False">
+                            <TextBlock DockPanel.Dock="Left"
+                                       Text="Incident Editor"
+                                       Style="{StaticResource SectionTitleTextStyle}" />
+                            <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
+                                <Button Content="Save"
+                                        Command="{Binding SaveIncidentCommand}"
+                                        Style="{StaticResource TopBarButtonStyle}" />
+                                <Button Margin="{StaticResource SpaceLeft8}"
+                                        Content="Run Cross-Reference"
+                                        Command="{Binding RunCrossReferenceCommand}"
+                                        Style="{StaticResource TopBarButtonStyle}" />
+                            </StackPanel>
+                        </DockPanel>
+
+                        <TextBlock Margin="{StaticResource SpaceTop12}"
+                                   Style="{StaticResource SecondaryBodyTextStyle}"
+                                   Text="Title" />
+                        <TextBox Margin="{StaticResource SpaceTop8}"
+                                 Text="{Binding TitleText, UpdateSourceTrigger=PropertyChanged}"
+                                 Style="{StaticResource TopBarTextBoxStyle}" />
+
+                        <Grid Margin="{StaticResource SpaceTop12}">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="12" />
+                                <ColumnDefinition Width="*" />
+                            </Grid.ColumnDefinitions>
+
+                            <StackPanel Grid.Column="0">
+                                <TextBlock Style="{StaticResource SecondaryBodyTextStyle}"
+                                           Text="Incident Type" />
+                                <TextBox Margin="{StaticResource SpaceTop8}"
+                                         Text="{Binding IncidentTypeText, UpdateSourceTrigger=PropertyChanged}"
+                                         Style="{StaticResource TopBarTextBoxStyle}" />
+                            </StackPanel>
+
+                            <StackPanel Grid.Column="2">
+                                <TextBlock Style="{StaticResource SecondaryBodyTextStyle}"
+                                           Text="Status" />
+                                <TextBox Margin="{StaticResource SpaceTop8}"
+                                         Text="{Binding StatusValue, UpdateSourceTrigger=PropertyChanged}"
+                                         Style="{StaticResource TopBarTextBoxStyle}" />
+                            </StackPanel>
+                        </Grid>
+
+                        <Grid Margin="{StaticResource SpaceTop12}">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="12" />
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="12" />
+                                <ColumnDefinition Width="*" />
+                            </Grid.ColumnDefinitions>
+
+                            <StackPanel Grid.Column="0">
+                                <TextBlock Style="{StaticResource SecondaryBodyTextStyle}"
+                                           Text="Primary Occurrence (Local)" />
+                                <TextBox Margin="{StaticResource SpaceTop8}"
+                                         Text="{Binding PrimaryOccurrenceLocalText, UpdateSourceTrigger=PropertyChanged}"
+                                         Style="{StaticResource TopBarTextBoxStyle}" />
+                            </StackPanel>
+
+                            <StackPanel Grid.Column="2">
+                                <TextBlock Style="{StaticResource SecondaryBodyTextStyle}"
+                                           Text="Offense Window Start (Local)" />
+                                <TextBox Margin="{StaticResource SpaceTop8}"
+                                         Text="{Binding OffenseWindowStartLocalText, UpdateSourceTrigger=PropertyChanged}"
+                                         Style="{StaticResource TopBarTextBoxStyle}" />
+                            </StackPanel>
+
+                            <StackPanel Grid.Column="4">
+                                <TextBlock Style="{StaticResource SecondaryBodyTextStyle}"
+                                           Text="Offense Window End (Local)" />
+                                <TextBox Margin="{StaticResource SpaceTop8}"
+                                         Text="{Binding OffenseWindowEndLocalText, UpdateSourceTrigger=PropertyChanged}"
+                                         Style="{StaticResource TopBarTextBoxStyle}" />
+                            </StackPanel>
+                        </Grid>
+
+                        <TextBlock Margin="{StaticResource SpaceTop12}"
+                                   Style="{StaticResource SecondaryBodyTextStyle}"
+                                   Text="Summary / Notes" />
+                        <TextBox Margin="{StaticResource SpaceTop8}"
+                                 MinHeight="120"
+                                 AcceptsReturn="True"
+                                 TextWrapping="Wrap"
+                                 VerticalScrollBarVisibility="Auto"
+                                 Text="{Binding SummaryNotes, UpdateSourceTrigger=PropertyChanged}"
+                                 Style="{StaticResource TopBarTextBoxStyle}" />
+
+                        <DockPanel Margin="{StaticResource SpaceTop16}" LastChildFill="False">
+                            <TextBlock DockPanel.Dock="Left"
+                                       Text="Scene Locations"
+                                       Style="{StaticResource SectionTitleTextStyle}" />
+                            <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
+                                <Button Content="Add Scene"
+                                        Command="{Binding AddLocationCommand}"
+                                        Style="{StaticResource TopBarButtonStyle}" />
+                                <Button Margin="{StaticResource SpaceLeft8}"
+                                        Content="Remove Scene"
+                                        Command="{Binding RemoveLocationCommand}"
+                                        CommandParameter="{Binding SelectedLocationEditor}"
+                                        Style="{StaticResource TopBarButtonStyle}" />
+                            </StackPanel>
+                        </DockPanel>
+
+                        <DataGrid Margin="{StaticResource SpaceTop12}"
+                                  ItemsSource="{Binding LocationEditors}"
+                                  SelectedItem="{Binding SelectedLocationEditor, Mode=TwoWay}"
+                                  AutoGenerateColumns="False"
+                                  CanUserAddRows="False"
+                                  CanUserDeleteRows="False"
+                                  HeadersVisibility="Column"
+                                  MinHeight="220">
+                            <DataGrid.Columns>
+                                <DataGridTextColumn Header="Label" Binding="{Binding Label, UpdateSourceTrigger=PropertyChanged}" Width="1.0*" />
+                                <DataGridTextColumn Header="Latitude" Binding="{Binding LatitudeText, UpdateSourceTrigger=PropertyChanged}" Width="0.9*" />
+                                <DataGridTextColumn Header="Longitude" Binding="{Binding LongitudeText, UpdateSourceTrigger=PropertyChanged}" Width="0.9*" />
+                                <DataGridTextColumn Header="Radius (m)" Binding="{Binding RadiusMetersText, UpdateSourceTrigger=PropertyChanged}" Width="0.8*" />
+                                <DataGridTextColumn Header="Notes" Binding="{Binding Notes, UpdateSourceTrigger=PropertyChanged}" Width="1.4*" />
+                            </DataGrid.Columns>
+                        </DataGrid>
+                    </StackPanel>
+                </ScrollViewer>
+            </Border>
+
+            <Border Grid.Column="4" Style="{StaticResource PlaceholderHintBorderStyle}">
+                <TabControl>
+                    <TabItem Header="Messages">
+                        <DataGrid Margin="{StaticResource Space16}"
+                                  ItemsSource="{Binding MessageResults}"
+                                  SelectedItem="{Binding SelectedMessageResult, Mode=TwoWay}"
+                                  AutoGenerateColumns="False"
+                                  CanUserAddRows="False"
+                                  IsReadOnly="True">
+                            <DataGrid.Columns>
+                                <DataGridTextColumn Header="Time (Local)" Binding="{Binding TimestampLocalDisplay}" Width="1.0*" />
+                                <DataGridTextColumn Header="Participants" Binding="{Binding ParticipantsSummary}" Width="1.5*" />
+                                <DataGridTextColumn Header="Preview" Binding="{Binding Preview}" Width="2.0*" />
+                                <DataGridTemplateColumn Header="Source" Width="0.8*">
+                                    <DataGridTemplateColumn.CellTemplate>
+                                        <DataTemplate>
+                                            <Button Content="View"
+                                                    Command="{Binding DataContext.ViewMessageSourceCommand, RelativeSource={RelativeSource AncestorType=DataGrid}}"
+                                                    CommandParameter="{Binding}"
+                                                    Style="{StaticResource TopBarButtonStyle}" />
+                                        </DataTemplate>
+                                    </DataGridTemplateColumn.CellTemplate>
+                                </DataGridTemplateColumn>
+                                <DataGridTemplateColumn Header="Citation" Width="0.9*">
+                                    <DataGridTemplateColumn.CellTemplate>
+                                        <DataTemplate>
+                                            <Button Content="Copy"
+                                                    Command="{Binding DataContext.CopyMessageCitationCommand, RelativeSource={RelativeSource AncestorType=DataGrid}}"
+                                                    CommandParameter="{Binding}"
+                                                    Style="{StaticResource TopBarButtonStyle}" />
+                                        </DataTemplate>
+                                    </DataGridTemplateColumn.CellTemplate>
+                                </DataGridTemplateColumn>
+                                <DataGridTemplateColumn Header="Pin" Width="0.8*">
+                                    <DataGridTemplateColumn.CellTemplate>
+                                        <DataTemplate>
+                                            <Button Content="Pin"
+                                                    Command="{Binding DataContext.PinMessageCommand, RelativeSource={RelativeSource AncestorType=DataGrid}}"
+                                                    CommandParameter="{Binding}"
+                                                    Style="{StaticResource TopBarButtonStyle}" />
+                                        </DataTemplate>
+                                    </DataGridTemplateColumn.CellTemplate>
+                                </DataGridTemplateColumn>
+                            </DataGrid.Columns>
+                        </DataGrid>
+                    </TabItem>
+
+                    <TabItem Header="Locations">
+                        <DataGrid Margin="{StaticResource Space16}"
+                                  ItemsSource="{Binding LocationResults}"
+                                  SelectedItem="{Binding SelectedLocationResult, Mode=TwoWay}"
+                                  AutoGenerateColumns="False"
+                                  CanUserAddRows="False"
+                                  IsReadOnly="True">
+                            <DataGrid.Columns>
+                                <DataGridTextColumn Header="Time (Local)" Binding="{Binding Location.TimestampLocalDisplay}" Width="1.0*" />
+                                <DataGridTextColumn Header="Scene" Binding="{Binding SceneLabel}" Width="0.9*" />
+                                <DataGridTextColumn Header="Subject" Binding="{Binding Location.SubjectDisplayName, TargetNullValue=(none)}" Width="1.1*" />
+                                <DataGridTextColumn Header="Coordinates" Binding="{Binding Location.CoordinatesDisplay}" Width="1.2*" />
+                                <DataGridTextColumn Header="Distance" Binding="{Binding DistanceDisplay}" Width="0.8*" />
+                                <DataGridTemplateColumn Header="Source" Width="0.8*">
+                                    <DataGridTemplateColumn.CellTemplate>
+                                        <DataTemplate>
+                                            <Button Content="View"
+                                                    Command="{Binding DataContext.ViewLocationSourceCommand, RelativeSource={RelativeSource AncestorType=DataGrid}}"
+                                                    CommandParameter="{Binding}"
+                                                    Style="{StaticResource TopBarButtonStyle}" />
+                                        </DataTemplate>
+                                    </DataGridTemplateColumn.CellTemplate>
+                                </DataGridTemplateColumn>
+                                <DataGridTemplateColumn Header="Citation" Width="0.9*">
+                                    <DataGridTemplateColumn.CellTemplate>
+                                        <DataTemplate>
+                                            <Button Content="Copy"
+                                                    Command="{Binding DataContext.CopyLocationCitationCommand, RelativeSource={RelativeSource AncestorType=DataGrid}}"
+                                                    CommandParameter="{Binding}"
+                                                    Style="{StaticResource TopBarButtonStyle}" />
+                                        </DataTemplate>
+                                    </DataGridTemplateColumn.CellTemplate>
+                                </DataGridTemplateColumn>
+                                <DataGridTemplateColumn Header="Pin" Width="0.8*">
+                                    <DataGridTemplateColumn.CellTemplate>
+                                        <DataTemplate>
+                                            <Button Content="Pin"
+                                                    Command="{Binding DataContext.PinLocationCommand, RelativeSource={RelativeSource AncestorType=DataGrid}}"
+                                                    CommandParameter="{Binding}"
+                                                    Style="{StaticResource TopBarButtonStyle}" />
+                                        </DataTemplate>
+                                    </DataGridTemplateColumn.CellTemplate>
+                                </DataGridTemplateColumn>
+                            </DataGrid.Columns>
+                        </DataGrid>
+                    </TabItem>
+
+                    <TabItem Header="Timeline">
+                        <DataGrid Margin="{StaticResource Space16}"
+                                  ItemsSource="{Binding TimelineItems}"
+                                  SelectedItem="{Binding SelectedTimelineItem, Mode=TwoWay}"
+                                  AutoGenerateColumns="False"
+                                  CanUserAddRows="False"
+                                  IsReadOnly="True">
+                            <DataGrid.Columns>
+                                <DataGridTextColumn Header="Time (Local)" Binding="{Binding TimestampLocalDisplay}" Width="1.0*" />
+                                <DataGridTextColumn Header="Type" Binding="{Binding MarkerType}" Width="0.8*" />
+                                <DataGridTextColumn Header="Title" Binding="{Binding Title}" Width="1.3*" />
+                                <DataGridTextColumn Header="Summary" Binding="{Binding Summary}" Width="2.0*" />
+                                <DataGridTextColumn Header="Citation" Binding="{Binding Citation, TargetNullValue=(incident anchor)}" Width="1.4*" />
+                            </DataGrid.Columns>
+                        </DataGrid>
+                    </TabItem>
+
+                    <TabItem Header="Pinned">
+                        <DataGrid Margin="{StaticResource Space16}"
+                                  ItemsSource="{Binding PinnedResults}"
+                                  SelectedItem="{Binding SelectedPinnedResult, Mode=TwoWay}"
+                                  AutoGenerateColumns="False"
+                                  CanUserAddRows="False"
+                                  IsReadOnly="True">
+                            <DataGrid.Columns>
+                                <DataGridTextColumn Header="Type" Binding="{Binding ResultType}" Width="0.8*" />
+                                <DataGridTextColumn Header="Pinned (UTC)" Binding="{Binding PinnedUtc, StringFormat={}{0:u}}" Width="1.0*" />
+                                <DataGridTextColumn Header="Title" Binding="{Binding Title}" Width="1.3*" />
+                                <DataGridTextColumn Header="Summary" Binding="{Binding Summary}" Width="1.8*" />
+                                <DataGridTemplateColumn Header="Source" Width="0.8*">
+                                    <DataGridTemplateColumn.CellTemplate>
+                                        <DataTemplate>
+                                            <Button Content="View"
+                                                    Command="{Binding DataContext.ViewPinnedSourceCommand, RelativeSource={RelativeSource AncestorType=DataGrid}}"
+                                                    CommandParameter="{Binding}"
+                                                    Style="{StaticResource TopBarButtonStyle}" />
+                                        </DataTemplate>
+                                    </DataGridTemplateColumn.CellTemplate>
+                                </DataGridTemplateColumn>
+                                <DataGridTemplateColumn Header="Citation" Width="0.9*">
+                                    <DataGridTemplateColumn.CellTemplate>
+                                        <DataTemplate>
+                                            <Button Content="Copy"
+                                                    Command="{Binding DataContext.CopyPinnedCitationCommand, RelativeSource={RelativeSource AncestorType=DataGrid}}"
+                                                    CommandParameter="{Binding}"
+                                                    Style="{StaticResource TopBarButtonStyle}" />
+                                        </DataTemplate>
+                                    </DataGridTemplateColumn.CellTemplate>
+                                </DataGridTemplateColumn>
+                            </DataGrid.Columns>
+                        </DataGrid>
+                    </TabItem>
+                </TabControl>
+            </Border>
+        </Grid>
+    </Grid>
+</UserControl>

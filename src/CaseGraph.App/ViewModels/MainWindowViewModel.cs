@@ -5,7 +5,7 @@ using CaseGraph.Core.Abstractions;
 using CaseGraph.Core.Diagnostics;
 using CaseGraph.Core.Models;
 using CaseGraph.Infrastructure.Diagnostics;
-using CaseGraph.Infrastructure.IncidentWindow;
+using CaseGraph.Infrastructure.Incidents;
 using CaseGraph.Infrastructure.Locations;
 using CaseGraph.Infrastructure.Timeline;
 using CommunityToolkit.Mvvm.ComponentModel;
@@ -99,7 +99,7 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
 
     public TimelineViewModel Timeline { get; }
 
-    public IncidentWindowViewModel IncidentWindow { get; }
+    public OpenIncidentWorkspaceViewModel OpenIncidentWorkspace { get; }
 
     public LocationsViewModel Locations { get; }
 
@@ -477,7 +477,7 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
         IAssociationGraphQueryService associationGraphQueryService,
         IAssociationGraphExportPathBuilder associationGraphExportPathBuilder,
         TimelineViewModel timelineViewModel,
-        IncidentWindowViewModel incidentWindowViewModel,
+        OpenIncidentWorkspaceViewModel openIncidentWorkspaceViewModel,
         LocationsViewModel locationsViewModel,
         ReportsViewModel reportsViewModel,
         IWorkspacePathProvider workspacePathProvider,
@@ -505,7 +505,7 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
         _associationGraphQueryService = associationGraphQueryService;
         _associationGraphExportPathBuilder = associationGraphExportPathBuilder;
         Timeline = timelineViewModel;
-        IncidentWindow = incidentWindowViewModel;
+        OpenIncidentWorkspace = openIncidentWorkspaceViewModel;
         Locations = locationsViewModel;
         Reports = reportsViewModel;
         _workspacePathProvider = workspacePathProvider;
@@ -518,9 +518,8 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
         _appSessionState = appSessionState;
         _backgroundMaintenanceManager.SnapshotChanged += OnMaintenanceSnapshotChanged;
         Timeline.ViewSourceRequested = OpenTimelineSource;
-        IncidentWindow.ViewCommsSourceRequested = OpenTimelineSource;
-        IncidentWindow.ViewGeoSourceRequested = OpenLocationSource;
-        IncidentWindow.ViewCoLocationSourceRequested = OpenLocationSource;
+        OpenIncidentWorkspace.ViewMessageSourceRequested = OpenTimelineSource;
+        OpenIncidentWorkspace.ViewLocationSourceRequested = OpenLocationSource;
         Locations.ViewSourceRequested = OpenLocationSource;
 
         foreach (var item in _navigationService.GetNavigationItems())
@@ -707,15 +706,15 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
 
         if (value.Page == NavigationPage.IncidentWindow)
         {
-            IncidentWindow.ActivateAsync(CancellationToken.None).Forget(
-                "ActivateIncidentWindowOnNavigate",
+            OpenIncidentWorkspace.ActivateAsync(CancellationToken.None).Forget(
+                "ActivateOpenIncidentWorkspaceOnNavigate",
                 caseId: _appSessionState.CurrentCaseId,
                 evidenceId: _appSessionState.CurrentEvidenceId
             );
         }
         else
         {
-            IncidentWindow.Deactivate();
+            OpenIncidentWorkspace.Deactivate();
         }
 
         if (value.Page == NavigationPage.Locations)
@@ -806,8 +805,8 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
             "RefreshTimelineOnCaseChanged",
             caseId: value?.CaseId
         );
-        IncidentWindow.SetCurrentCaseAsync(value?.CaseId, CancellationToken.None).Forget(
-            "RefreshIncidentWindowOnCaseChanged",
+        OpenIncidentWorkspace.SetCurrentCaseAsync(value?.CaseId, CancellationToken.None).Forget(
+            "RefreshOpenIncidentWorkspaceOnCaseChanged",
             caseId: value?.CaseId
         );
         Locations.SetCurrentCaseAsync(value?.CaseId, CancellationToken.None).Forget(
@@ -3756,6 +3755,7 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
         _backgroundMaintenanceManager.SnapshotChanged -= OnMaintenanceSnapshotChanged;
         _jobUpdateSubscription.Dispose();
         _jobCompletionRefreshGate.Dispose();
+        OpenIncidentWorkspace.Dispose();
         Locations.Dispose();
         Reports.Dispose();
     }
