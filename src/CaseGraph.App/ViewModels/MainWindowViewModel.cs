@@ -103,6 +103,8 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
 
     public LocationsViewModel Locations { get; }
 
+    public OrganizationRegistryViewModel OrganizationRegistry { get; }
+
     public ReportsViewModel Reports { get; }
 
     public IReadOnlyList<string> MessageSearchPlatformFilters { get; } =
@@ -479,6 +481,7 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
         TimelineViewModel timelineViewModel,
         OpenIncidentWorkspaceViewModel openIncidentWorkspaceViewModel,
         LocationsViewModel locationsViewModel,
+        OrganizationRegistryViewModel organizationRegistryViewModel,
         ReportsViewModel reportsViewModel,
         IWorkspacePathProvider workspacePathProvider,
         IUserInteractionService userInteractionService,
@@ -507,6 +510,7 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
         Timeline = timelineViewModel;
         OpenIncidentWorkspace = openIncidentWorkspaceViewModel;
         Locations = locationsViewModel;
+        OrganizationRegistry = organizationRegistryViewModel;
         Reports = reportsViewModel;
         _workspacePathProvider = workspacePathProvider;
         _userInteractionService = userInteractionService;
@@ -730,6 +734,19 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
             Locations.Deactivate();
         }
 
+        if (value.Page == NavigationPage.Organizations)
+        {
+            OrganizationRegistry.ActivateAsync(CancellationToken.None).Forget(
+                "ActivateOrganizationsOnNavigate",
+                caseId: _appSessionState.CurrentCaseId,
+                evidenceId: _appSessionState.CurrentEvidenceId
+            );
+        }
+        else
+        {
+            OrganizationRegistry.Deactivate();
+        }
+
         if (value.Page == NavigationPage.Reports)
         {
             Reports.ActivateAsync(CancellationToken.None).Forget(
@@ -811,6 +828,10 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
         );
         Locations.SetCurrentCaseAsync(value?.CaseId, CancellationToken.None).Forget(
             "RefreshLocationsOnCaseChanged",
+            caseId: value?.CaseId
+        );
+        OrganizationRegistry.SetCurrentCaseAsync(value?.CaseId, CancellationToken.None).Forget(
+            "RefreshOrganizationsOnCaseChanged",
             caseId: value?.CaseId
         );
         Reports.SetCurrentCaseAsync(value?.CaseId, CancellationToken.None).Forget(

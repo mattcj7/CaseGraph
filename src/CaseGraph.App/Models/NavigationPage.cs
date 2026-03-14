@@ -8,6 +8,7 @@ public enum NavigationPage
     Timeline,
     IncidentWindow,
     PeopleTargets,
+    Organizations,
     Locations,
     Associations,
     Reports,

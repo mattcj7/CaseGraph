@@ -6,6 +6,7 @@ using CaseGraph.Infrastructure.Diagnostics;
 using CaseGraph.Infrastructure.Incidents;
 using CaseGraph.Infrastructure.IncidentWindow;
 using CaseGraph.Infrastructure.Locations;
+using CaseGraph.Infrastructure.Organizations;
 using CaseGraph.Infrastructure.Reports;
 using CaseGraph.Infrastructure.Persistence;
 using CaseGraph.Infrastructure.Services;
@@ -78,6 +79,7 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<LocationsIngestJob>();
         services.AddSingleton<ITargetMessagePresenceIndexService, TargetMessagePresenceIndexService>();
         services.AddSingleton<ITargetRegistryService, TargetRegistryService>();
+        services.AddSingleton<IOrganizationService, OrganizationService>();
         services.AddSingleton<IAssociationGraphQueryService, AssociationGraphQueryService>();
         services.AddSingleton<IAssociationGraphExportPathBuilder, AssociationGraphExportPathBuilder>();
         services.AddSingleton<DossierBuilder>();
@@ -95,6 +97,7 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<IncidentWindowViewModel>();
         services.AddSingleton<OpenIncidentWorkspaceViewModel>();
         services.AddSingleton<LocationsViewModel>();
+        services.AddSingleton<OrganizationRegistryViewModel>();
         services.AddSingleton<ReportsViewModel>();
         services.AddSingleton<MainWindowViewModel>();
         services.AddSingleton<MainWindow>();

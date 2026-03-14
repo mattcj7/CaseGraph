@@ -1,0 +1,337 @@
+<UserControl x:Class="CaseGraph.App.Views.OrganizationRegistryPage"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             Background="{DynamicResource ContentBackgroundBrush}">
+    <Grid Margin="{StaticResource Space16}"
+          DataContext="{Binding OrganizationRegistry}">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+        </Grid.RowDefinitions>
+
+        <DockPanel Grid.Row="0">
+            <TextBlock DockPanel.Dock="Left"
+                       Text="Organization Registry"
+                       Style="{StaticResource PageTitleTextStyle}" />
+            <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
+                <TextBox Width="280"
+                         Margin="{StaticResource SpaceRight12}"
+                         Text="{Binding OrganizationSearchQuery, UpdateSourceTrigger=PropertyChanged}"
+                         Style="{StaticResource TopBarTextBoxStyle}"
+                         ToolTip="Search organizations by name or alias" />
+                <Button Content="Refresh"
+                        Command="{Binding RefreshOrganizationsCommand}"
+                        Style="{StaticResource TopBarButtonStyle}" />
+            </StackPanel>
+        </DockPanel>
+
+        <Grid Grid.Row="1" Margin="{StaticResource SpaceTop12}">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="1.1*" />
+                <ColumnDefinition Width="16" />
+                <ColumnDefinition Width="2*" />
+            </Grid.ColumnDefinitions>
+
+            <Border Grid.Column="0" Style="{StaticResource PlaceholderHintBorderStyle}">
+                <Grid>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="*" />
+                        <RowDefinition Height="Auto" />
+                    </Grid.RowDefinitions>
+
+                    <TextBlock Text="Organizations" Style="{StaticResource SectionTitleTextStyle}" />
+
+                    <ListBox Grid.Row="1"
+                             Margin="{StaticResource SpaceTop12}"
+                             ItemsSource="{Binding Organizations}"
+                             SelectedItem="{Binding SelectedOrganization, Mode=TwoWay}"
+                             DisplayMemberPath="Name" />
+
+                    <TextBlock Grid.Row="2"
+                               Margin="{StaticResource SpaceTop12}"
+                               Style="{StaticResource SecondaryBodyTextStyle}"
+                               Text="{Binding StatusText}" />
+                </Grid>
+            </Border>
+
+            <ScrollViewer Grid.Column="2" VerticalScrollBarVisibility="Auto">
+                <StackPanel>
+                    <Border Style="{StaticResource PlaceholderHintBorderStyle}">
+                        <StackPanel>
+                            <TextBlock Text="Create Organization" Style="{StaticResource SectionTitleTextStyle}" />
+
+                            <TextBlock Margin="{StaticResource SpaceTop12}" Style="{StaticResource SecondaryBodyTextStyle}" Text="Name" />
+                            <TextBox Text="{Binding NewOrganizationName, UpdateSourceTrigger=PropertyChanged}"
+                                     Style="{StaticResource TopBarTextBoxStyle}" />
+
+                            <Grid Margin="{StaticResource SpaceTop8}">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="8" />
+                                    <ColumnDefinition Width="*" />
+                                </Grid.ColumnDefinitions>
+
+                                <StackPanel Grid.Column="0">
+                                    <TextBlock Style="{StaticResource SecondaryBodyTextStyle}" Text="Type" />
+                                    <ComboBox Margin="{StaticResource SpaceTop8}"
+                                              ItemsSource="{Binding OrganizationTypes}"
+                                              SelectedItem="{Binding SelectedNewOrganizationType, Mode=TwoWay}"
+                                              Style="{StaticResource TopBarComboBoxStyle}" />
+                                </StackPanel>
+
+                                <StackPanel Grid.Column="2">
+                                    <TextBlock Style="{StaticResource SecondaryBodyTextStyle}" Text="Status" />
+                                    <ComboBox Margin="{StaticResource SpaceTop8}"
+                                              ItemsSource="{Binding OrganizationStatuses}"
+                                              SelectedItem="{Binding SelectedNewOrganizationStatus, Mode=TwoWay}"
+                                              Style="{StaticResource TopBarComboBoxStyle}" />
+                                </StackPanel>
+                            </Grid>
+
+                            <TextBlock Margin="{StaticResource SpaceTop8}" Style="{StaticResource SecondaryBodyTextStyle}" Text="Parent Organization (Optional)" />
+                            <ComboBox Margin="{StaticResource SpaceTop8}"
+                                      ItemsSource="{Binding AvailableParentOrganizations}"
+                                      SelectedItem="{Binding SelectedNewOrganizationParent, Mode=TwoWay}"
+                                      DisplayMemberPath="Name"
+                                      Style="{StaticResource TopBarComboBoxStyle}" />
+
+                            <TextBlock Margin="{StaticResource SpaceTop8}" Style="{StaticResource SecondaryBodyTextStyle}" Text="Summary / Notes" />
+                            <TextBox Text="{Binding NewOrganizationSummary, UpdateSourceTrigger=PropertyChanged}"
+                                     MinHeight="70"
+                                     TextWrapping="Wrap"
+                                     AcceptsReturn="True"
+                                     Style="{StaticResource TopBarTextBoxStyle}" />
+
+                            <Button Margin="{StaticResource SpaceTop12}"
+                                    Content="Create Organization"
+                                    Command="{Binding CreateOrganizationCommand}"
+                                    Style="{StaticResource TopBarButtonStyle}" />
+                        </StackPanel>
+                    </Border>
+
+                    <Border Margin="{StaticResource SpaceTop12}" Style="{StaticResource PlaceholderHintBorderStyle}">
+                        <StackPanel>
+                            <TextBlock Text="Selected Organization" Style="{StaticResource SectionTitleTextStyle}" />
+
+                            <TextBlock Margin="{StaticResource SpaceTop12}" Style="{StaticResource SecondaryBodyTextStyle}" Text="Name" />
+                            <TextBox Text="{Binding SelectedOrganizationName, UpdateSourceTrigger=PropertyChanged}"
+                                     Style="{StaticResource TopBarTextBoxStyle}" />
+
+                            <Grid Margin="{StaticResource SpaceTop8}">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="8" />
+                                    <ColumnDefinition Width="*" />
+                                </Grid.ColumnDefinitions>
+
+                                <StackPanel Grid.Column="0">
+                                    <TextBlock Style="{StaticResource SecondaryBodyTextStyle}" Text="Type" />
+                                    <ComboBox Margin="{StaticResource SpaceTop8}"
+                                              ItemsSource="{Binding OrganizationTypes}"
+                                              SelectedItem="{Binding SelectedOrganizationType, Mode=TwoWay}"
+                                              Style="{StaticResource TopBarComboBoxStyle}" />
+                                </StackPanel>
+
+                                <StackPanel Grid.Column="2">
+                                    <TextBlock Style="{StaticResource SecondaryBodyTextStyle}" Text="Status" />
+                                    <ComboBox Margin="{StaticResource SpaceTop8}"
+                                              ItemsSource="{Binding OrganizationStatuses}"
+                                              SelectedItem="{Binding SelectedOrganizationStatus, Mode=TwoWay}"
+                                              Style="{StaticResource TopBarComboBoxStyle}" />
+                                </StackPanel>
+                            </Grid>
+
+                            <TextBlock Margin="{StaticResource SpaceTop8}" Style="{StaticResource SecondaryBodyTextStyle}" Text="Parent Organization (Optional)" />
+                            <ComboBox Margin="{StaticResource SpaceTop8}"
+                                      ItemsSource="{Binding AvailableParentOrganizations}"
+                                      SelectedItem="{Binding SelectedOrganizationParent, Mode=TwoWay}"
+                                      DisplayMemberPath="Name"
+                                      Style="{StaticResource TopBarComboBoxStyle}" />
+
+                            <TextBlock Margin="{StaticResource SpaceTop8}" Style="{StaticResource SecondaryBodyTextStyle}" Text="Summary / Notes" />
+                            <TextBox Text="{Binding SelectedOrganizationSummaryText, UpdateSourceTrigger=PropertyChanged}"
+                                     MinHeight="70"
+                                     TextWrapping="Wrap"
+                                     AcceptsReturn="True"
+                                     Style="{StaticResource TopBarTextBoxStyle}" />
+
+                            <Button Margin="{StaticResource SpaceTop12}"
+                                    Content="Save Organization"
+                                    Command="{Binding SaveSelectedOrganizationCommand}"
+                                    IsEnabled="{Binding HasSelectedOrganization}"
+                                    Style="{StaticResource TopBarButtonStyle}" />
+
+                            <TextBlock Margin="{StaticResource SpaceTop12}" Style="{StaticResource SecondaryBodyTextStyle}" Text="Child Organizations" />
+                            <ListBox Margin="{StaticResource SpaceTop8}"
+                                     MinHeight="70"
+                                     ItemsSource="{Binding SelectedOrganizationChildren}"
+                                     DisplayMemberPath="Name" />
+                        </StackPanel>
+                    </Border>
+
+                    <Border Margin="{StaticResource SpaceTop12}" Style="{StaticResource PlaceholderHintBorderStyle}">
+                        <StackPanel>
+                            <TextBlock Text="Aliases" Style="{StaticResource SectionTitleTextStyle}" />
+
+                            <ListBox Margin="{StaticResource SpaceTop12}"
+                                     MinHeight="90"
+                                     ItemsSource="{Binding SelectedOrganizationAliases}"
+                                     SelectedItem="{Binding SelectedOrganizationAlias, Mode=TwoWay}"
+                                     DisplayMemberPath="Alias" />
+
+                            <TextBox Margin="{StaticResource SpaceTop8}"
+                                     Text="{Binding NewAliasText, UpdateSourceTrigger=PropertyChanged}"
+                                     Style="{StaticResource TopBarTextBoxStyle}"
+                                     ToolTip="Add alias" />
+
+                            <StackPanel Margin="{StaticResource SpaceTop8}" Orientation="Horizontal">
+                                <Button Content="Add Alias"
+                                        Command="{Binding AddAliasCommand}"
+                                        IsEnabled="{Binding HasSelectedOrganization}"
+                                        Style="{StaticResource TopBarButtonStyle}" />
+                                <Button Margin="{StaticResource SpaceLeft8}"
+                                        Content="Remove Alias"
+                                        Command="{Binding RemoveAliasCommand}"
+                                        IsEnabled="{Binding HasSelectedAlias}"
+                                        Style="{StaticResource TopBarButtonStyle}" />
+                            </StackPanel>
+                        </StackPanel>
+                    </Border>
+
+                    <Border Margin="{StaticResource SpaceTop12}" Style="{StaticResource PlaceholderHintBorderStyle}">
+                        <StackPanel>
+                            <TextBlock Text="Memberships" Style="{StaticResource SectionTitleTextStyle}" />
+
+                            <DataGrid Margin="{StaticResource SpaceTop12}"
+                                      MinHeight="170"
+                                      ItemsSource="{Binding SelectedOrganizationMemberships}"
+                                      SelectedItem="{Binding SelectedOrganizationMembership, Mode=TwoWay}"
+                                      AutoGenerateColumns="False"
+                                      CanUserAddRows="False"
+                                      CanUserDeleteRows="False"
+                                      IsReadOnly="True">
+                                <DataGrid.Columns>
+                                    <DataGridTextColumn Header="Person" Binding="{Binding GlobalDisplayName}" Width="1.8*" />
+                                    <DataGridTextColumn Header="Role" Binding="{Binding Role}" Width="*" />
+                                    <DataGridTextColumn Header="Status" Binding="{Binding Status}" Width="*" />
+                                    <DataGridTextColumn Header="Confidence" Binding="{Binding Confidence}" Width="0.8*" />
+                                    <DataGridTextColumn Header="Last Confirmed"
+                                                        Binding="{Binding LastConfirmedDateUtc, StringFormat={}{0:yyyy-MM-dd}, TargetNullValue=(none)}"
+                                                        Width="1.2*" />
+                                </DataGrid.Columns>
+                            </DataGrid>
+
+                            <TextBlock Margin="{StaticResource SpaceTop8}" Style="{StaticResource SecondaryBodyTextStyle}" Text="Search Global Person" />
+                            <Grid Margin="{StaticResource SpaceTop8}">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="8" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+
+                                <TextBox Grid.Column="0"
+                                         Text="{Binding GlobalPersonSearchQuery, UpdateSourceTrigger=PropertyChanged}"
+                                         Style="{StaticResource TopBarTextBoxStyle}"
+                                         ToolTip="Search global people by name, alias, or identifier" />
+                                <Button Grid.Column="2"
+                                        Content="Search"
+                                        Command="{Binding SearchGlobalPersonsCommand}"
+                                        Style="{StaticResource TopBarButtonStyle}" />
+                            </Grid>
+
+                            <ListBox Margin="{StaticResource SpaceTop8}"
+                                     MinHeight="80"
+                                     ItemsSource="{Binding GlobalPersonSearchResults}"
+                                     SelectedItem="{Binding SelectedGlobalPersonSearchResult, Mode=TwoWay}"
+                                     DisplayMemberPath="DisplayName" />
+
+                            <Grid Margin="{StaticResource SpaceTop8}">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="8" />
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="8" />
+                                    <ColumnDefinition Width="*" />
+                                </Grid.ColumnDefinitions>
+
+                                <TextBox Grid.Column="0"
+                                         Text="{Binding MembershipRole, UpdateSourceTrigger=PropertyChanged}"
+                                         Style="{StaticResource TopBarTextBoxStyle}"
+                                         ToolTip="Role" />
+                                <ComboBox Grid.Column="2"
+                                          ItemsSource="{Binding MembershipStatuses}"
+                                          SelectedItem="{Binding MembershipStatus, Mode=TwoWay}"
+                                          Style="{StaticResource TopBarComboBoxStyle}" />
+                                <TextBox Grid.Column="4"
+                                         Text="{Binding MembershipConfidenceText, UpdateSourceTrigger=PropertyChanged}"
+                                         Style="{StaticResource TopBarTextBoxStyle}"
+                                         ToolTip="Confidence 0-100" />
+                            </Grid>
+
+                            <TextBox Margin="{StaticResource SpaceTop8}"
+                                     Text="{Binding MembershipBasisSummary, UpdateSourceTrigger=PropertyChanged}"
+                                     MinHeight="60"
+                                     TextWrapping="Wrap"
+                                     AcceptsReturn="True"
+                                     Style="{StaticResource TopBarTextBoxStyle}"
+                                     ToolTip="Basis summary" />
+
+                            <Grid Margin="{StaticResource SpaceTop8}">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="8" />
+                                    <ColumnDefinition Width="*" />
+                                </Grid.ColumnDefinitions>
+
+                                <TextBox Grid.Column="0"
+                                         Text="{Binding MembershipReviewer, UpdateSourceTrigger=PropertyChanged}"
+                                         Style="{StaticResource TopBarTextBoxStyle}"
+                                         ToolTip="Reviewer" />
+                                <TextBox Grid.Column="2"
+                                         Text="{Binding MembershipReviewNotes, UpdateSourceTrigger=PropertyChanged}"
+                                         Style="{StaticResource TopBarTextBoxStyle}"
+                                         ToolTip="Review notes" />
+                            </Grid>
+
+                            <Grid Margin="{StaticResource SpaceTop8}">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="8" />
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="8" />
+                                    <ColumnDefinition Width="*" />
+                                </Grid.ColumnDefinitions>
+
+                                <DatePicker Grid.Column="0" SelectedDate="{Binding MembershipStartDateLocal, Mode=TwoWay}" />
+                                <DatePicker Grid.Column="2" SelectedDate="{Binding MembershipEndDateLocal, Mode=TwoWay}" />
+                                <DatePicker Grid.Column="4" SelectedDate="{Binding MembershipLastConfirmedDateLocal, Mode=TwoWay}" />
+                            </Grid>
+
+                            <TextBlock Margin="{StaticResource SpaceTop4}"
+                                       Style="{StaticResource SecondaryBodyTextStyle}"
+                                       Text="Start date / End date / Last confirmed date" />
+
+                            <StackPanel Margin="{StaticResource SpaceTop8}" Orientation="Horizontal">
+                                <Button Content="Add Membership"
+                                        Command="{Binding AddMembershipCommand}"
+                                        IsEnabled="{Binding CanAddMembership}"
+                                        Style="{StaticResource TopBarButtonStyle}" />
+                                <Button Margin="{StaticResource SpaceLeft8}"
+                                        Content="Update Membership"
+                                        Command="{Binding UpdateMembershipCommand}"
+                                        IsEnabled="{Binding HasSelectedMembership}"
+                                        Style="{StaticResource TopBarButtonStyle}" />
+                                <Button Margin="{StaticResource SpaceLeft8}"
+                                        Content="Remove Membership"
+                                        Command="{Binding RemoveMembershipCommand}"
+                                        IsEnabled="{Binding HasSelectedMembership}"
+                                        Style="{StaticResource TopBarButtonStyle}" />
+                            </StackPanel>
+                        </StackPanel>
+                    </Border>
+                </StackPanel>
+            </ScrollViewer>
+        </Grid>
+    </Grid>
+</UserControl>

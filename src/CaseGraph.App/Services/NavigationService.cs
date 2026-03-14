@@ -19,6 +19,7 @@ public sealed class NavigationService : INavigationService
             [NavigationPage.Timeline] = ("Timeline", "Paged chronological message timeline with filters and provenance drill-down."),
             [NavigationPage.IncidentWindow] = ("Open Incident Workspace", "Persisted incident workbench with scene windows, cross-reference, timeline markers, and pinned findings."),
             [NavigationPage.PeopleTargets] = ("People / Targets", "Manage known people, aliases, identifiers, and message links."),
+            [NavigationPage.Organizations] = ("Organizations", "Cross-case organization registry for gangs, sets, crews, cliques, and memberships."),
             [NavigationPage.Locations] = ("Locations", "Location observations with provenance filters, paging, and citation actions."),
             [NavigationPage.Associations] = ("Association Graph", "Relationship graph with filters, overlays, and export."),
             [NavigationPage.Reports] = ("Reports", "Create dossier exports with evidence citations, progress, and cancellation."),
@@ -79,6 +80,11 @@ public sealed class NavigationService : INavigationService
         if (page == NavigationPage.PeopleTargets)
         {
             return new PeopleTargetsView();
+        }
+
+        if (page == NavigationPage.Organizations)
+        {
+            return new OrganizationRegistryPage();
         }
 
         if (page == NavigationPage.Associations)

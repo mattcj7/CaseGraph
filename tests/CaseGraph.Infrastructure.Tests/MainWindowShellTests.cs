@@ -1,5 +1,7 @@
 using CaseGraph.App;
+using System.Runtime.ExceptionServices;
 using System.Reflection;
+using System.Threading;
 using System.Windows;
 
 namespace CaseGraph.Infrastructure.Tests;
@@ -104,6 +106,18 @@ public sealed class MainWindowShellTests
         Assert.Equal(136d, stripWidth, precision: 6);
     }
 
+    [Fact]
+    public void SpacingDictionary_DefinesSpaceTop4()
+    {
+        var dictionary = RunOnStaThread(
+            () => (ResourceDictionary)Application.LoadComponent(
+                new Uri("/CaseGraph.App;component/Themes/Spacing.xaml", UriKind.Relative)
+            )
+        );
+
+        Assert.True(dictionary.Contains("SpaceTop4"));
+    }
+
     private static T InvokeStatic<T>(string methodName, params object[] args)
     {
         var method = typeof(MainWindow).GetMethod(
@@ -113,5 +127,34 @@ public sealed class MainWindowShellTests
 
         Assert.NotNull(method);
         return (T)method!.Invoke(null, args)!;
+    }
+
+    private static T RunOnStaThread<T>(Func<T> action)
+    {
+        T? result = default;
+        Exception? captured = null;
+
+        var thread = new Thread(() =>
+        {
+            try
+            {
+                result = action();
+            }
+            catch (Exception ex)
+            {
+                captured = ex;
+            }
+        });
+
+        thread.SetApartmentState(ApartmentState.STA);
+        thread.Start();
+        thread.Join();
+
+        if (captured is not null)
+        {
+            ExceptionDispatchInfo.Capture(captured).Throw();
+        }
+
+        return result!;
     }
 }

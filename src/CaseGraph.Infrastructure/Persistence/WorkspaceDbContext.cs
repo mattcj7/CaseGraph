@@ -1,3 +1,4 @@
+using CaseGraph.Infrastructure.Organizations;
 using CaseGraph.Infrastructure.Persistence.Entities;
 using Microsoft.EntityFrameworkCore;
 
@@ -37,6 +38,12 @@ public sealed class WorkspaceDbContext : DbContext
     public DbSet<PersonAliasRecord> PersonAliases => Set<PersonAliasRecord>();
 
     public DbSet<PersonIdentifierRecord> PersonIdentifiers => Set<PersonIdentifierRecord>();
+
+    public DbSet<OrganizationRecord> Organizations => Set<OrganizationRecord>();
+
+    public DbSet<OrganizationAlias> OrganizationAliases => Set<OrganizationAlias>();
+
+    public DbSet<OrganizationMembership> OrganizationMemberships => Set<OrganizationMembership>();
 
     public DbSet<TargetRecord> Targets => Set<TargetRecord>();
 
@@ -254,6 +261,55 @@ public sealed class WorkspaceDbContext : DbContext
 
             entity.HasOne(e => e.Person)
                 .WithMany(p => p.Identifiers)
+                .HasForeignKey(e => e.GlobalEntityId)
+                .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.Entity<OrganizationRecord>(entity =>
+        {
+            entity.ToTable("OrganizationRecord");
+            entity.HasKey(e => e.OrganizationId);
+            entity.Property(e => e.Name).IsRequired();
+            entity.Property(e => e.NameNormalized).IsRequired();
+            entity.Property(e => e.Type).IsRequired();
+            entity.Property(e => e.Status).IsRequired();
+            entity.HasIndex(e => e.NameNormalized);
+
+            entity.HasOne(e => e.ParentOrganization)
+                .WithMany(e => e.ChildOrganizations)
+                .HasForeignKey(e => e.ParentOrganizationId)
+                .OnDelete(DeleteBehavior.Restrict);
+        });
+
+        modelBuilder.Entity<OrganizationAlias>(entity =>
+        {
+            entity.ToTable("OrganizationAlias");
+            entity.HasKey(e => e.AliasId);
+            entity.Property(e => e.Alias).IsRequired();
+            entity.Property(e => e.AliasNormalized).IsRequired();
+            entity.HasIndex(e => new { e.OrganizationId, e.AliasNormalized }).IsUnique();
+
+            entity.HasOne(e => e.Organization)
+                .WithMany(e => e.Aliases)
+                .HasForeignKey(e => e.OrganizationId)
+                .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.Entity<OrganizationMembership>(entity =>
+        {
+            entity.ToTable("OrganizationMembership");
+            entity.HasKey(e => e.MembershipId);
+            entity.Property(e => e.Status).IsRequired();
+            entity.HasIndex(e => e.GlobalEntityId);
+            entity.HasIndex(e => new { e.OrganizationId, e.GlobalEntityId }).IsUnique();
+
+            entity.HasOne(e => e.Organization)
+                .WithMany(e => e.Memberships)
+                .HasForeignKey(e => e.OrganizationId)
+                .OnDelete(DeleteBehavior.Cascade);
+
+            entity.HasOne(e => e.GlobalPerson)
+                .WithMany()
                 .HasForeignKey(e => e.GlobalEntityId)
                 .OnDelete(DeleteBehavior.Cascade);
         });
