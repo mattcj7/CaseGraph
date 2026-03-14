@@ -12,15 +12,17 @@
             <TextBlock DockPanel.Dock="Left"
                        Text="People / Targets"
                        Style="{StaticResource PageTitleTextStyle}" />
-            <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
-                <TextBox Width="260"
-                         Margin="{StaticResource SpaceRight12}"
-                         Text="{Binding TargetSearchQuery, UpdateSourceTrigger=PropertyChanged}"
-                         Style="{StaticResource TopBarTextBoxStyle}"
-                         ToolTip="Search targets by name or alias" />
-                <Button Content="Refresh"
-                        Command="{Binding RefreshTargetsCommand}"
-                        Style="{StaticResource TopBarButtonStyle}" />
+            <StackPanel DockPanel.Dock="Right">
+                <TextBlock Text="Search Targets" Style="{StaticResource SecondaryBodyTextStyle}" />
+                <StackPanel Margin="{StaticResource SpaceTop4}" Orientation="Horizontal">
+                    <TextBox Width="260"
+                             Margin="{StaticResource SpaceRight12}"
+                             Text="{Binding TargetSearchQuery, UpdateSourceTrigger=PropertyChanged}"
+                             Style="{StaticResource TopBarTextBoxStyle}" />
+                    <Button Content="Refresh"
+                            Command="{Binding RefreshTargetsCommand}"
+                            Style="{StaticResource TopBarButtonStyle}" />
+                </StackPanel>
             </StackPanel>
         </DockPanel>
 
@@ -43,7 +45,45 @@
                              Margin="{StaticResource SpaceTop12}"
                              ItemsSource="{Binding Targets}"
                              SelectedItem="{Binding SelectedTargetSummary, Mode=TwoWay}"
-                             DisplayMemberPath="DisplayName" />
+                             MouseDoubleClick="OnTargetsDoubleClick">
+                        <ListBox.ItemTemplate>
+                            <DataTemplate>
+                                <Border Padding="0,8">
+                                    <DockPanel LastChildFill="True">
+                                        <Button DockPanel.Dock="Right"
+                                                Content="Open"
+                                                Command="{Binding DataContext.OpenTargetProfileCommand, RelativeSource={RelativeSource AncestorType=ListBox}}"
+                                                CommandParameter="{Binding}"
+                                                Style="{StaticResource TopBarButtonStyle}" />
+                                        <StackPanel Margin="{StaticResource SpaceRight12}">
+                                            <TextBlock Text="{Binding DisplayName}" Style="{StaticResource BodyTextStyle}" />
+                                            <TextBlock Margin="{StaticResource SpaceTop4}"
+                                                       Text="{Binding PrimaryAlias, TargetNullValue=(no alias)}"
+                                                       Style="{StaticResource SecondaryBodyTextStyle}" />
+                                            <TextBlock Margin="{StaticResource SpaceTop4}"
+                                                       Text="{Binding AffiliationSummary}"
+                                                       TextWrapping="Wrap"
+                                                       Style="{StaticResource SecondaryBodyTextStyle}" />
+                                        </StackPanel>
+                                    </DockPanel>
+                                </Border>
+                            </DataTemplate>
+                        </ListBox.ItemTemplate>
+                    </ListBox>
+                    <TextBlock Grid.Row="1"
+                               Margin="{StaticResource SpaceTop12}"
+                               Text="No targets found">
+                        <TextBlock.Style>
+                            <Style TargetType="TextBlock" BasedOn="{StaticResource SecondaryBodyTextStyle}">
+                                <Setter Property="Visibility" Value="Collapsed" />
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding Targets.Count}" Value="0">
+                                        <Setter Property="Visibility" Value="Visible" />
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </TextBlock.Style>
+                    </TextBlock>
                 </Grid>
             </Border>
 
@@ -123,6 +163,11 @@
                                     Command="{Binding SaveSelectedTargetCommand}"
                                     IsEnabled="{Binding HasSelectedTarget}"
                                     Style="{StaticResource TopBarButtonStyle}" />
+                            <Button Margin="{StaticResource SpaceTop8}"
+                                    Content="Open Profile"
+                                    Command="{Binding OpenSelectedTargetProfileCommand}"
+                                    IsEnabled="{Binding HasSelectedTarget}"
+                                    Style="{StaticResource TopBarButtonStyle}" />
                         </StackPanel>
                     </Border>
 
@@ -133,6 +178,9 @@
                                        Style="{StaticResource BodyTextStyle}"
                                        Text="{Binding SelectedTargetGlobalPersonSummary}" />
 
+                            <TextBlock Margin="{StaticResource SpaceTop8}"
+                                       Text="Search Global Person"
+                                       Style="{StaticResource SecondaryBodyTextStyle}" />
                             <Grid Margin="{StaticResource SpaceTop8}">
                                 <Grid.ColumnDefinitions>
                                     <ColumnDefinition Width="*" />
@@ -141,8 +189,7 @@
                                 </Grid.ColumnDefinitions>
                                 <TextBox Grid.Column="0"
                                          Text="{Binding GlobalPersonSearchQuery, UpdateSourceTrigger=PropertyChanged}"
-                                         Style="{StaticResource TopBarTextBoxStyle}"
-                                         ToolTip="Search global person by name, alias, or identifier" />
+                                         Style="{StaticResource TopBarTextBoxStyle}" />
                                 <Button Grid.Column="2"
                                         Content="Search"
                                         Command="{Binding SearchGlobalPersonsCommand}"
@@ -175,6 +222,19 @@
                             <TextBlock Margin="{StaticResource SpaceTop8}"
                                        Style="{StaticResource SecondaryBodyTextStyle}"
                                        Text="Global Identifiers" />
+                            <TextBlock Margin="{StaticResource SpaceTop8}"
+                                       Text="No identifiers recorded">
+                                <TextBlock.Style>
+                                    <Style TargetType="TextBlock" BasedOn="{StaticResource SecondaryBodyTextStyle}">
+                                        <Setter Property="Visibility" Value="Collapsed" />
+                                        <Style.Triggers>
+                                            <DataTrigger Binding="{Binding HasSelectedTargetGlobalIdentifiers}" Value="False">
+                                                <Setter Property="Visibility" Value="Visible" />
+                                            </DataTrigger>
+                                        </Style.Triggers>
+                                    </Style>
+                                </TextBlock.Style>
+                            </TextBlock>
                             <DataGrid Margin="{StaticResource SpaceTop8}"
                                       MinHeight="110"
                                       ItemsSource="{Binding SelectedTargetGlobalIdentifiers}"
@@ -194,6 +254,19 @@
                             <TextBlock Margin="{StaticResource SpaceTop8}"
                                        Style="{StaticResource SecondaryBodyTextStyle}"
                                        Text="Other Cases Where Seen" />
+                            <TextBlock Margin="{StaticResource SpaceTop8}"
+                                       Text="No linked global case references recorded">
+                                <TextBlock.Style>
+                                    <Style TargetType="TextBlock" BasedOn="{StaticResource SecondaryBodyTextStyle}">
+                                        <Setter Property="Visibility" Value="Collapsed" />
+                                        <Style.Triggers>
+                                            <DataTrigger Binding="{Binding HasSelectedTargetGlobalOtherCases}" Value="False">
+                                                <Setter Property="Visibility" Value="Visible" />
+                                            </DataTrigger>
+                                        </Style.Triggers>
+                                    </Style>
+                                </TextBlock.Style>
+                            </TextBlock>
                             <DataGrid Margin="{StaticResource SpaceTop8}"
                                       MinHeight="110"
                                       ItemsSource="{Binding SelectedTargetGlobalOtherCases}"
@@ -220,11 +293,26 @@
                                      ItemsSource="{Binding SelectedTargetAliases}"
                                      SelectedItem="{Binding SelectedTargetAlias, Mode=TwoWay}"
                                      DisplayMemberPath="Alias" />
+                            <TextBlock Margin="{StaticResource SpaceTop8}"
+                                       Text="No aliases recorded">
+                                <TextBlock.Style>
+                                    <Style TargetType="TextBlock" BasedOn="{StaticResource SecondaryBodyTextStyle}">
+                                        <Setter Property="Visibility" Value="Collapsed" />
+                                        <Style.Triggers>
+                                            <DataTrigger Binding="{Binding HasSelectedTargetAliases}" Value="False">
+                                                <Setter Property="Visibility" Value="Visible" />
+                                            </DataTrigger>
+                                        </Style.Triggers>
+                                    </Style>
+                                </TextBlock.Style>
+                            </TextBlock>
 
+                            <TextBlock Margin="{StaticResource SpaceTop8}"
+                                       Text="New Alias"
+                                       Style="{StaticResource SecondaryBodyTextStyle}" />
                             <TextBox Margin="{StaticResource SpaceTop8}"
                                      Text="{Binding NewAliasText, UpdateSourceTrigger=PropertyChanged}"
-                                     Style="{StaticResource TopBarTextBoxStyle}"
-                                     ToolTip="Add alias" />
+                                     Style="{StaticResource TopBarTextBoxStyle}" />
 
                             <StackPanel Margin="{StaticResource SpaceTop8}" Orientation="Horizontal">
                                 <Button Content="Add Alias"
@@ -259,6 +347,19 @@
                                     <DataGridCheckBoxColumn Header="Primary" Binding="{Binding IsPrimary}" Width="Auto" />
                                 </DataGrid.Columns>
                             </DataGrid>
+                            <TextBlock Margin="{StaticResource SpaceTop8}"
+                                       Text="No identifiers recorded">
+                                <TextBlock.Style>
+                                    <Style TargetType="TextBlock" BasedOn="{StaticResource SecondaryBodyTextStyle}">
+                                        <Setter Property="Visibility" Value="Collapsed" />
+                                        <Style.Triggers>
+                                            <DataTrigger Binding="{Binding HasSelectedTargetIdentifiers}" Value="False">
+                                                <Setter Property="Visibility" Value="Visible" />
+                                            </DataTrigger>
+                                        </Style.Triggers>
+                                    </Style>
+                                </TextBlock.Style>
+                            </TextBlock>
 
                             <Grid Margin="{StaticResource SpaceTop8}">
                                 <Grid.ColumnDefinitions>
@@ -269,18 +370,25 @@
                                     <ColumnDefinition Width="*" />
                                 </Grid.ColumnDefinitions>
 
-                                <ComboBox Grid.Column="0"
-                                          ItemsSource="{Binding AvailableIdentifierTypes}"
-                                          SelectedItem="{Binding IdentifierEditorType, Mode=TwoWay}"
-                                          Style="{StaticResource TopBarComboBoxStyle}" />
-                                <TextBox Grid.Column="2"
-                                         Text="{Binding IdentifierEditorValueRaw, UpdateSourceTrigger=PropertyChanged}"
-                                         Style="{StaticResource TopBarTextBoxStyle}"
-                                         ToolTip="Identifier value" />
-                                <TextBox Grid.Column="4"
-                                         Text="{Binding IdentifierEditorNotes, UpdateSourceTrigger=PropertyChanged}"
-                                         Style="{StaticResource TopBarTextBoxStyle}"
-                                         ToolTip="Notes" />
+                                <StackPanel Grid.Column="0">
+                                    <TextBlock Text="Identifier Type" Style="{StaticResource SecondaryBodyTextStyle}" />
+                                    <ComboBox Margin="{StaticResource SpaceTop8}"
+                                              ItemsSource="{Binding AvailableIdentifierTypes}"
+                                              SelectedItem="{Binding IdentifierEditorType, Mode=TwoWay}"
+                                              Style="{StaticResource TopBarComboBoxStyle}" />
+                                </StackPanel>
+                                <StackPanel Grid.Column="2">
+                                    <TextBlock Text="Identifier Value" Style="{StaticResource SecondaryBodyTextStyle}" />
+                                    <TextBox Margin="{StaticResource SpaceTop8}"
+                                             Text="{Binding IdentifierEditorValueRaw, UpdateSourceTrigger=PropertyChanged}"
+                                             Style="{StaticResource TopBarTextBoxStyle}" />
+                                </StackPanel>
+                                <StackPanel Grid.Column="4">
+                                    <TextBlock Text="Notes" Style="{StaticResource SecondaryBodyTextStyle}" />
+                                    <TextBox Margin="{StaticResource SpaceTop8}"
+                                             Text="{Binding IdentifierEditorNotes, UpdateSourceTrigger=PropertyChanged}"
+                                             Style="{StaticResource TopBarTextBoxStyle}" />
+                                </StackPanel>
                             </Grid>
 
                             <CheckBox Margin="{StaticResource SpaceTop8}"
@@ -322,6 +430,19 @@
                                     Command="{Binding OpenSearchForSelectedTargetCommand}"
                                     IsEnabled="{Binding HasSelectedTarget}"
                                     Style="{StaticResource TopBarButtonStyle}" />
+                            <TextBlock Margin="{StaticResource SpaceTop8}"
+                                       Text="No identifiers recorded">
+                                <TextBlock.Style>
+                                    <Style TargetType="TextBlock" BasedOn="{StaticResource SecondaryBodyTextStyle}">
+                                        <Setter Property="Visibility" Value="Collapsed" />
+                                        <Style.Triggers>
+                                            <DataTrigger Binding="{Binding HasSelectedTargetWhereSeenIdentifiers}" Value="False">
+                                                <Setter Property="Visibility" Value="Visible" />
+                                            </DataTrigger>
+                                        </Style.Triggers>
+                                    </Style>
+                                </TextBlock.Style>
+                            </TextBlock>
 
                             <DataGrid Margin="{StaticResource SpaceTop8}"
                                       MinHeight="140"

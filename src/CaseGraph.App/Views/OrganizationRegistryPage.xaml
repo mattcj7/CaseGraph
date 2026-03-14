@@ -13,15 +13,17 @@
             <TextBlock DockPanel.Dock="Left"
                        Text="Organization Registry"
                        Style="{StaticResource PageTitleTextStyle}" />
-            <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
-                <TextBox Width="280"
-                         Margin="{StaticResource SpaceRight12}"
-                         Text="{Binding OrganizationSearchQuery, UpdateSourceTrigger=PropertyChanged}"
-                         Style="{StaticResource TopBarTextBoxStyle}"
-                         ToolTip="Search organizations by name or alias" />
-                <Button Content="Refresh"
-                        Command="{Binding RefreshOrganizationsCommand}"
-                        Style="{StaticResource TopBarButtonStyle}" />
+            <StackPanel DockPanel.Dock="Right">
+                <TextBlock Text="Search Organizations" Style="{StaticResource SecondaryBodyTextStyle}" />
+                <StackPanel Margin="{StaticResource SpaceTop4}" Orientation="Horizontal">
+                    <TextBox Width="280"
+                             Margin="{StaticResource SpaceRight12}"
+                             Text="{Binding OrganizationSearchQuery, UpdateSourceTrigger=PropertyChanged}"
+                             Style="{StaticResource TopBarTextBoxStyle}" />
+                    <Button Content="Refresh"
+                            Command="{Binding RefreshOrganizationsCommand}"
+                            Style="{StaticResource TopBarButtonStyle}" />
+                </StackPanel>
             </StackPanel>
         </DockPanel>
 
@@ -46,7 +48,44 @@
                              Margin="{StaticResource SpaceTop12}"
                              ItemsSource="{Binding Organizations}"
                              SelectedItem="{Binding SelectedOrganization, Mode=TwoWay}"
-                             DisplayMemberPath="Name" />
+                             MouseDoubleClick="OnOrganizationsDoubleClick">
+                        <ListBox.ItemTemplate>
+                            <DataTemplate>
+                                <Border Padding="0,8">
+                                    <DockPanel LastChildFill="True">
+                                        <Button DockPanel.Dock="Right"
+                                                Content="Open"
+                                                Command="{Binding DataContext.OpenOrganizationProfileCommand, RelativeSource={RelativeSource AncestorType=ListBox}}"
+                                                CommandParameter="{Binding}"
+                                                Style="{StaticResource TopBarButtonStyle}" />
+                                        <StackPanel Margin="{StaticResource SpaceRight12}">
+                                            <TextBlock Text="{Binding Name}" Style="{StaticResource BodyTextStyle}" />
+                                            <TextBlock Margin="{StaticResource SpaceTop4}"
+                                                       Text="{Binding Type}"
+                                                       Style="{StaticResource SecondaryBodyTextStyle}" />
+                                            <TextBlock Margin="{StaticResource SpaceTop4}"
+                                                       Text="{Binding Status}"
+                                                       Style="{StaticResource SecondaryBodyTextStyle}" />
+                                        </StackPanel>
+                                    </DockPanel>
+                                </Border>
+                            </DataTemplate>
+                        </ListBox.ItemTemplate>
+                    </ListBox>
+                    <TextBlock Grid.Row="1"
+                               Margin="{StaticResource SpaceTop12}"
+                               Text="No organizations found">
+                        <TextBlock.Style>
+                            <Style TargetType="TextBlock" BasedOn="{StaticResource SecondaryBodyTextStyle}">
+                                <Setter Property="Visibility" Value="Collapsed" />
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding HasOrganizations}" Value="False">
+                                        <Setter Property="Visibility" Value="Visible" />
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </TextBlock.Style>
+                    </TextBlock>
 
                     <TextBlock Grid.Row="2"
                                Margin="{StaticResource SpaceTop12}"
@@ -161,12 +200,30 @@
                                     Command="{Binding SaveSelectedOrganizationCommand}"
                                     IsEnabled="{Binding HasSelectedOrganization}"
                                     Style="{StaticResource TopBarButtonStyle}" />
+                            <Button Margin="{StaticResource SpaceTop8}"
+                                    Content="Open Profile"
+                                    Command="{Binding OpenSelectedOrganizationProfileCommand}"
+                                    IsEnabled="{Binding HasSelectedOrganization}"
+                                    Style="{StaticResource TopBarButtonStyle}" />
 
                             <TextBlock Margin="{StaticResource SpaceTop12}" Style="{StaticResource SecondaryBodyTextStyle}" Text="Child Organizations" />
                             <ListBox Margin="{StaticResource SpaceTop8}"
                                      MinHeight="70"
                                      ItemsSource="{Binding SelectedOrganizationChildren}"
                                      DisplayMemberPath="Name" />
+                            <TextBlock Margin="{StaticResource SpaceTop8}"
+                                       Text="No child organizations recorded">
+                                <TextBlock.Style>
+                                    <Style TargetType="TextBlock" BasedOn="{StaticResource SecondaryBodyTextStyle}">
+                                        <Setter Property="Visibility" Value="Collapsed" />
+                                        <Style.Triggers>
+                                            <DataTrigger Binding="{Binding HasSelectedOrganizationChildren}" Value="False">
+                                                <Setter Property="Visibility" Value="Visible" />
+                                            </DataTrigger>
+                                        </Style.Triggers>
+                                    </Style>
+                                </TextBlock.Style>
+                            </TextBlock>
                         </StackPanel>
                     </Border>
 
@@ -179,11 +236,26 @@
                                      ItemsSource="{Binding SelectedOrganizationAliases}"
                                      SelectedItem="{Binding SelectedOrganizationAlias, Mode=TwoWay}"
                                      DisplayMemberPath="Alias" />
+                            <TextBlock Margin="{StaticResource SpaceTop8}"
+                                       Text="No aliases recorded">
+                                <TextBlock.Style>
+                                    <Style TargetType="TextBlock" BasedOn="{StaticResource SecondaryBodyTextStyle}">
+                                        <Setter Property="Visibility" Value="Collapsed" />
+                                        <Style.Triggers>
+                                            <DataTrigger Binding="{Binding HasSelectedOrganizationAliases}" Value="False">
+                                                <Setter Property="Visibility" Value="Visible" />
+                                            </DataTrigger>
+                                        </Style.Triggers>
+                                    </Style>
+                                </TextBlock.Style>
+                            </TextBlock>
 
+                            <TextBlock Margin="{StaticResource SpaceTop8}"
+                                       Text="New Alias"
+                                       Style="{StaticResource SecondaryBodyTextStyle}" />
                             <TextBox Margin="{StaticResource SpaceTop8}"
                                      Text="{Binding NewAliasText, UpdateSourceTrigger=PropertyChanged}"
-                                     Style="{StaticResource TopBarTextBoxStyle}"
-                                     ToolTip="Add alias" />
+                                     Style="{StaticResource TopBarTextBoxStyle}" />
 
                             <StackPanel Margin="{StaticResource SpaceTop8}" Orientation="Horizontal">
                                 <Button Content="Add Alias"
@@ -221,6 +293,19 @@
                                                         Width="1.2*" />
                                 </DataGrid.Columns>
                             </DataGrid>
+                            <TextBlock Margin="{StaticResource SpaceTop8}"
+                                       Text="No organization memberships recorded">
+                                <TextBlock.Style>
+                                    <Style TargetType="TextBlock" BasedOn="{StaticResource SecondaryBodyTextStyle}">
+                                        <Setter Property="Visibility" Value="Collapsed" />
+                                        <Style.Triggers>
+                                            <DataTrigger Binding="{Binding HasSelectedOrganizationMemberships}" Value="False">
+                                                <Setter Property="Visibility" Value="Visible" />
+                                            </DataTrigger>
+                                        </Style.Triggers>
+                                    </Style>
+                                </TextBlock.Style>
+                            </TextBlock>
 
                             <TextBlock Margin="{StaticResource SpaceTop8}" Style="{StaticResource SecondaryBodyTextStyle}" Text="Search Global Person" />
                             <Grid Margin="{StaticResource SpaceTop8}">
@@ -255,27 +340,34 @@
                                     <ColumnDefinition Width="*" />
                                 </Grid.ColumnDefinitions>
 
-                                <TextBox Grid.Column="0"
-                                         Text="{Binding MembershipRole, UpdateSourceTrigger=PropertyChanged}"
-                                         Style="{StaticResource TopBarTextBoxStyle}"
-                                         ToolTip="Role" />
-                                <ComboBox Grid.Column="2"
-                                          ItemsSource="{Binding MembershipStatuses}"
-                                          SelectedItem="{Binding MembershipStatus, Mode=TwoWay}"
-                                          Style="{StaticResource TopBarComboBoxStyle}" />
-                                <TextBox Grid.Column="4"
-                                         Text="{Binding MembershipConfidenceText, UpdateSourceTrigger=PropertyChanged}"
-                                         Style="{StaticResource TopBarTextBoxStyle}"
-                                         ToolTip="Confidence 0-100" />
+                                <StackPanel Grid.Column="0">
+                                    <TextBlock Text="Role" Style="{StaticResource SecondaryBodyTextStyle}" />
+                                    <TextBox Margin="{StaticResource SpaceTop8}"
+                                             Text="{Binding MembershipRole, UpdateSourceTrigger=PropertyChanged}"
+                                             Style="{StaticResource TopBarTextBoxStyle}" />
+                                </StackPanel>
+                                <StackPanel Grid.Column="2">
+                                    <TextBlock Text="Status" Style="{StaticResource SecondaryBodyTextStyle}" />
+                                    <ComboBox Margin="{StaticResource SpaceTop8}"
+                                              ItemsSource="{Binding MembershipStatuses}"
+                                              SelectedItem="{Binding MembershipStatus, Mode=TwoWay}"
+                                              Style="{StaticResource TopBarComboBoxStyle}" />
+                                </StackPanel>
+                                <StackPanel Grid.Column="4">
+                                    <TextBlock Text="Confidence" Style="{StaticResource SecondaryBodyTextStyle}" />
+                                    <TextBox Margin="{StaticResource SpaceTop8}"
+                                             Text="{Binding MembershipConfidenceText, UpdateSourceTrigger=PropertyChanged}"
+                                             Style="{StaticResource TopBarTextBoxStyle}" />
+                                </StackPanel>
                             </Grid>
 
+                            <TextBlock Margin="{StaticResource SpaceTop8}" Style="{StaticResource SecondaryBodyTextStyle}" Text="Basis Summary" />
                             <TextBox Margin="{StaticResource SpaceTop8}"
                                      Text="{Binding MembershipBasisSummary, UpdateSourceTrigger=PropertyChanged}"
                                      MinHeight="60"
                                      TextWrapping="Wrap"
                                      AcceptsReturn="True"
-                                     Style="{StaticResource TopBarTextBoxStyle}"
-                                     ToolTip="Basis summary" />
+                                     Style="{StaticResource TopBarTextBoxStyle}" />
 
                             <Grid Margin="{StaticResource SpaceTop8}">
                                 <Grid.ColumnDefinitions>
@@ -284,14 +376,18 @@
                                     <ColumnDefinition Width="*" />
                                 </Grid.ColumnDefinitions>
 
-                                <TextBox Grid.Column="0"
-                                         Text="{Binding MembershipReviewer, UpdateSourceTrigger=PropertyChanged}"
-                                         Style="{StaticResource TopBarTextBoxStyle}"
-                                         ToolTip="Reviewer" />
-                                <TextBox Grid.Column="2"
-                                         Text="{Binding MembershipReviewNotes, UpdateSourceTrigger=PropertyChanged}"
-                                         Style="{StaticResource TopBarTextBoxStyle}"
-                                         ToolTip="Review notes" />
+                                <StackPanel Grid.Column="0">
+                                    <TextBlock Text="Reviewer" Style="{StaticResource SecondaryBodyTextStyle}" />
+                                    <TextBox Margin="{StaticResource SpaceTop8}"
+                                             Text="{Binding MembershipReviewer, UpdateSourceTrigger=PropertyChanged}"
+                                             Style="{StaticResource TopBarTextBoxStyle}" />
+                                </StackPanel>
+                                <StackPanel Grid.Column="2">
+                                    <TextBlock Text="Review Notes" Style="{StaticResource SecondaryBodyTextStyle}" />
+                                    <TextBox Margin="{StaticResource SpaceTop8}"
+                                             Text="{Binding MembershipReviewNotes, UpdateSourceTrigger=PropertyChanged}"
+                                             Style="{StaticResource TopBarTextBoxStyle}" />
+                                </StackPanel>
                             </Grid>
 
                             <Grid Margin="{StaticResource SpaceTop8}">
@@ -303,14 +399,22 @@
                                     <ColumnDefinition Width="*" />
                                 </Grid.ColumnDefinitions>
 
-                                <DatePicker Grid.Column="0" SelectedDate="{Binding MembershipStartDateLocal, Mode=TwoWay}" />
-                                <DatePicker Grid.Column="2" SelectedDate="{Binding MembershipEndDateLocal, Mode=TwoWay}" />
-                                <DatePicker Grid.Column="4" SelectedDate="{Binding MembershipLastConfirmedDateLocal, Mode=TwoWay}" />
+                                <StackPanel Grid.Column="0">
+                                    <TextBlock Text="Start Date" Style="{StaticResource SecondaryBodyTextStyle}" />
+                                    <DatePicker Margin="{StaticResource SpaceTop8}"
+                                                SelectedDate="{Binding MembershipStartDateLocal, Mode=TwoWay}" />
+                                </StackPanel>
+                                <StackPanel Grid.Column="2">
+                                    <TextBlock Text="End Date" Style="{StaticResource SecondaryBodyTextStyle}" />
+                                    <DatePicker Margin="{StaticResource SpaceTop8}"
+                                                SelectedDate="{Binding MembershipEndDateLocal, Mode=TwoWay}" />
+                                </StackPanel>
+                                <StackPanel Grid.Column="4">
+                                    <TextBlock Text="Last Confirmed Date" Style="{StaticResource SecondaryBodyTextStyle}" />
+                                    <DatePicker Margin="{StaticResource SpaceTop8}"
+                                                SelectedDate="{Binding MembershipLastConfirmedDateLocal, Mode=TwoWay}" />
+                                </StackPanel>
                             </Grid>
-
-                            <TextBlock Margin="{StaticResource SpaceTop4}"
-                                       Style="{StaticResource SecondaryBodyTextStyle}"
-                                       Text="Start date / End date / Last confirmed date" />
 
                             <StackPanel Margin="{StaticResource SpaceTop8}" Orientation="Horizontal">
                                 <Button Content="Add Membership"

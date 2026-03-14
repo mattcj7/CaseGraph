@@ -1,6 +1,7 @@
 using CaseGraph.Core.Abstractions;
 using CaseGraph.Core.Diagnostics;
 using CaseGraph.Core.Models;
+using CaseGraph.Infrastructure.Organizations;
 using CaseGraph.Infrastructure.Persistence;
 using CaseGraph.Infrastructure.Persistence.Entities;
 using Microsoft.EntityFrameworkCore;
@@ -73,6 +74,16 @@ public sealed class TargetRegistryService : ITargetRegistryService
             })
             .ToListAsync(ct);
 
+        var affiliationsByGlobalEntityId = await BuildAffiliationsLookupAsync(
+            db,
+            targets
+                .Where(item => item.Target.GlobalEntityId.HasValue)
+                .Select(item => item.Target.GlobalEntityId!.Value)
+                .Distinct()
+                .ToList(),
+            ct
+        );
+
         return targets
             .OrderByDescending(item =>
                 item.Target.UpdatedAtUtc == default
@@ -81,7 +92,18 @@ public sealed class TargetRegistryService : ITargetRegistryService
             )
             .ThenBy(item => item.Target.DisplayName, StringComparer.OrdinalIgnoreCase)
             .ThenBy(item => item.Target.TargetId)
-            .Select(item => MapSummary(item.Target, item.GlobalDisplayName))
+            .Select(item =>
+            {
+                var affiliations = item.Target.GlobalEntityId.HasValue
+                    ? affiliationsByGlobalEntityId.GetValueOrDefault(item.Target.GlobalEntityId.Value)
+                    : [];
+
+                return MapSummary(
+                    item.Target,
+                    item.GlobalDisplayName,
+                    AffiliationSummaryFormatter.Format(affiliations ?? [])
+                );
+            })
             .ToList();
     }
 
@@ -126,12 +148,18 @@ public sealed class TargetRegistryService : ITargetRegistryService
             target.GlobalEntityId,
             ct
         );
+        var affiliations = await BuildAffiliationsForGlobalPersonAsync(db, target.GlobalEntityId, ct);
 
         var globalDisplayName = globalPersonInfo?.DisplayName;
 
         return new TargetDetails(
-            MapSummary(target, globalDisplayName),
+            MapSummary(
+                target,
+                globalDisplayName,
+                AffiliationSummaryFormatter.Format(affiliations)
+            ),
             aliases.Select(MapAlias).ToList(),
+            affiliations,
             identifiers
                 .Where(link => link.Identifier is not null)
                 .Select(link => MapIdentifier(link.Identifier!, link.IsPrimary))
@@ -1560,6 +1588,58 @@ public sealed class TargetRegistryService : ITargetRegistryService
         );
     }
 
+    private async Task<Dictionary<Guid, IReadOnlyList<TargetOrganizationAffiliationInfo>>> BuildAffiliationsLookupAsync(
+        WorkspaceDbContext db,
+        IReadOnlyCollection<Guid> globalEntityIds,
+        CancellationToken ct
+    )
+    {
+        if (globalEntityIds.Count == 0)
+        {
+            return new Dictionary<Guid, IReadOnlyList<TargetOrganizationAffiliationInfo>>();
+        }
+
+        var rows = await (
+            from membership in db.OrganizationMemberships.AsNoTracking()
+            join organization in db.Organizations.AsNoTracking()
+                on membership.OrganizationId equals organization.OrganizationId
+            where globalEntityIds.Contains(membership.GlobalEntityId)
+            select new
+            {
+                membership.GlobalEntityId,
+                Affiliation = MapAffiliation(organization, membership)
+            }
+        ).ToListAsync(ct);
+
+        return rows
+            .GroupBy(row => row.GlobalEntityId)
+            .ToDictionary(
+                group => group.Key,
+                group => (IReadOnlyList<TargetOrganizationAffiliationInfo>)group
+                    .Select(item => item.Affiliation)
+                    .OrderByDescending(AffiliationSummaryFormatter.IsCurrentAffiliation)
+                    .ThenByDescending(item => item.LastConfirmedDateUtc ?? item.StartDateUtc ?? DateTimeOffset.MinValue)
+                    .ThenBy(item => item.OrganizationName, StringComparer.OrdinalIgnoreCase)
+                    .ThenBy(item => item.OrganizationId)
+                    .ToList()
+            );
+    }
+
+    private async Task<IReadOnlyList<TargetOrganizationAffiliationInfo>> BuildAffiliationsForGlobalPersonAsync(
+        WorkspaceDbContext db,
+        Guid? globalEntityId,
+        CancellationToken ct
+    )
+    {
+        if (!globalEntityId.HasValue || globalEntityId.Value == Guid.Empty)
+        {
+            return [];
+        }
+
+        var lookup = await BuildAffiliationsLookupAsync(db, [globalEntityId.Value], ct);
+        return lookup.GetValueOrDefault(globalEntityId.Value) ?? [];
+    }
+
     private async Task SyncAllTargetIdentifiersToGlobalAsync(
         WorkspaceDbContext db,
         Guid caseId,
@@ -1976,13 +2056,39 @@ public sealed class TargetRegistryService : ITargetRegistryService
             : TargetIdentifierType.Other;
     }
 
-    private static TargetSummary MapSummary(TargetRecord record, string? globalDisplayName = null)
+    private static TargetOrganizationAffiliationInfo MapAffiliation(
+        OrganizationRecord organization,
+        OrganizationMembership membership
+    )
+    {
+        return new TargetOrganizationAffiliationInfo(
+            membership.MembershipId,
+            organization.OrganizationId,
+            organization.Name,
+            organization.Type,
+            organization.Status,
+            organization.Summary,
+            membership.Role,
+            membership.Status,
+            membership.Confidence,
+            membership.StartDateUtc,
+            membership.EndDateUtc,
+            membership.LastConfirmedDateUtc
+        );
+    }
+
+    private static TargetSummary MapSummary(
+        TargetRecord record,
+        string? globalDisplayName = null,
+        string? affiliationSummary = null
+    )
     {
         return new TargetSummary(
             record.TargetId,
             record.CaseId,
             record.DisplayName,
             record.PrimaryAlias,
+            affiliationSummary ?? AffiliationSummaryFormatter.NoOrganizationRecorded,
             record.Notes,
             record.CreatedAtUtc,
             record.UpdatedAtUtc,

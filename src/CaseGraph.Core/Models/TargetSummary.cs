@@ -5,6 +5,7 @@ public sealed record TargetSummary(
     Guid CaseId,
     string DisplayName,
     string? PrimaryAlias,
+    string AffiliationSummary,
     string? Notes,
     DateTimeOffset CreatedAtUtc,
     DateTimeOffset UpdatedAtUtc,

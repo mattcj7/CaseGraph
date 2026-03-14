@@ -45,7 +45,16 @@ public sealed partial class OrganizationRegistryViewModel : ObservableObject, ID
         AddMembershipCommand = new AsyncRelayCommand(AddMembershipAsync, () => CanAddMembership);
         UpdateMembershipCommand = new AsyncRelayCommand(UpdateMembershipAsync, () => HasSelectedMembership);
         RemoveMembershipCommand = new AsyncRelayCommand(RemoveMembershipAsync, () => HasSelectedMembership);
+        OpenSelectedOrganizationProfileCommand = new AsyncRelayCommand(
+            OpenSelectedOrganizationProfileAsync,
+            () => HasSelectedOrganization
+        );
+        OpenOrganizationProfileCommand = new AsyncRelayCommand<OrganizationSummaryDto?>(
+            OpenOrganizationProfileAsync
+        );
     }
+
+    public Action<Guid>? OpenOrganizationProfileRequested { get; set; }
 
     public ObservableCollection<OrganizationSummaryDto> Organizations { get; } = new();
 
@@ -67,11 +76,19 @@ public sealed partial class OrganizationRegistryViewModel : ObservableObject, ID
 
     public bool HasSelectedOrganization => SelectedOrganization is not null;
 
+    public bool HasOrganizations => Organizations.Count > 0;
+
     public bool HasSelectedAlias => SelectedOrganizationAlias is not null;
 
     public bool HasSelectedMembership => SelectedOrganizationMembership is not null;
 
     public bool HasSelectedGlobalPersonSearchResult => SelectedGlobalPersonSearchResult is not null;
+
+    public bool HasSelectedOrganizationAliases => SelectedOrganizationAliases.Count > 0;
+
+    public bool HasSelectedOrganizationMemberships => SelectedOrganizationMemberships.Count > 0;
+
+    public bool HasSelectedOrganizationChildren => SelectedOrganizationChildren.Count > 0;
 
     public bool CanCreateOrganization => !string.IsNullOrWhiteSpace(NewOrganizationName);
 
@@ -96,6 +113,10 @@ public sealed partial class OrganizationRegistryViewModel : ObservableObject, ID
     public IAsyncRelayCommand UpdateMembershipCommand { get; }
 
     public IAsyncRelayCommand RemoveMembershipCommand { get; }
+
+    public IAsyncRelayCommand OpenSelectedOrganizationProfileCommand { get; }
+
+    public IAsyncRelayCommand<OrganizationSummaryDto?> OpenOrganizationProfileCommand { get; }
 
     [ObservableProperty]
     private Guid? currentCaseId;
@@ -233,6 +254,7 @@ public sealed partial class OrganizationRegistryViewModel : ObservableObject, ID
             StatusText = organizations.Count == 0
                 ? "No organizations found."
                 : $"Loaded {organizations.Count:0} organization record(s).";
+            OnPropertyChanged(nameof(HasOrganizations));
         }
         catch (Exception ex)
         {
@@ -538,6 +560,7 @@ public sealed partial class OrganizationRegistryViewModel : ObservableObject, ID
     partial void OnSelectedOrganizationChanged(OrganizationSummaryDto? value)
     {
         OnPropertyChanged(nameof(HasSelectedOrganization));
+        OpenSelectedOrganizationProfileCommand.NotifyCanExecuteChanged();
         SaveSelectedOrganizationCommand.NotifyCanExecuteChanged();
         AddAliasCommand.NotifyCanExecuteChanged();
         AddMembershipCommand.NotifyCanExecuteChanged();
@@ -645,6 +668,7 @@ public sealed partial class OrganizationRegistryViewModel : ObservableObject, ID
         SelectedOrganizationAlias = selectedAliasId.HasValue
             ? SelectedOrganizationAliases.FirstOrDefault(item => item.AliasId == selectedAliasId.Value)
             : SelectedOrganizationAliases.FirstOrDefault();
+        OnPropertyChanged(nameof(HasSelectedOrganizationAliases));
     }
 
     private void SyncMemberships(IReadOnlyList<OrganizationMembershipDto> memberships)
@@ -661,6 +685,7 @@ public sealed partial class OrganizationRegistryViewModel : ObservableObject, ID
                 item => item.MembershipId == selectedMembershipId.Value
             )
             : SelectedOrganizationMemberships.FirstOrDefault();
+        OnPropertyChanged(nameof(HasSelectedOrganizationMemberships));
     }
 
     private void SyncChildren(IReadOnlyList<OrganizationSummaryDto> children)
@@ -670,6 +695,8 @@ public sealed partial class OrganizationRegistryViewModel : ObservableObject, ID
         {
             SelectedOrganizationChildren.Add(child);
         }
+
+        OnPropertyChanged(nameof(HasSelectedOrganizationChildren));
     }
 
     private void ClearNewOrganizationInputs()
@@ -700,6 +727,9 @@ public sealed partial class OrganizationRegistryViewModel : ObservableObject, ID
         SelectedOrganizationMembership = null;
         OnPropertyChanged(nameof(HasSelectedAlias));
         OnPropertyChanged(nameof(HasSelectedMembership));
+        OnPropertyChanged(nameof(HasSelectedOrganizationAliases));
+        OnPropertyChanged(nameof(HasSelectedOrganizationMemberships));
+        OnPropertyChanged(nameof(HasSelectedOrganizationChildren));
     }
 
     private void ClearMembershipEditor()
@@ -749,5 +779,21 @@ public sealed partial class OrganizationRegistryViewModel : ObservableObject, ID
     private static DateTime? ConvertUtcDateToLocalDate(DateTimeOffset? value)
     {
         return value?.ToLocalTime().Date;
+    }
+
+    private async Task OpenSelectedOrganizationProfileAsync()
+    {
+        await OpenOrganizationProfileAsync(SelectedOrganization);
+    }
+
+    private async Task OpenOrganizationProfileAsync(OrganizationSummaryDto? organization)
+    {
+        if (organization is null)
+        {
+            return;
+        }
+
+        OpenOrganizationProfileRequested?.Invoke(organization.OrganizationId);
+        await Task.CompletedTask;
     }
 }

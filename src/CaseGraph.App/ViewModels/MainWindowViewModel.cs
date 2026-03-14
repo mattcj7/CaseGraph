@@ -482,6 +482,8 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
         OpenIncidentWorkspaceViewModel openIncidentWorkspaceViewModel,
         LocationsViewModel locationsViewModel,
         OrganizationRegistryViewModel organizationRegistryViewModel,
+        PersonProfileViewModel personProfileViewModel,
+        OrganizationProfileViewModel organizationProfileViewModel,
         ReportsViewModel reportsViewModel,
         IWorkspacePathProvider workspacePathProvider,
         IUserInteractionService userInteractionService,
@@ -511,6 +513,8 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
         OpenIncidentWorkspace = openIncidentWorkspaceViewModel;
         Locations = locationsViewModel;
         OrganizationRegistry = organizationRegistryViewModel;
+        _personProfile = personProfileViewModel;
+        _organizationProfile = organizationProfileViewModel;
         Reports = reportsViewModel;
         _workspacePathProvider = workspacePathProvider;
         _userInteractionService = userInteractionService;
@@ -525,6 +529,7 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
         OpenIncidentWorkspace.ViewMessageSourceRequested = OpenTimelineSource;
         OpenIncidentWorkspace.ViewLocationSourceRequested = OpenLocationSource;
         Locations.ViewSourceRequested = OpenLocationSource;
+        ConfigureProfileNavigation();
 
         foreach (var item in _navigationService.GetNavigationItems())
         {
@@ -562,6 +567,14 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
             () => CanCancelLatestMessagesParseJob
         );
         RefreshTargetsCommand = new AsyncRelayCommand(() => RefreshTargetsAsync(CancellationToken.None));
+        OpenSelectedTargetProfileCommand = CreateSafeAsyncCommand(
+            "OpenTargetProfile",
+            OpenSelectedTargetProfileAsync,
+            () => HasSelectedTarget
+        );
+        OpenTargetProfileCommand = new AsyncRelayCommand<TargetSummary?>(
+            summary => ExecuteSafeAsync("OpenTargetProfile", () => OpenTargetProfileAsync(summary))
+        );
         CreateTargetCommand = CreateSafeAsyncCommand("CreateTarget", CreateTargetAsync);
         SaveSelectedTargetCommand = new AsyncRelayCommand(SaveSelectedTargetAsync);
         AddAliasCommand = new AsyncRelayCommand(AddAliasAsync);
@@ -675,6 +688,8 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
         try
         {
             CurrentView = _navigationService.CreateView(value.Page);
+            ClearWorkspaceHistory();
+            _currentWorkspaceState = WorkspaceContentState.ForNavigation(value.Page);
             AppFileLogger.LogEvent(
                 eventName: "NavigationViewActivated",
                 level: "INFO",
@@ -695,70 +710,7 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
             return;
         }
 
-        if (value.Page == NavigationPage.Timeline)
-        {
-            Timeline.ActivateAsync(CancellationToken.None).Forget(
-                "ActivateTimelineOnNavigate",
-                caseId: _appSessionState.CurrentCaseId,
-                evidenceId: _appSessionState.CurrentEvidenceId
-            );
-        }
-        else
-        {
-            Timeline.Deactivate();
-        }
-
-        if (value.Page == NavigationPage.IncidentWindow)
-        {
-            OpenIncidentWorkspace.ActivateAsync(CancellationToken.None).Forget(
-                "ActivateOpenIncidentWorkspaceOnNavigate",
-                caseId: _appSessionState.CurrentCaseId,
-                evidenceId: _appSessionState.CurrentEvidenceId
-            );
-        }
-        else
-        {
-            OpenIncidentWorkspace.Deactivate();
-        }
-
-        if (value.Page == NavigationPage.Locations)
-        {
-            Locations.ActivateAsync(CancellationToken.None).Forget(
-                "ActivateLocationsOnNavigate",
-                caseId: _appSessionState.CurrentCaseId,
-                evidenceId: _appSessionState.CurrentEvidenceId
-            );
-        }
-        else
-        {
-            Locations.Deactivate();
-        }
-
-        if (value.Page == NavigationPage.Organizations)
-        {
-            OrganizationRegistry.ActivateAsync(CancellationToken.None).Forget(
-                "ActivateOrganizationsOnNavigate",
-                caseId: _appSessionState.CurrentCaseId,
-                evidenceId: _appSessionState.CurrentEvidenceId
-            );
-        }
-        else
-        {
-            OrganizationRegistry.Deactivate();
-        }
-
-        if (value.Page == NavigationPage.Reports)
-        {
-            Reports.ActivateAsync(CancellationToken.None).Forget(
-                "ActivateReportsOnNavigate",
-                caseId: _appSessionState.CurrentCaseId,
-                evidenceId: _appSessionState.CurrentEvidenceId
-            );
-        }
-        else
-        {
-            Reports.Deactivate();
-        }
+        ApplyNavigationPageActivation(value.Page);
 
         if (value.Page == NavigationPage.Diagnostics)
         {
@@ -856,10 +808,13 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
         OnPropertyChanged(nameof(HasSelectedTarget));
         OnPropertyChanged(nameof(HasSelectedTargetAlias));
         OnPropertyChanged(nameof(HasSelectedTargetIdentifier));
+        OnPropertyChanged(nameof(HasSelectedTargetAliases));
+        OnPropertyChanged(nameof(HasSelectedTargetIdentifiers));
         OnPropertyChanged(nameof(HasSelectedTargetGlobalPerson));
         OnPropertyChanged(nameof(SelectedTargetGlobalPersonSummary));
         OnPropertyChanged(nameof(HasSelectedTargetGlobalOtherCases));
         OnPropertyChanged(nameof(HasSelectedTargetGlobalIdentifiers));
+        OpenSelectedTargetProfileCommand.NotifyCanExecuteChanged();
         OpenSearchForSelectedTargetCommand.NotifyCanExecuteChanged();
         LinkSelectedTargetToGlobalPersonCommand.NotifyCanExecuteChanged();
         CreateAndLinkGlobalPersonForSelectedTargetCommand.NotifyCanExecuteChanged();
@@ -887,6 +842,8 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
             OnPropertyChanged(nameof(SelectedTargetGlobalPersonSummary));
             OnPropertyChanged(nameof(HasSelectedTargetGlobalOtherCases));
             OnPropertyChanged(nameof(HasSelectedTargetGlobalIdentifiers));
+            OnPropertyChanged(nameof(HasSelectedTargetAliases));
+            OnPropertyChanged(nameof(HasSelectedTargetIdentifiers));
             OnIdentifierInputStateChanged();
             return;
         }
@@ -907,6 +864,8 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
         OnPropertyChanged(nameof(SelectedTargetGlobalPersonSummary));
         OnPropertyChanged(nameof(HasSelectedTargetGlobalOtherCases));
         OnPropertyChanged(nameof(HasSelectedTargetGlobalIdentifiers));
+        OnPropertyChanged(nameof(HasSelectedTargetAliases));
+        OnPropertyChanged(nameof(HasSelectedTargetIdentifiers));
         OnIdentifierInputStateChanged();
         RefreshSelectedTargetDetailsAsync(CancellationToken.None).Forget(
             "RefreshSelectedTargetDetailsOnTargetSelected",
@@ -1643,6 +1602,8 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
             OnPropertyChanged(nameof(SelectedTargetGlobalPersonSummary));
             OnPropertyChanged(nameof(HasSelectedTargetGlobalOtherCases));
             OnPropertyChanged(nameof(HasSelectedTargetGlobalIdentifiers));
+            OnPropertyChanged(nameof(HasSelectedTargetAliases));
+            OnPropertyChanged(nameof(HasSelectedTargetIdentifiers));
             UnlinkSelectedTargetFromGlobalPersonCommand.NotifyCanExecuteChanged();
             return;
         }
@@ -1669,6 +1630,8 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
             OnPropertyChanged(nameof(SelectedTargetGlobalPersonSummary));
             OnPropertyChanged(nameof(HasSelectedTargetGlobalOtherCases));
             OnPropertyChanged(nameof(HasSelectedTargetGlobalIdentifiers));
+            OnPropertyChanged(nameof(HasSelectedTargetAliases));
+            OnPropertyChanged(nameof(HasSelectedTargetIdentifiers));
             UnlinkSelectedTargetFromGlobalPersonCommand.NotifyCanExecuteChanged();
             return;
         }
@@ -1748,6 +1711,8 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
         OnPropertyChanged(nameof(SelectedTargetGlobalPersonSummary));
         OnPropertyChanged(nameof(HasSelectedTargetGlobalOtherCases));
         OnPropertyChanged(nameof(HasSelectedTargetGlobalIdentifiers));
+        OnPropertyChanged(nameof(HasSelectedTargetAliases));
+        OnPropertyChanged(nameof(HasSelectedTargetIdentifiers));
         UnlinkSelectedTargetFromGlobalPersonCommand.NotifyCanExecuteChanged();
     }
 

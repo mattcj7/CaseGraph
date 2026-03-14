@@ -1,0 +1,284 @@
+<UserControl x:Class="CaseGraph.App.Views.Pages.PersonProfileView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             Background="{DynamicResource ContentBackgroundBrush}">
+    <ScrollViewer VerticalScrollBarVisibility="Auto">
+        <StackPanel Margin="{StaticResource Space16}">
+            <Border Style="{StaticResource PlaceholderHintBorderStyle}">
+                <StackPanel>
+                    <DockPanel>
+                        <Button DockPanel.Dock="Left"
+                                Content="Back"
+                                Command="{Binding NavigateBackCommand}"
+                                Style="{StaticResource TopBarButtonStyle}" />
+                        <StackPanel Margin="{StaticResource SpaceLeft12}">
+                            <TextBlock Text="{Binding HeaderTitle}" Style="{StaticResource PageTitleTextStyle}" />
+                            <TextBlock Margin="{StaticResource SpaceTop4}"
+                                       Text="{Binding HeaderSubtitle}"
+                                       Style="{StaticResource SecondaryBodyTextStyle}" />
+                            <TextBlock Margin="{StaticResource SpaceTop4}"
+                                       Text="{Binding AffiliationSummary}"
+                                       Style="{StaticResource BodyTextStyle}" />
+                        </StackPanel>
+                    </DockPanel>
+                </StackPanel>
+            </Border>
+
+            <TextBlock Margin="{StaticResource SpaceTop12}"
+                       Text="Record no longer available">
+                <TextBlock.Style>
+                    <Style TargetType="TextBlock" BasedOn="{StaticResource BodyTextStyle}">
+                        <Setter Property="Visibility" Value="Collapsed" />
+                        <Style.Triggers>
+                            <DataTrigger Binding="{Binding IsRecordAvailable}" Value="False">
+                                <Setter Property="Visibility" Value="Visible" />
+                            </DataTrigger>
+                        </Style.Triggers>
+                    </Style>
+                </TextBlock.Style>
+            </TextBlock>
+
+            <StackPanel>
+                <StackPanel.Style>
+                    <Style TargetType="StackPanel">
+                        <Setter Property="Visibility" Value="Visible" />
+                        <Style.Triggers>
+                            <DataTrigger Binding="{Binding IsRecordAvailable}" Value="False">
+                                <Setter Property="Visibility" Value="Collapsed" />
+                            </DataTrigger>
+                        </Style.Triggers>
+                    </Style>
+                </StackPanel.Style>
+
+                <Border Margin="{StaticResource SpaceTop12}" Style="{StaticResource PlaceholderHintBorderStyle}">
+                    <StackPanel>
+                        <TextBlock Text="Overview" Style="{StaticResource SectionTitleTextStyle}" />
+
+                        <TextBlock Margin="{StaticResource SpaceTop12}" Text="Display Name" Style="{StaticResource SecondaryBodyTextStyle}" />
+                        <TextBlock Text="{Binding DisplayName}" Style="{StaticResource BodyTextStyle}" />
+
+                        <TextBlock Margin="{StaticResource SpaceTop8}" Text="Primary Alias" Style="{StaticResource SecondaryBodyTextStyle}" />
+                        <TextBlock Text="{Binding PrimaryAliasDisplay}" Style="{StaticResource BodyTextStyle}" />
+
+                        <TextBlock Margin="{StaticResource SpaceTop8}" Text="Organization Summary" Style="{StaticResource SecondaryBodyTextStyle}" />
+                        <TextBlock Text="{Binding AffiliationSummary}" Style="{StaticResource BodyTextStyle}" />
+
+                        <TextBlock Margin="{StaticResource SpaceTop8}" Text="Created (UTC)" Style="{StaticResource SecondaryBodyTextStyle}" />
+                        <TextBlock Text="{Binding CreatedAtUtc, StringFormat={}{0:u}, TargetNullValue=(none)}" Style="{StaticResource BodyTextStyle}" />
+
+                        <TextBlock Margin="{StaticResource SpaceTop8}" Text="Updated (UTC)" Style="{StaticResource SecondaryBodyTextStyle}" />
+                        <TextBlock Text="{Binding UpdatedAtUtc, StringFormat={}{0:u}, TargetNullValue=(none)}" Style="{StaticResource BodyTextStyle}" />
+
+                        <TextBlock Margin="{StaticResource SpaceTop8}" Text="Notes" Style="{StaticResource SecondaryBodyTextStyle}" />
+                        <TextBlock Text="{Binding NotesDisplay}" TextWrapping="Wrap" Style="{StaticResource BodyTextStyle}" />
+                    </StackPanel>
+                </Border>
+
+                <Border Margin="{StaticResource SpaceTop12}" Style="{StaticResource PlaceholderHintBorderStyle}">
+                    <StackPanel>
+                        <TextBlock Text="Aliases" Style="{StaticResource SectionTitleTextStyle}" />
+                        <ListBox Margin="{StaticResource SpaceTop12}"
+                                 ItemsSource="{Binding Aliases}">
+                            <ListBox.Style>
+                                <Style TargetType="ListBox">
+                                    <Setter Property="Visibility" Value="Visible" />
+                                    <Style.Triggers>
+                                        <DataTrigger Binding="{Binding HasAliases}" Value="False">
+                                            <Setter Property="Visibility" Value="Collapsed" />
+                                        </DataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </ListBox.Style>
+                        </ListBox>
+                        <TextBlock Margin="{StaticResource SpaceTop12}"
+                                   Text="{Binding AliasesEmptyState}">
+                            <TextBlock.Style>
+                                <Style TargetType="TextBlock" BasedOn="{StaticResource SecondaryBodyTextStyle}">
+                                    <Setter Property="Visibility" Value="Collapsed" />
+                                    <Style.Triggers>
+                                        <DataTrigger Binding="{Binding HasAliases}" Value="False">
+                                            <Setter Property="Visibility" Value="Visible" />
+                                        </DataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </TextBlock.Style>
+                        </TextBlock>
+                    </StackPanel>
+                </Border>
+
+                <Border Margin="{StaticResource SpaceTop12}" Style="{StaticResource PlaceholderHintBorderStyle}">
+                    <StackPanel>
+                        <TextBlock Text="Affiliations" Style="{StaticResource SectionTitleTextStyle}" />
+                        <ListBox Margin="{StaticResource SpaceTop12}"
+                                 ItemsSource="{Binding Affiliations}"
+                                 MouseDoubleClick="OnAffiliationsDoubleClick">
+                            <ListBox.Style>
+                                <Style TargetType="ListBox">
+                                    <Setter Property="Visibility" Value="Visible" />
+                                    <Style.Triggers>
+                                        <DataTrigger Binding="{Binding HasAffiliations}" Value="False">
+                                            <Setter Property="Visibility" Value="Collapsed" />
+                                        </DataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </ListBox.Style>
+                            <ListBox.ItemTemplate>
+                                <DataTemplate>
+                                    <Border Padding="0,8">
+                                        <DockPanel LastChildFill="True">
+                                            <Button DockPanel.Dock="Right"
+                                                    Content="Open"
+                                                    Command="{Binding DataContext.OpenAffiliationCommand, RelativeSource={RelativeSource AncestorType=ListBox}}"
+                                                    CommandParameter="{Binding}"
+                                                    Style="{StaticResource TopBarButtonStyle}" />
+                                            <StackPanel Margin="{StaticResource SpaceRight12}">
+                                                <TextBlock Text="{Binding OrganizationName}" Style="{StaticResource BodyTextStyle}" />
+                                                <TextBlock Margin="{StaticResource SpaceTop4}"
+                                                           Text="{Binding DetailText}"
+                                                           TextWrapping="Wrap"
+                                                           Style="{StaticResource SecondaryBodyTextStyle}" />
+                                            </StackPanel>
+                                        </DockPanel>
+                                    </Border>
+                                </DataTemplate>
+                            </ListBox.ItemTemplate>
+                        </ListBox>
+                        <TextBlock Margin="{StaticResource SpaceTop12}"
+                                   Text="{Binding AffiliationsEmptyState}">
+                            <TextBlock.Style>
+                                <Style TargetType="TextBlock" BasedOn="{StaticResource SecondaryBodyTextStyle}">
+                                    <Setter Property="Visibility" Value="Collapsed" />
+                                    <Style.Triggers>
+                                        <DataTrigger Binding="{Binding HasAffiliations}" Value="False">
+                                            <Setter Property="Visibility" Value="Visible" />
+                                        </DataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </TextBlock.Style>
+                        </TextBlock>
+                    </StackPanel>
+                </Border>
+
+                <Border Margin="{StaticResource SpaceTop12}" Style="{StaticResource PlaceholderHintBorderStyle}">
+                    <StackPanel>
+                        <TextBlock Text="Linked Global Person" Style="{StaticResource SectionTitleTextStyle}" />
+
+                        <TextBlock Margin="{StaticResource SpaceTop12}"
+                                   Text="{Binding GlobalPersonEmptyState}">
+                            <TextBlock.Style>
+                                <Style TargetType="TextBlock" BasedOn="{StaticResource SecondaryBodyTextStyle}">
+                                    <Setter Property="Visibility" Value="Collapsed" />
+                                    <Style.Triggers>
+                                        <DataTrigger Binding="{Binding HasLinkedGlobalPerson}" Value="False">
+                                            <Setter Property="Visibility" Value="Visible" />
+                                        </DataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </TextBlock.Style>
+                        </TextBlock>
+
+                        <StackPanel>
+                            <StackPanel.Style>
+                                <Style TargetType="StackPanel">
+                                    <Setter Property="Visibility" Value="Visible" />
+                                    <Style.Triggers>
+                                        <DataTrigger Binding="{Binding HasLinkedGlobalPerson}" Value="False">
+                                            <Setter Property="Visibility" Value="Collapsed" />
+                                        </DataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </StackPanel.Style>
+
+                            <TextBlock Margin="{StaticResource SpaceTop12}" Text="Display Name" Style="{StaticResource SecondaryBodyTextStyle}" />
+                            <TextBlock Text="{Binding LinkedGlobalPersonDisplayName}" Style="{StaticResource BodyTextStyle}" />
+
+                            <TextBlock Margin="{StaticResource SpaceTop8}" Text="Global Entity Id" Style="{StaticResource SecondaryBodyTextStyle}" />
+                            <TextBlock Text="{Binding LinkedGlobalPersonId, TargetNullValue=(none)}" TextWrapping="Wrap" Style="{StaticResource BodyTextStyle}" />
+
+                            <TextBlock Margin="{StaticResource SpaceTop12}" Text="Aliases" Style="{StaticResource SecondaryBodyTextStyle}" />
+                            <ListBox Margin="{StaticResource SpaceTop8}" ItemsSource="{Binding GlobalAliases}">
+                                <ListBox.Style>
+                                    <Style TargetType="ListBox">
+                                        <Setter Property="Visibility" Value="Visible" />
+                                        <Style.Triggers>
+                                            <DataTrigger Binding="{Binding HasGlobalAliases}" Value="False">
+                                                <Setter Property="Visibility" Value="Collapsed" />
+                                            </DataTrigger>
+                                        </Style.Triggers>
+                                    </Style>
+                                </ListBox.Style>
+                            </ListBox>
+                            <TextBlock Margin="{StaticResource SpaceTop8}"
+                                       Text="{Binding GlobalAliasesEmptyState}">
+                                <TextBlock.Style>
+                                    <Style TargetType="TextBlock" BasedOn="{StaticResource SecondaryBodyTextStyle}">
+                                        <Setter Property="Visibility" Value="Collapsed" />
+                                        <Style.Triggers>
+                                            <DataTrigger Binding="{Binding HasGlobalAliases}" Value="False">
+                                                <Setter Property="Visibility" Value="Visible" />
+                                            </DataTrigger>
+                                        </Style.Triggers>
+                                    </Style>
+                                </TextBlock.Style>
+                            </TextBlock>
+
+                            <TextBlock Margin="{StaticResource SpaceTop12}" Text="Identifiers" Style="{StaticResource SecondaryBodyTextStyle}" />
+                            <ListBox Margin="{StaticResource SpaceTop8}" ItemsSource="{Binding GlobalIdentifiers}">
+                                <ListBox.Style>
+                                    <Style TargetType="ListBox">
+                                        <Setter Property="Visibility" Value="Visible" />
+                                        <Style.Triggers>
+                                            <DataTrigger Binding="{Binding HasGlobalIdentifiers}" Value="False">
+                                                <Setter Property="Visibility" Value="Collapsed" />
+                                            </DataTrigger>
+                                        </Style.Triggers>
+                                    </Style>
+                                </ListBox.Style>
+                            </ListBox>
+                            <TextBlock Margin="{StaticResource SpaceTop8}"
+                                       Text="{Binding GlobalIdentifiersEmptyState}">
+                                <TextBlock.Style>
+                                    <Style TargetType="TextBlock" BasedOn="{StaticResource SecondaryBodyTextStyle}">
+                                        <Setter Property="Visibility" Value="Collapsed" />
+                                        <Style.Triggers>
+                                            <DataTrigger Binding="{Binding HasGlobalIdentifiers}" Value="False">
+                                                <Setter Property="Visibility" Value="Visible" />
+                                            </DataTrigger>
+                                        </Style.Triggers>
+                                    </Style>
+                                </TextBlock.Style>
+                            </TextBlock>
+
+                            <TextBlock Margin="{StaticResource SpaceTop12}" Text="Other Cases" Style="{StaticResource SecondaryBodyTextStyle}" />
+                            <ListBox Margin="{StaticResource SpaceTop8}" ItemsSource="{Binding GlobalOtherCases}">
+                                <ListBox.Style>
+                                    <Style TargetType="ListBox">
+                                        <Setter Property="Visibility" Value="Visible" />
+                                        <Style.Triggers>
+                                            <DataTrigger Binding="{Binding HasGlobalOtherCases}" Value="False">
+                                                <Setter Property="Visibility" Value="Collapsed" />
+                                            </DataTrigger>
+                                        </Style.Triggers>
+                                    </Style>
+                                </ListBox.Style>
+                            </ListBox>
+                            <TextBlock Margin="{StaticResource SpaceTop8}"
+                                       Text="{Binding GlobalOtherCasesEmptyState}">
+                                <TextBlock.Style>
+                                    <Style TargetType="TextBlock" BasedOn="{StaticResource SecondaryBodyTextStyle}">
+                                        <Setter Property="Visibility" Value="Collapsed" />
+                                        <Style.Triggers>
+                                            <DataTrigger Binding="{Binding HasGlobalOtherCases}" Value="False">
+                                                <Setter Property="Visibility" Value="Visible" />
+                                            </DataTrigger>
+                                        </Style.Triggers>
+                                    </Style>
+                                </TextBlock.Style>
+                            </TextBlock>
+                        </StackPanel>
+                    </StackPanel>
+                </Border>
+            </StackPanel>
+        </StackPanel>
+    </ScrollViewer>
+</UserControl>

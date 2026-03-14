@@ -98,6 +98,8 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<OpenIncidentWorkspaceViewModel>();
         services.AddSingleton<LocationsViewModel>();
         services.AddSingleton<OrganizationRegistryViewModel>();
+        services.AddSingleton<PersonProfileViewModel>();
+        services.AddSingleton<OrganizationProfileViewModel>();
         services.AddSingleton<ReportsViewModel>();
         services.AddSingleton<MainWindowViewModel>();
         services.AddSingleton<MainWindow>();

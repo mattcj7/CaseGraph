@@ -1,5 +1,6 @@
 using CaseGraph.Core.Abstractions;
 using CaseGraph.Core.Models;
+using CaseGraph.Infrastructure.Organizations;
 using CaseGraph.Infrastructure.Persistence;
 using CaseGraph.Infrastructure.Persistence.Entities;
 using CaseGraph.Infrastructure.Services;
@@ -1063,6 +1064,171 @@ public sealed class TargetRegistryServiceTests
         Assert.Contains("TargetUpdated", actionTypes);
         Assert.Contains("IdentifierCreated", actionTypes);
         Assert.Contains("IdentifierUpdated", actionTypes);
+    }
+
+    [Fact]
+    public async Task GetTargetsAsync_IncludesOrganizationAffiliationSummary()
+    {
+        await using var fixture = await WorkspaceFixture.CreateAsync();
+        var registry = fixture.Services.GetRequiredService<ITargetRegistryService>();
+
+        var caseInfo = await fixture.CreateCaseAsync("Affiliation Summary Case");
+        var target = await registry.CreateTargetAsync(
+            new CreateTargetRequest(caseInfo.CaseId, "Marcus Lane", null, null, CreateGlobalPerson: true),
+            CancellationToken.None
+        );
+        var details = await registry.GetTargetDetailsAsync(caseInfo.CaseId, target.TargetId, CancellationToken.None);
+        Assert.NotNull(details);
+        Assert.NotNull(details!.GlobalPerson);
+
+        await using var db = await fixture.CreateDbContextAsync();
+        var orgA = new OrganizationRecord
+        {
+            OrganizationId = Guid.NewGuid(),
+            Name = "Current A",
+            NameNormalized = "current a",
+            Type = "gang",
+            Status = "active",
+            CreatedAtUtc = DateTimeOffset.UtcNow,
+            UpdatedAtUtc = DateTimeOffset.UtcNow
+        };
+        var orgB = new OrganizationRecord
+        {
+            OrganizationId = Guid.NewGuid(),
+            Name = "Current B",
+            NameNormalized = "current b",
+            Type = "gang",
+            Status = "active",
+            CreatedAtUtc = DateTimeOffset.UtcNow,
+            UpdatedAtUtc = DateTimeOffset.UtcNow
+        };
+        var orgC = new OrganizationRecord
+        {
+            OrganizationId = Guid.NewGuid(),
+            Name = "Inactive Org",
+            NameNormalized = "inactive org",
+            Type = "gang",
+            Status = "inactive",
+            CreatedAtUtc = DateTimeOffset.UtcNow,
+            UpdatedAtUtc = DateTimeOffset.UtcNow
+        };
+        var orgD = new OrganizationRecord
+        {
+            OrganizationId = Guid.NewGuid(),
+            Name = "Former Set",
+            NameNormalized = "former set",
+            Type = "set",
+            Status = "active",
+            CreatedAtUtc = DateTimeOffset.UtcNow,
+            UpdatedAtUtc = DateTimeOffset.UtcNow
+        };
+
+        db.Organizations.AddRange(orgA, orgB, orgC, orgD);
+        db.OrganizationMemberships.AddRange(
+            new OrganizationMembership
+            {
+                MembershipId = Guid.NewGuid(),
+                OrganizationId = orgA.OrganizationId,
+                GlobalEntityId = details.GlobalPerson!.GlobalEntityId,
+                Status = "member",
+                Confidence = 80,
+                LastConfirmedDateUtc = new DateTimeOffset(2026, 2, 20, 0, 0, 0, TimeSpan.Zero),
+                CreatedAtUtc = DateTimeOffset.UtcNow,
+                UpdatedAtUtc = DateTimeOffset.UtcNow
+            },
+            new OrganizationMembership
+            {
+                MembershipId = Guid.NewGuid(),
+                OrganizationId = orgB.OrganizationId,
+                GlobalEntityId = details.GlobalPerson!.GlobalEntityId,
+                Status = "associate",
+                Confidence = 70,
+                LastConfirmedDateUtc = new DateTimeOffset(2026, 2, 1, 0, 0, 0, TimeSpan.Zero),
+                CreatedAtUtc = DateTimeOffset.UtcNow,
+                UpdatedAtUtc = DateTimeOffset.UtcNow
+            },
+            new OrganizationMembership
+            {
+                MembershipId = Guid.NewGuid(),
+                OrganizationId = orgC.OrganizationId,
+                GlobalEntityId = details.GlobalPerson!.GlobalEntityId,
+                Status = "member",
+                Confidence = 60,
+                LastConfirmedDateUtc = new DateTimeOffset(2026, 3, 5, 0, 0, 0, TimeSpan.Zero),
+                CreatedAtUtc = DateTimeOffset.UtcNow,
+                UpdatedAtUtc = DateTimeOffset.UtcNow
+            },
+            new OrganizationMembership
+            {
+                MembershipId = Guid.NewGuid(),
+                OrganizationId = orgD.OrganizationId,
+                GlobalEntityId = details.GlobalPerson!.GlobalEntityId,
+                Status = "former",
+                Confidence = 55,
+                LastConfirmedDateUtc = new DateTimeOffset(2026, 3, 1, 0, 0, 0, TimeSpan.Zero),
+                CreatedAtUtc = DateTimeOffset.UtcNow,
+                UpdatedAtUtc = DateTimeOffset.UtcNow
+            }
+        );
+        await db.SaveChangesAsync();
+
+        var targets = await registry.GetTargetsAsync(caseInfo.CaseId, search: null, CancellationToken.None);
+
+        var loaded = Assert.Single(targets);
+        Assert.Equal("Current A, Current B, Inactive Org +1 more", loaded.AffiliationSummary);
+    }
+
+    [Fact]
+    public async Task GetTargetDetailsAsync_ReturnsOrganizationAffiliations()
+    {
+        await using var fixture = await WorkspaceFixture.CreateAsync();
+        var registry = fixture.Services.GetRequiredService<ITargetRegistryService>();
+
+        var caseInfo = await fixture.CreateCaseAsync("Affiliation Detail Case");
+        var target = await registry.CreateTargetAsync(
+            new CreateTargetRequest(caseInfo.CaseId, "Marcus Lane", null, null, CreateGlobalPerson: true),
+            CancellationToken.None
+        );
+        var createdDetails = await registry.GetTargetDetailsAsync(caseInfo.CaseId, target.TargetId, CancellationToken.None);
+        Assert.NotNull(createdDetails);
+        Assert.NotNull(createdDetails!.GlobalPerson);
+
+        await using var db = await fixture.CreateDbContextAsync();
+        var organization = new OrganizationRecord
+        {
+            OrganizationId = Guid.NewGuid(),
+            Name = "Rollin 60s",
+            NameNormalized = "rollin 60s",
+            Type = "gang",
+            Status = "active",
+            Summary = "Main set",
+            CreatedAtUtc = DateTimeOffset.UtcNow,
+            UpdatedAtUtc = DateTimeOffset.UtcNow
+        };
+        db.Organizations.Add(organization);
+        db.OrganizationMemberships.Add(new OrganizationMembership
+        {
+            MembershipId = Guid.NewGuid(),
+            OrganizationId = organization.OrganizationId,
+            GlobalEntityId = createdDetails.GlobalPerson!.GlobalEntityId,
+            Role = "member",
+            Status = "member",
+            Confidence = 88,
+            LastConfirmedDateUtc = new DateTimeOffset(2026, 2, 15, 0, 0, 0, TimeSpan.Zero),
+            CreatedAtUtc = DateTimeOffset.UtcNow,
+            UpdatedAtUtc = DateTimeOffset.UtcNow
+        });
+        await db.SaveChangesAsync();
+
+        var details = await registry.GetTargetDetailsAsync(caseInfo.CaseId, target.TargetId, CancellationToken.None);
+
+        Assert.NotNull(details);
+        var affiliation = Assert.Single(details!.Affiliations);
+        Assert.Equal("Rollin 60s", affiliation.OrganizationName);
+        Assert.Equal("member", affiliation.Role);
+        Assert.Equal("member", affiliation.MembershipStatus);
+        Assert.Equal(88, affiliation.Confidence);
+        Assert.Equal("Rollin 60s", details.Summary.AffiliationSummary);
     }
 
     private sealed class WorkspaceFixture : IAsyncDisposable
