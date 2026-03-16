@@ -1,0 +1,485 @@
+<UserControl x:Class="CaseGraph.App.Views.GangDocumentationSection"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             Background="{DynamicResource ContentBackgroundBrush}">
+    <Border Margin="{StaticResource SpaceTop12}" Style="{StaticResource PlaceholderHintBorderStyle}">
+        <StackPanel>
+            <DockPanel>
+                <TextBlock Text="Gang Documentation" Style="{StaticResource SectionTitleTextStyle}" />
+                <Button DockPanel.Dock="Right"
+                        Content="New Record"
+                        Command="{Binding NewRecordCommand}"
+                        Style="{StaticResource TopBarButtonStyle}" />
+            </DockPanel>
+
+            <TextBlock Margin="{StaticResource SpaceTop8}"
+                       Text="{Binding SectionIntro}"
+                       TextWrapping="Wrap"
+                       Style="{StaticResource SecondaryBodyTextStyle}" />
+
+            <TextBlock Margin="{StaticResource SpaceTop8}"
+                       Text="{Binding StatusMessage}"
+                       TextWrapping="Wrap"
+                       Style="{StaticResource SecondaryBodyTextStyle}" />
+
+            <TextBlock Margin="{StaticResource SpaceTop12}"
+                       Text="{Binding RecordsEmptyState}">
+                <TextBlock.Style>
+                    <Style TargetType="TextBlock" BasedOn="{StaticResource SecondaryBodyTextStyle}">
+                        <Setter Property="Visibility" Value="Collapsed" />
+                        <Style.Triggers>
+                            <DataTrigger Binding="{Binding HasRecords}" Value="False">
+                                <Setter Property="Visibility" Value="Visible" />
+                            </DataTrigger>
+                        </Style.Triggers>
+                    </Style>
+                </TextBlock.Style>
+            </TextBlock>
+
+            <Button Margin="{StaticResource SpaceTop8}"
+                    Content="Create First Documentation Record"
+                    Command="{Binding NewRecordCommand}">
+                <Button.Style>
+                    <Style TargetType="Button" BasedOn="{StaticResource TopBarButtonStyle}">
+                        <Setter Property="Visibility" Value="Collapsed" />
+                        <Style.Triggers>
+                            <DataTrigger Binding="{Binding HasRecords}" Value="False">
+                                <Setter Property="Visibility" Value="Visible" />
+                            </DataTrigger>
+                        </Style.Triggers>
+                    </Style>
+                </Button.Style>
+            </Button>
+
+            <ListBox Margin="{StaticResource SpaceTop12}"
+                     ItemsSource="{Binding Records}"
+                     SelectedItem="{Binding SelectedRecord, Mode=TwoWay}">
+                <ListBox.ItemTemplate>
+                    <DataTemplate>
+                        <Border Padding="0,8">
+                            <StackPanel>
+                                <TextBlock Text="{Binding RecordTitle}" Style="{StaticResource BodyTextStyle}" />
+                                <TextBlock Margin="{StaticResource SpaceTop4}"
+                                           Text="{Binding RecordSubtitle}"
+                                           TextWrapping="Wrap"
+                                           Style="{StaticResource SecondaryBodyTextStyle}" />
+                                <TextBlock Margin="{StaticResource SpaceTop4}"
+                                           Text="{Binding ReviewDisplay}"
+                                           TextWrapping="Wrap"
+                                           Style="{StaticResource SecondaryBodyTextStyle}" />
+                                <TextBlock Margin="{StaticResource SpaceTop4}"
+                                           Text="{Binding OrganizationDisplay}"
+                                           TextWrapping="Wrap"
+                                           Style="{StaticResource SecondaryBodyTextStyle}" />
+                                <TextBlock Margin="{StaticResource SpaceTop4}"
+                                           Text="{Binding SubgroupDisplay}"
+                                           TextWrapping="Wrap"
+                                           Style="{StaticResource SecondaryBodyTextStyle}" />
+                                <TextBlock Margin="{StaticResource SpaceTop4}"
+                                           Text="{Binding Summary}"
+                                           TextWrapping="Wrap"
+                                           Style="{StaticResource BodyTextStyle}" />
+                            </StackPanel>
+                        </Border>
+                    </DataTemplate>
+                </ListBox.ItemTemplate>
+                <ListBox.Style>
+                    <Style TargetType="ListBox">
+                        <Setter Property="Visibility" Value="Visible" />
+                        <Style.Triggers>
+                            <DataTrigger Binding="{Binding HasRecords}" Value="False">
+                                <Setter Property="Visibility" Value="Collapsed" />
+                            </DataTrigger>
+                        </Style.Triggers>
+                    </Style>
+                </ListBox.Style>
+            </ListBox>
+
+            <Grid Margin="{StaticResource SpaceTop12}">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="*" />
+                </Grid.ColumnDefinitions>
+
+                <StackPanel Grid.Column="0" Margin="0,0,12,0">
+                    <TextBlock Text="Documentation Editor" Style="{StaticResource SectionTitleTextStyle}" />
+                    <TextBlock Margin="{StaticResource SpaceTop8}"
+                               Text="{Binding CreateWorkflowHint}"
+                               TextWrapping="Wrap"
+                               Style="{StaticResource SecondaryBodyTextStyle}" />
+                    <TextBlock Margin="{StaticResource SpaceTop8}"
+                               Text="{Binding RecordValidationMessage}"
+                               Foreground="IndianRed"
+                               TextWrapping="Wrap">
+                        <TextBlock.Style>
+                            <Style TargetType="TextBlock" BasedOn="{StaticResource SecondaryBodyTextStyle}">
+                                <Setter Property="Visibility" Value="Collapsed" />
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding HasRecordValidationIssues}" Value="True">
+                                        <Setter Property="Visibility" Value="Visible" />
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </TextBlock.Style>
+                    </TextBlock>
+
+                    <TextBlock Margin="{StaticResource SpaceTop8}"
+                               Text="{Binding CurrentOrganizationDisplay}"
+                               TextWrapping="Wrap"
+                               Style="{StaticResource BodyTextStyle}" />
+                    <TextBlock Margin="{StaticResource SpaceTop4}"
+                               Text="{Binding CurrentSubgroupDisplay}"
+                               TextWrapping="Wrap"
+                               Style="{StaticResource SecondaryBodyTextStyle}" />
+
+                    <StackPanel Margin="{StaticResource SpaceTop12}" Orientation="Horizontal">
+                        <TextBlock Text="Organization" Style="{StaticResource SecondaryBodyTextStyle}" />
+                        <TextBlock Margin="4,0,0,0"
+                                   Text="*"
+                                   Foreground="IndianRed">
+                            <TextBlock.Style>
+                                <Style TargetType="TextBlock">
+                                    <Setter Property="Visibility" Value="Collapsed" />
+                                    <Style.Triggers>
+                                        <DataTrigger Binding="{Binding ShowOrganizationRequiredIndicator}" Value="True">
+                                            <Setter Property="Visibility" Value="Visible" />
+                                        </DataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </TextBlock.Style>
+                        </TextBlock>
+                    </StackPanel>
+                    <ComboBox x:Name="OrganizationComboBox"
+                              ItemsSource="{Binding OrganizationOptions}"
+                              SelectedValue="{Binding SelectedOrganizationId, Mode=TwoWay}"
+                              SelectedValuePath="OrganizationId"
+                              DisplayMemberPath="DisplayName"
+                              IsEnabled="{Binding CanEditDocumentation}" />
+
+                    <TextBlock Margin="{StaticResource SpaceTop8}" Text="Subgroup / Set" Style="{StaticResource SecondaryBodyTextStyle}" />
+                    <ComboBox x:Name="SubgroupComboBox"
+                              ItemsSource="{Binding SubgroupOptions}"
+                              SelectedValue="{Binding SelectedSubgroupOrganizationId, Mode=TwoWay}"
+                              SelectedValuePath="OrganizationId"
+                              DisplayMemberPath="DisplayName"
+                              IsEnabled="{Binding CanEditDocumentation}" />
+
+                    <StackPanel Margin="{StaticResource SpaceTop8}" Orientation="Horizontal">
+                        <TextBlock Text="Affiliation Role" Style="{StaticResource SecondaryBodyTextStyle}" />
+                        <TextBlock Margin="4,0,0,0"
+                                   Text="*"
+                                   Foreground="IndianRed">
+                            <TextBlock.Style>
+                                <Style TargetType="TextBlock">
+                                    <Setter Property="Visibility" Value="Collapsed" />
+                                    <Style.Triggers>
+                                        <DataTrigger Binding="{Binding ShowAffiliationRoleRequiredIndicator}" Value="True">
+                                            <Setter Property="Visibility" Value="Visible" />
+                                        </DataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </TextBlock.Style>
+                        </TextBlock>
+                    </StackPanel>
+                    <ComboBox x:Name="AffiliationRoleComboBox"
+                              ItemsSource="{Binding AffiliationRoles}"
+                              SelectedItem="{Binding AffiliationRole, Mode=TwoWay}"
+                              IsEnabled="{Binding CanEditDocumentation}" />
+
+                    <StackPanel Margin="{StaticResource SpaceTop8}" Orientation="Horizontal">
+                        <TextBlock Text="Documentation Status" Style="{StaticResource SecondaryBodyTextStyle}" />
+                        <TextBlock Margin="4,0,0,0"
+                                   Text="*"
+                                   Foreground="IndianRed">
+                            <TextBlock.Style>
+                                <Style TargetType="TextBlock">
+                                    <Setter Property="Visibility" Value="Collapsed" />
+                                    <Style.Triggers>
+                                        <DataTrigger Binding="{Binding ShowDocumentationStatusRequiredIndicator}" Value="True">
+                                            <Setter Property="Visibility" Value="Visible" />
+                                        </DataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </TextBlock.Style>
+                        </TextBlock>
+                    </StackPanel>
+                    <ComboBox x:Name="DocumentationStatusComboBox"
+                              ItemsSource="{Binding DocumentationStatuses}"
+                              SelectedItem="{Binding DocumentationStatus, Mode=TwoWay}"
+                              IsEnabled="{Binding CanEditDocumentation}" />
+
+                    <StackPanel Margin="{StaticResource SpaceTop8}" Orientation="Horizontal">
+                        <TextBlock Text="Approval Status" Style="{StaticResource SecondaryBodyTextStyle}" />
+                        <TextBlock Margin="4,0,0,0"
+                                   Text="*"
+                                   Foreground="IndianRed">
+                            <TextBlock.Style>
+                                <Style TargetType="TextBlock">
+                                    <Setter Property="Visibility" Value="Collapsed" />
+                                    <Style.Triggers>
+                                        <DataTrigger Binding="{Binding ShowApprovalStatusRequiredIndicator}" Value="True">
+                                            <Setter Property="Visibility" Value="Visible" />
+                                        </DataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </TextBlock.Style>
+                        </TextBlock>
+                    </StackPanel>
+                    <ComboBox x:Name="ApprovalStatusComboBox"
+                              ItemsSource="{Binding ApprovalStatuses}"
+                              SelectedItem="{Binding ApprovalStatus, Mode=TwoWay}"
+                              IsEnabled="{Binding CanEditDocumentation}" />
+
+                    <TextBlock Margin="{StaticResource SpaceTop8}" Text="Reviewer" Style="{StaticResource SecondaryBodyTextStyle}" />
+                    <TextBox Text="{Binding Reviewer, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                             IsEnabled="{Binding CanEditDocumentation}" />
+
+                    <TextBlock Margin="{StaticResource SpaceTop8}" Text="Review Due" Style="{StaticResource SecondaryBodyTextStyle}" />
+                    <DatePicker SelectedDate="{Binding ReviewDueDate, Mode=TwoWay}"
+                                IsEnabled="{Binding CanEditDocumentation}" />
+
+                    <StackPanel Margin="{StaticResource SpaceTop8}" Orientation="Horizontal">
+                        <TextBlock Text="Summary" Style="{StaticResource SecondaryBodyTextStyle}" />
+                        <TextBlock Margin="4,0,0,0"
+                                   Text="*"
+                                   Foreground="IndianRed">
+                            <TextBlock.Style>
+                                <Style TargetType="TextBlock">
+                                    <Setter Property="Visibility" Value="Collapsed" />
+                                    <Style.Triggers>
+                                        <DataTrigger Binding="{Binding ShowSummaryRequiredIndicator}" Value="True">
+                                            <Setter Property="Visibility" Value="Visible" />
+                                        </DataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </TextBlock.Style>
+                        </TextBlock>
+                    </StackPanel>
+                    <TextBox x:Name="SummaryTextBox"
+                             Text="{Binding Summary, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                             TextWrapping="Wrap"
+                             AcceptsReturn="True"
+                             MinHeight="72"
+                             IsEnabled="{Binding CanEditDocumentation}" />
+
+                    <TextBlock Margin="{StaticResource SpaceTop8}" Text="Notes" Style="{StaticResource SecondaryBodyTextStyle}" />
+                    <TextBox Text="{Binding Notes, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                             TextWrapping="Wrap"
+                             AcceptsReturn="True"
+                             MinHeight="96"
+                             IsEnabled="{Binding CanEditDocumentation}" />
+
+                    <Button Margin="{StaticResource SpaceTop12}"
+                            Content="{Binding SaveRecordButtonText}"
+                            Command="{Binding SaveRecordCommand}"
+                            Style="{StaticResource TopBarButtonStyle}"
+                            IsEnabled="{Binding CanEditDocumentation}" />
+                </StackPanel>
+
+                <StackPanel Grid.Column="1">
+                    <DockPanel>
+                        <TextBlock Text="Criteria Checklist" Style="{StaticResource SectionTitleTextStyle}" />
+                        <Button DockPanel.Dock="Right"
+                                Content="New Criterion"
+                                Command="{Binding NewCriterionCommand}"
+                                Style="{StaticResource TopBarButtonStyle}"
+                                IsEnabled="{Binding CanManageCriteria}" />
+                    </DockPanel>
+                    <TextBlock Margin="{StaticResource SpaceTop8}"
+                               Text="{Binding CriteriaWorkflowHint}"
+                               TextWrapping="Wrap"
+                               Style="{StaticResource SecondaryBodyTextStyle}" />
+                    <TextBlock Margin="{StaticResource SpaceTop8}"
+                               Text="{Binding CriterionValidationMessage}"
+                               Foreground="IndianRed"
+                               TextWrapping="Wrap">
+                        <TextBlock.Style>
+                            <Style TargetType="TextBlock" BasedOn="{StaticResource SecondaryBodyTextStyle}">
+                                <Setter Property="Visibility" Value="Collapsed" />
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding HasCriterionValidationIssues}" Value="True">
+                                        <Setter Property="Visibility" Value="Visible" />
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </TextBlock.Style>
+                    </TextBlock>
+
+                    <StackPanel Margin="{StaticResource SpaceTop12}" Orientation="Horizontal">
+                        <TextBlock Text="Criterion Type" Style="{StaticResource SecondaryBodyTextStyle}" />
+                        <TextBlock Margin="4,0,0,0"
+                                   Text="*"
+                                   Foreground="IndianRed">
+                            <TextBlock.Style>
+                                <Style TargetType="TextBlock">
+                                    <Setter Property="Visibility" Value="Collapsed" />
+                                    <Style.Triggers>
+                                        <DataTrigger Binding="{Binding ShowCriterionTypeRequiredIndicator}" Value="True">
+                                            <Setter Property="Visibility" Value="Visible" />
+                                        </DataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </TextBlock.Style>
+                        </TextBlock>
+                    </StackPanel>
+                    <ComboBox x:Name="CriterionTypeComboBox"
+                              ItemsSource="{Binding CriterionTypes}"
+                              SelectedItem="{Binding CriterionType, Mode=TwoWay}"
+                              IsEnabled="{Binding CanManageCriteria}" />
+
+                    <CheckBox Margin="{StaticResource SpaceTop8}"
+                              Content="Criterion met"
+                              IsChecked="{Binding CriterionIsMet, Mode=TwoWay}"
+                              IsEnabled="{Binding CanManageCriteria}" />
+
+                    <StackPanel Margin="{StaticResource SpaceTop8}" Orientation="Horizontal">
+                        <TextBlock Text="Basis Summary" Style="{StaticResource SecondaryBodyTextStyle}" />
+                        <TextBlock Margin="4,0,0,0"
+                                   Text="*"
+                                   Foreground="IndianRed">
+                            <TextBlock.Style>
+                                <Style TargetType="TextBlock">
+                                    <Setter Property="Visibility" Value="Collapsed" />
+                                    <Style.Triggers>
+                                        <DataTrigger Binding="{Binding ShowCriterionBasisSummaryRequiredIndicator}" Value="True">
+                                            <Setter Property="Visibility" Value="Visible" />
+                                        </DataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </TextBlock.Style>
+                        </TextBlock>
+                    </StackPanel>
+                    <TextBox x:Name="CriterionBasisSummaryTextBox"
+                             Text="{Binding CriterionBasisSummary, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                             TextWrapping="Wrap"
+                             AcceptsReturn="True"
+                             MinHeight="72"
+                             IsEnabled="{Binding CanManageCriteria}" />
+
+                    <TextBlock Margin="{StaticResource SpaceTop8}" Text="Observed Date" Style="{StaticResource SecondaryBodyTextStyle}" />
+                    <DatePicker SelectedDate="{Binding CriterionObservedDate, Mode=TwoWay}"
+                                IsEnabled="{Binding CanManageCriteria}" />
+
+                    <TextBlock Margin="{StaticResource SpaceTop8}" Text="Source Note / Reference Summary" Style="{StaticResource SecondaryBodyTextStyle}" />
+                    <TextBox Text="{Binding CriterionSourceNote, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                             TextWrapping="Wrap"
+                             AcceptsReturn="True"
+                             MinHeight="72"
+                             IsEnabled="{Binding CanManageCriteria}" />
+
+                    <Button Margin="{StaticResource SpaceTop12}"
+                            Content="{Binding SaveCriterionButtonText}"
+                            Command="{Binding SaveCriterionCommand}"
+                            Style="{StaticResource TopBarButtonStyle}"
+                            IsEnabled="{Binding CanManageCriteria}" />
+
+                    <TextBlock Margin="{StaticResource SpaceTop12}"
+                               Text="{Binding CriteriaEmptyState}">
+                        <TextBlock.Style>
+                            <Style TargetType="TextBlock" BasedOn="{StaticResource SecondaryBodyTextStyle}">
+                                <Setter Property="Visibility" Value="Collapsed" />
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding HasCriteria}" Value="False">
+                                        <Setter Property="Visibility" Value="Visible" />
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </TextBlock.Style>
+                    </TextBlock>
+
+                    <ListBox Margin="{StaticResource SpaceTop12}" ItemsSource="{Binding Criteria}">
+                        <ListBox.ItemTemplate>
+                            <DataTemplate>
+                                <Border Padding="0,8">
+                                    <DockPanel LastChildFill="True">
+                                        <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
+                                            <Button Margin="8,0,0,0"
+                                                    Content="Edit"
+                                                    Command="{Binding DataContext.EditCriterionCommand, RelativeSource={RelativeSource AncestorType=UserControl}}"
+                                                    CommandParameter="{Binding}"
+                                                    Style="{StaticResource TopBarButtonStyle}"
+                                                    IsEnabled="{Binding DataContext.CanManageCriteria, RelativeSource={RelativeSource AncestorType=UserControl}}" />
+                                            <Button Margin="8,0,0,0"
+                                                    Content="Remove"
+                                                    Command="{Binding DataContext.RemoveCriterionCommand, RelativeSource={RelativeSource AncestorType=UserControl}}"
+                                                    CommandParameter="{Binding}"
+                                                    Style="{StaticResource TopBarButtonStyle}"
+                                                    IsEnabled="{Binding DataContext.CanManageCriteria, RelativeSource={RelativeSource AncestorType=UserControl}}" />
+                                        </StackPanel>
+                                        <StackPanel>
+                                            <TextBlock Text="{Binding CriterionType}" Style="{StaticResource BodyTextStyle}" />
+                                            <TextBlock Margin="{StaticResource SpaceTop4}"
+                                                       Text="{Binding DetailText}"
+                                                       Style="{StaticResource SecondaryBodyTextStyle}" />
+                                            <TextBlock Margin="{StaticResource SpaceTop4}"
+                                                       Text="{Binding BasisSummary}"
+                                                       TextWrapping="Wrap"
+                                                       Style="{StaticResource BodyTextStyle}" />
+                                            <TextBlock Margin="{StaticResource SpaceTop4}"
+                                                       Text="{Binding SourceNote, TargetNullValue=(none)}"
+                                                       TextWrapping="Wrap"
+                                                       Style="{StaticResource SecondaryBodyTextStyle}" />
+                                        </StackPanel>
+                                    </DockPanel>
+                                </Border>
+                            </DataTemplate>
+                        </ListBox.ItemTemplate>
+                        <ListBox.Style>
+                            <Style TargetType="ListBox">
+                                <Setter Property="Visibility" Value="Visible" />
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding HasCriteria}" Value="False">
+                                        <Setter Property="Visibility" Value="Collapsed" />
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </ListBox.Style>
+                    </ListBox>
+
+                    <TextBlock Margin="{StaticResource SpaceTop12}"
+                               Text="Workflow History"
+                               Style="{StaticResource SecondaryBodyTextStyle}" />
+                    <TextBlock Margin="{StaticResource SpaceTop8}"
+                               Text="{Binding HistoryEmptyState}">
+                        <TextBlock.Style>
+                            <Style TargetType="TextBlock" BasedOn="{StaticResource SecondaryBodyTextStyle}">
+                                <Setter Property="Visibility" Value="Collapsed" />
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding HasHistory}" Value="False">
+                                        <Setter Property="Visibility" Value="Visible" />
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </TextBlock.Style>
+                    </TextBlock>
+
+                    <ListBox Margin="{StaticResource SpaceTop8}" ItemsSource="{Binding History}">
+                        <ListBox.ItemTemplate>
+                            <DataTemplate>
+                                <Border Padding="0,6">
+                                    <StackPanel>
+                                        <TextBlock Text="{Binding Summary}" TextWrapping="Wrap" Style="{StaticResource BodyTextStyle}" />
+                                        <TextBlock Margin="{StaticResource SpaceTop4}"
+                                                   Text="{Binding DetailText}"
+                                                   TextWrapping="Wrap"
+                                                   Style="{StaticResource SecondaryBodyTextStyle}" />
+                                    </StackPanel>
+                                </Border>
+                            </DataTemplate>
+                        </ListBox.ItemTemplate>
+                        <ListBox.Style>
+                            <Style TargetType="ListBox">
+                                <Setter Property="Visibility" Value="Visible" />
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding HasHistory}" Value="False">
+                                        <Setter Property="Visibility" Value="Collapsed" />
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </ListBox.Style>
+                    </ListBox>
+                </StackPanel>
+            </Grid>
+        </StackPanel>
+    </Border>
+</UserControl>

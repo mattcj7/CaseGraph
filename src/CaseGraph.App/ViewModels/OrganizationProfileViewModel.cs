@@ -172,7 +172,10 @@ public sealed partial class OrganizationProfileViewModel : ObservableObject
             Memberships.Add(new OrganizationMembershipProfileItem(
                 membership.GlobalEntityId,
                 membership.GlobalDisplayName,
-                BuildMembershipDetail(membership)
+                BuildMembershipDetail(membership),
+                membership.DocumentationStatusDisplay,
+                membership.DocumentationLinkageSummary,
+                membership.HasGangDocumentation ? "Open Documentation" : "Create Documentation"
             ));
         }
 
@@ -242,6 +245,14 @@ public sealed partial class OrganizationProfileViewModel : ObservableObject
     public sealed record OrganizationMembershipProfileItem(
         Guid GlobalEntityId,
         string DisplayName,
-        string DetailText
-    );
+        string DetailText,
+        string DocumentationStatus,
+        string? DocumentationLinkageSummary,
+        string ActionLabel
+    )
+    {
+        public string DocumentationDetailDisplay => string.IsNullOrWhiteSpace(DocumentationLinkageSummary)
+            ? DocumentationStatus
+            : $"{DocumentationStatus} | {DocumentationLinkageSummary}";
+    }
 }

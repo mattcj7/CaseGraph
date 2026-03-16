@@ -1,6 +1,7 @@
 using CaseGraph.Core.Abstractions;
 using CaseGraph.Core.Diagnostics;
 using CaseGraph.Core.Models;
+using CaseGraph.Infrastructure.GangDocumentation;
 using CaseGraph.Infrastructure.Persistence;
 using Microsoft.EntityFrameworkCore;
 using System.Text.Json;
@@ -108,6 +109,9 @@ public sealed class OrganizationService : IOrganizationService
                 .AsNoTracking()
                 .Where(person => membershipGlobalIds.Contains(person.GlobalEntityId))
                 .ToDictionaryAsync(person => person.GlobalEntityId, person => person.DisplayName, ct);
+        var documentationByGlobalEntityId = membershipGlobalIds.Count == 0
+            ? new Dictionary<Guid, GangDocumentationRecord>()
+            : await BuildGangDocumentationLookupAsync(db, organizationId, membershipGlobalIds, ct);
         var children = await db.Organizations
             .AsNoTracking()
             .Where(record => record.ParentOrganizationId == organizationId)
@@ -152,7 +156,8 @@ public sealed class OrganizationService : IOrganizationService
                 .Select(membership => MapMembership(
                     membership,
                     people.GetValueOrDefault(membership.GlobalEntityId)
-                        ?? $"Global Person {membership.GlobalEntityId:D}"
+                        ?? $"Global Person {membership.GlobalEntityId:D}",
+                    documentationByGlobalEntityId.GetValueOrDefault(membership.GlobalEntityId)
                 ))
                 .ToList(),
             children.Select(child => MapSummary(
@@ -581,7 +586,7 @@ public sealed class OrganizationService : IOrganizationService
             ct
         );
 
-        return MapMembership(membership, globalPerson.DisplayName);
+        return MapMembership(membership, globalPerson.DisplayName, documentation: null);
     }
 
     public async Task<OrganizationMembershipDto> UpdateMembershipAsync(
@@ -672,7 +677,7 @@ public sealed class OrganizationService : IOrganizationService
             ct
         );
 
-        return MapMembership(membership, globalDisplayName);
+        return MapMembership(membership, globalDisplayName, documentation: null);
     }
 
     public async Task RemoveMembershipAsync(Guid membershipId, CancellationToken ct)
@@ -771,9 +776,21 @@ public sealed class OrganizationService : IOrganizationService
 
     private static OrganizationMembershipDto MapMembership(
         OrganizationMembership membership,
-        string globalDisplayName
+        string globalDisplayName,
+        GangDocumentationRecord? documentation
     )
     {
+        var documentationStatusDisplay = documentation is null
+            ? "No Documentation"
+            : documentation.DocumentationStatus switch
+            {
+                "pending review" => "Pending Review",
+                "draft" => "Draft",
+                "inactive" => "Inactive",
+                "approved" => "Documented",
+                _ => documentation.DocumentationStatus
+            };
+
         return new OrganizationMembershipDto(
             membership.MembershipId,
             membership.OrganizationId,
@@ -789,8 +806,66 @@ public sealed class OrganizationService : IOrganizationService
             membership.Reviewer,
             membership.ReviewNotes,
             membership.CreatedAtUtc,
-            membership.UpdatedAtUtc
+            membership.UpdatedAtUtc,
+            documentation is not null,
+            documentationStatusDisplay,
+            documentation is null
+                ? null
+                : string.IsNullOrWhiteSpace(documentation.SubgroupOrganizationName)
+                    ? documentation.OrganizationName
+                    : $"{documentation.OrganizationName} / {documentation.SubgroupOrganizationName}"
         );
+    }
+
+    private static async Task<Dictionary<Guid, GangDocumentationRecord>> BuildGangDocumentationLookupAsync(
+        WorkspaceDbContext db,
+        Guid organizationId,
+        IReadOnlyCollection<Guid> membershipGlobalIds,
+        CancellationToken ct
+    )
+    {
+        var records = await db.GangDocumentationRecords
+            .AsNoTracking()
+            .Include(record => record.Organization)
+            .Include(record => record.SubgroupOrganization)
+            .Where(record =>
+                record.GlobalEntityId.HasValue
+                && membershipGlobalIds.Contains(record.GlobalEntityId.Value)
+                && (record.OrganizationId == organizationId || record.SubgroupOrganizationId == organizationId)
+            )
+            .ToListAsync(ct);
+
+        return records
+            .GroupBy(record => record.GlobalEntityId!.Value)
+            .ToDictionary(
+                group => group.Key,
+                group => group
+                    .OrderByDescending(record => record.UpdatedAtUtc)
+                    .ThenByDescending(record => record.CreatedAtUtc)
+                    .ThenByDescending(record => record.DocumentationId)
+                    .Select(record => new GangDocumentationRecord(
+                        record.DocumentationId,
+                        record.CaseId,
+                        record.TargetId,
+                        record.GlobalEntityId,
+                        record.OrganizationId,
+                        record.Organization?.Name ?? $"Organization {record.OrganizationId:D}",
+                        record.SubgroupOrganizationId,
+                        record.SubgroupOrganization?.Name,
+                        record.AffiliationRole,
+                        record.DocumentationStatus,
+                        record.ApprovalStatus,
+                        record.Reviewer,
+                        record.ReviewDueDateUtc,
+                        record.Summary,
+                        record.Notes,
+                        record.CreatedAtUtc,
+                        record.UpdatedAtUtc,
+                        [],
+                        []
+                    ))
+                    .First()
+            );
     }
 
     private async Task EnsureNotDescendantAsync(

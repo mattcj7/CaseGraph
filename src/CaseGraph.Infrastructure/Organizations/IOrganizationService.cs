@@ -100,7 +100,10 @@ public sealed record OrganizationMembershipDto(
     string? Reviewer,
     string? ReviewNotes,
     DateTimeOffset CreatedAtUtc,
-    DateTimeOffset UpdatedAtUtc
+    DateTimeOffset UpdatedAtUtc,
+    bool HasGangDocumentation = false,
+    string DocumentationStatusDisplay = "No Documentation",
+    string? DocumentationLinkageSummary = null
 );
 
 public sealed record CreateOrganizationRequest(

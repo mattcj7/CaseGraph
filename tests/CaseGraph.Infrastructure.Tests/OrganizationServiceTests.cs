@@ -2,6 +2,7 @@ using CaseGraph.Core.Abstractions;
 using CaseGraph.Core.Models;
 using CaseGraph.Infrastructure.Organizations;
 using CaseGraph.Infrastructure.Persistence;
+using CaseGraph.Infrastructure.Persistence.Entities;
 using CaseGraph.Infrastructure.Services;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
@@ -187,6 +188,105 @@ public sealed class OrganizationServiceTests
         var membership = Assert.Single(organizationDetails!.Memberships);
         Assert.Equal(globalEntityId, membership.GlobalEntityId);
         Assert.Equal("Marcus Lane", membership.GlobalDisplayName);
+    }
+
+    [Fact]
+    public async Task GetOrganizationDetailsAsync_MembershipsIncludeGangDocumentationStatus()
+    {
+        await using var fixture = await WorkspaceFixture.CreateAsync();
+        var service = fixture.Services.GetRequiredService<IOrganizationService>();
+        var organization = await service.CreateOrganizationAsync(
+            new CreateOrganizationRequest("Bounty Hunters", "gang", "active", null, null),
+            CancellationToken.None
+        );
+        var subgroup = await service.CreateOrganizationAsync(
+            new CreateOrganizationRequest("Bounty Hunters South", "set", "active", organization.OrganizationId, null),
+            CancellationToken.None
+        );
+        var globalPerson = await fixture.CreateGlobalPersonAsync("Rico Lane", "Roster Documentation Case");
+
+        await service.AddMembershipAsync(
+            new AddOrganizationMembershipRequest(
+                organization.OrganizationId,
+                globalPerson.GlobalEntityId,
+                "member",
+                "member",
+                85,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null
+            ),
+            CancellationToken.None
+        );
+
+        await using (var db = await fixture.CreateDbContextAsync())
+        {
+            var target = await db.Targets
+                .AsNoTracking()
+                .FirstAsync(item => item.GlobalEntityId == globalPerson.GlobalEntityId);
+            db.GangDocumentationRecords.Add(new GangDocumentationRecordEntity
+            {
+                DocumentationId = Guid.NewGuid(),
+                CaseId = target.CaseId,
+                TargetId = target.TargetId,
+                GlobalEntityId = globalPerson.GlobalEntityId,
+                OrganizationId = organization.OrganizationId,
+                SubgroupOrganizationId = subgroup.OrganizationId,
+                AffiliationRole = "member",
+                DocumentationStatus = "pending review",
+                ApprovalStatus = "pending approval",
+                Summary = "Roster documentation",
+                CreatedAtUtc = DateTimeOffset.UtcNow,
+                UpdatedAtUtc = new DateTimeOffset(2026, 3, 15, 12, 0, 0, TimeSpan.Zero)
+            });
+            await db.SaveChangesAsync();
+        }
+
+        var details = await service.GetOrganizationDetailsAsync(organization.OrganizationId, CancellationToken.None);
+
+        var membership = Assert.Single(details!.Memberships);
+        Assert.True(membership.HasGangDocumentation);
+        Assert.Equal("Pending Review", membership.DocumentationStatusDisplay);
+        Assert.Equal("Bounty Hunters / Bounty Hunters South", membership.DocumentationLinkageSummary);
+    }
+
+    [Fact]
+    public async Task GetOrganizationDetailsAsync_MembershipsWithoutGangDocumentationShowNoDocumentation()
+    {
+        await using var fixture = await WorkspaceFixture.CreateAsync();
+        var service = fixture.Services.GetRequiredService<IOrganizationService>();
+        var organization = await service.CreateOrganizationAsync(
+            new CreateOrganizationRequest("Rollin 60s", "gang", "active", null, null),
+            CancellationToken.None
+        );
+        var globalPerson = await fixture.CreateGlobalPersonAsync("Marcus Gray", "Roster No Documentation Case");
+
+        await service.AddMembershipAsync(
+            new AddOrganizationMembershipRequest(
+                organization.OrganizationId,
+                globalPerson.GlobalEntityId,
+                "associate",
+                "associate",
+                70,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null
+            ),
+            CancellationToken.None
+        );
+
+        var details = await service.GetOrganizationDetailsAsync(organization.OrganizationId, CancellationToken.None);
+
+        var membership = Assert.Single(details!.Memberships);
+        Assert.False(membership.HasGangDocumentation);
+        Assert.Equal("No Documentation", membership.DocumentationStatusDisplay);
+        Assert.Null(membership.DocumentationLinkageSummary);
     }
 
     private sealed class WorkspaceFixture : IAsyncDisposable

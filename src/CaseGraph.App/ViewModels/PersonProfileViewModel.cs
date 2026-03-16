@@ -9,10 +9,15 @@ namespace CaseGraph.App.ViewModels;
 public sealed partial class PersonProfileViewModel : ObservableObject
 {
     private readonly ITargetRegistryService _targetRegistryService;
+    private readonly GangDocumentationViewModel _gangDocumentationViewModel;
 
-    public PersonProfileViewModel(ITargetRegistryService targetRegistryService)
+    public PersonProfileViewModel(
+        ITargetRegistryService targetRegistryService,
+        GangDocumentationViewModel gangDocumentationViewModel
+    )
     {
         _targetRegistryService = targetRegistryService;
+        _gangDocumentationViewModel = gangDocumentationViewModel;
         OpenAffiliationCommand = new AsyncRelayCommand<PersonAffiliationItem?>(
             OpenAffiliationAsync
         );
@@ -32,6 +37,8 @@ public sealed partial class PersonProfileViewModel : ObservableObject
     public ObservableCollection<string> GlobalIdentifiers { get; } = new();
 
     public ObservableCollection<string> GlobalOtherCases { get; } = new();
+
+    public GangDocumentationViewModel GangDocumentation => _gangDocumentationViewModel;
 
     public IAsyncRelayCommand<PersonAffiliationItem?> OpenAffiliationCommand { get; }
 
@@ -127,6 +134,7 @@ public sealed partial class PersonProfileViewModel : ObservableObject
             }
 
             ApplyDetails(details);
+            await _gangDocumentationViewModel.LoadAsync(caseId, targetId, ct);
         }
         finally
         {
@@ -148,6 +156,7 @@ public sealed partial class PersonProfileViewModel : ObservableObject
         LinkedGlobalPersonId = null;
         LinkedGlobalPersonDisplayName = string.Empty;
         ClearCollections();
+        _gangDocumentationViewModel.ClearForUnavailableProfile();
         RaiseSectionStateChanged();
     }
 

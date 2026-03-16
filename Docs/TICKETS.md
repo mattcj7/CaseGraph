@@ -91,3 +91,5 @@ This file tracks planned, active, and completed tickets.
 - 2026-03-11 - T0037 - Added canonical message normalization, flexible CSV/XLSX alias-based detection and routing, structured parser diagnostics, T0036 `messages.csv` compatibility through the normal ingest path, and deterministic regression coverage.
 - 2026-03-12 - T0038 - Added Open Incident Workspace v1 with persisted incidents/scenes/pinned findings, offense-window plus multi-scene radius cross-reference, incident timeline anchors, provenance-preserving pin/save flows, and deterministic incident service coverage.
 - 2026-03-13 - T0039 - Added a cross-case organization registry with alias and membership persistence, parent-child organizations, Organizations UI workflows, structured audit/diagnostic coverage, and deterministic organization service tests.
+- 2026-03-13 - T0040 - Entity Profile Viewer Navigation for People and Organizations
+- 2026-03-14 - T0041 - Added a first-class Gang Documentation profile module with persistence, criteria workflow/history, organization and subgroup linkage, separated profile UI, and deterministic persistence/workflow tests.

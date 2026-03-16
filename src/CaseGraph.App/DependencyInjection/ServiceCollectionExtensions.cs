@@ -3,6 +3,7 @@ using CaseGraph.App.ViewModels;
 using CaseGraph.Core.Abstractions;
 using CaseGraph.Core.Diagnostics;
 using CaseGraph.Infrastructure.Diagnostics;
+using CaseGraph.Infrastructure.GangDocumentation;
 using CaseGraph.Infrastructure.Incidents;
 using CaseGraph.Infrastructure.IncidentWindow;
 using CaseGraph.Infrastructure.Locations;
@@ -80,6 +81,7 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<ITargetMessagePresenceIndexService, TargetMessagePresenceIndexService>();
         services.AddSingleton<ITargetRegistryService, TargetRegistryService>();
         services.AddSingleton<IOrganizationService, OrganizationService>();
+        services.AddSingleton<IGangDocumentationService, GangDocumentationService>();
         services.AddSingleton<IAssociationGraphQueryService, AssociationGraphQueryService>();
         services.AddSingleton<IAssociationGraphExportPathBuilder, AssociationGraphExportPathBuilder>();
         services.AddSingleton<DossierBuilder>();
@@ -98,6 +100,7 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<OpenIncidentWorkspaceViewModel>();
         services.AddSingleton<LocationsViewModel>();
         services.AddSingleton<OrganizationRegistryViewModel>();
+        services.AddSingleton<GangDocumentationViewModel>();
         services.AddSingleton<PersonProfileViewModel>();
         services.AddSingleton<OrganizationProfileViewModel>();
         services.AddSingleton<ReportsViewModel>();

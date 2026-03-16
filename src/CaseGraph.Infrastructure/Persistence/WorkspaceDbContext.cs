@@ -45,6 +45,15 @@ public sealed class WorkspaceDbContext : DbContext
 
     public DbSet<OrganizationMembership> OrganizationMemberships => Set<OrganizationMembership>();
 
+    public DbSet<GangDocumentationRecordEntity> GangDocumentationRecords =>
+        Set<GangDocumentationRecordEntity>();
+
+    public DbSet<GangDocumentationCriterionRecord> GangDocumentationCriteria =>
+        Set<GangDocumentationCriterionRecord>();
+
+    public DbSet<GangDocumentationStatusHistoryRecord> GangDocumentationStatusHistory =>
+        Set<GangDocumentationStatusHistoryRecord>();
+
     public DbSet<TargetRecord> Targets => Set<TargetRecord>();
 
     public DbSet<TargetAliasRecord> TargetAliases => Set<TargetAliasRecord>();
@@ -311,6 +320,67 @@ public sealed class WorkspaceDbContext : DbContext
             entity.HasOne(e => e.GlobalPerson)
                 .WithMany()
                 .HasForeignKey(e => e.GlobalEntityId)
+                .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.Entity<GangDocumentationRecordEntity>(entity =>
+        {
+            entity.ToTable("GangDocumentationRecord");
+            entity.HasKey(e => e.DocumentationId);
+            entity.Property(e => e.AffiliationRole).IsRequired();
+            entity.Property(e => e.DocumentationStatus).IsRequired();
+            entity.Property(e => e.ApprovalStatus).IsRequired();
+            entity.Property(e => e.Summary).IsRequired();
+            entity.HasIndex(e => new { e.CaseId, e.TargetId, e.UpdatedAtUtc });
+            entity.HasIndex(e => new { e.CaseId, e.GlobalEntityId });
+            entity.HasIndex(e => e.OrganizationId);
+
+            entity.HasOne(e => e.Target)
+                .WithMany()
+                .HasForeignKey(e => e.TargetId)
+                .OnDelete(DeleteBehavior.Cascade);
+
+            entity.HasOne(e => e.GlobalPerson)
+                .WithMany()
+                .HasForeignKey(e => e.GlobalEntityId)
+                .OnDelete(DeleteBehavior.SetNull);
+
+            entity.HasOne(e => e.Organization)
+                .WithMany()
+                .HasForeignKey(e => e.OrganizationId)
+                .OnDelete(DeleteBehavior.Restrict);
+
+            entity.HasOne(e => e.SubgroupOrganization)
+                .WithMany()
+                .HasForeignKey(e => e.SubgroupOrganizationId)
+                .OnDelete(DeleteBehavior.Restrict);
+        });
+
+        modelBuilder.Entity<GangDocumentationCriterionRecord>(entity =>
+        {
+            entity.ToTable("GangDocumentationCriterion");
+            entity.HasKey(e => e.CriterionId);
+            entity.Property(e => e.CriterionType).IsRequired();
+            entity.Property(e => e.BasisSummary).IsRequired();
+            entity.HasIndex(e => new { e.DocumentationId, e.SortOrder });
+
+            entity.HasOne(e => e.Documentation)
+                .WithMany(e => e.Criteria)
+                .HasForeignKey(e => e.DocumentationId)
+                .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.Entity<GangDocumentationStatusHistoryRecord>(entity =>
+        {
+            entity.ToTable("GangDocumentationStatusHistory");
+            entity.HasKey(e => e.HistoryEntryId);
+            entity.Property(e => e.ActionType).IsRequired();
+            entity.Property(e => e.Summary).IsRequired();
+            entity.HasIndex(e => new { e.DocumentationId, e.ChangedAtUtc });
+
+            entity.HasOne(e => e.Documentation)
+                .WithMany(e => e.StatusHistory)
+                .HasForeignKey(e => e.DocumentationId)
                 .OnDelete(DeleteBehavior.Cascade);
         });
 

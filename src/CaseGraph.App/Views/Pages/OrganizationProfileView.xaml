@@ -130,10 +130,11 @@
                             <DataGrid.Columns>
                                 <DataGridTextColumn Header="Person" Binding="{Binding DisplayName}" Width="1.5*" />
                                 <DataGridTextColumn Header="Membership" Binding="{Binding DetailText}" Width="2.4*" />
-                                <DataGridTemplateColumn Header="Open" Width="0.8*">
+                                <DataGridTextColumn Header="Documentation" Binding="{Binding DocumentationDetailDisplay}" Width="2*" />
+                                <DataGridTemplateColumn Header="Action" Width="1.2*">
                                     <DataGridTemplateColumn.CellTemplate>
                                         <DataTemplate>
-                                            <Button Content="Open"
+                                            <Button Content="{Binding ActionLabel}"
                                                     Command="{Binding DataContext.OpenMembershipPersonCommand, RelativeSource={RelativeSource AncestorType=DataGrid}}"
                                                     CommandParameter="{Binding}"
                                                     Style="{StaticResource TopBarButtonStyle}" />
