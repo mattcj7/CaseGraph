@@ -513,6 +513,8 @@ public sealed class DossierBuilderTests
     {
         public Task<EvidenceItem> ImportEvidenceFileAsync(CaseInfo caseInfo, string filePath, IProgress<double>? progress, CancellationToken ct) => throw new NotSupportedException();
 
+        public Task<ArchiveExtractionResult?> EnsureArchiveExtractedAsync(Guid caseId, EvidenceItem item, CancellationToken ct) => throw new NotSupportedException();
+
         public Task<(bool ok, string message)> VerifyEvidenceAsync(CaseInfo caseInfo, EvidenceItem item, IProgress<double>? progress, CancellationToken ct) => throw new NotSupportedException();
     }
 

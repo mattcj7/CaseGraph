@@ -93,3 +93,4 @@ This file tracks planned, active, and completed tickets.
 - 2026-03-13 - T0039 - Added a cross-case organization registry with alias and membership persistence, parent-child organizations, Organizations UI workflows, structured audit/diagnostic coverage, and deterministic organization service tests.
 - 2026-03-13 - T0040 - Entity Profile Viewer Navigation for People and Organizations
 - 2026-03-14 - T0041 - Added a first-class Gang Documentation profile module with persistence, criteria workflow/history, organization and subgroup linkage, separated profile UI, and deterministic persistence/workflow tests.
+- 2026-03-16 - T0042 - Added first-class ZIP evidence ingest with immutable vault preservation, controlled derived extraction, archive-aware message/location routing, provenance-preserving inner locators, fail-soft inner-file handling, and deterministic ZIP regression coverage.

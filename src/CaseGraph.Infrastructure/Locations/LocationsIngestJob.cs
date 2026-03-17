@@ -1,5 +1,6 @@
 using CaseGraph.Core.Abstractions;
 using CaseGraph.Core.Diagnostics;
+using CaseGraph.Core.Models;
 using CaseGraph.Infrastructure.Persistence;
 using CaseGraph.Infrastructure.Persistence.Entities;
 using Microsoft.EntityFrameworkCore;
@@ -17,6 +18,7 @@ public sealed class LocationsIngestJob
     private readonly IWorkspaceDatabaseInitializer _databaseInitializer;
     private readonly IWorkspacePathProvider _workspacePathProvider;
     private readonly IWorkspaceWriteGate _workspaceWriteGate;
+    private readonly IEvidenceVaultService _evidenceVaultService;
     private readonly IClock _clock;
     private readonly LocationCsvParser _csvParser;
     private readonly LocationJsonParser _jsonParser;
@@ -27,6 +29,7 @@ public sealed class LocationsIngestJob
         IWorkspaceDatabaseInitializer databaseInitializer,
         IWorkspacePathProvider workspacePathProvider,
         IWorkspaceWriteGate workspaceWriteGate,
+        IEvidenceVaultService evidenceVaultService,
         IClock clock,
         LocationCsvParser csvParser,
         LocationJsonParser jsonParser,
@@ -37,6 +40,7 @@ public sealed class LocationsIngestJob
         _databaseInitializer = databaseInitializer;
         _workspacePathProvider = workspacePathProvider;
         _workspaceWriteGate = workspaceWriteGate;
+        _evidenceVaultService = evidenceVaultService;
         _clock = clock;
         _csvParser = csvParser;
         _jsonParser = jsonParser;
@@ -115,6 +119,11 @@ public sealed class LocationsIngestJob
                 FileErrorCount: 1,
                 UnknownFieldNames: Array.Empty<string>()
             );
+        }
+
+        if (string.Equals(extension, ".zip", StringComparison.OrdinalIgnoreCase))
+        {
+            return await IngestArchiveAsync(caseId, evidence, progress, ct);
         }
 
         var parser = ResolveParser(extension);
@@ -259,6 +268,247 @@ public sealed class LocationsIngestJob
         return result;
     }
 
+    private async Task<LocationsIngestResult> IngestArchiveAsync(
+        Guid caseId,
+        EvidenceItemRecord evidence,
+        IProgress<LocationsIngestProgress>? progress,
+        CancellationToken ct
+    )
+    {
+        var extraction = await _evidenceVaultService.EnsureArchiveExtractedAsync(
+            caseId,
+            ToEvidenceItem(evidence),
+            ct
+        );
+        if (extraction is null || extraction.ExtractedRelativePaths.Count == 0)
+        {
+            return new LocationsIngestResult(
+                ProcessedCount: 0,
+                InsertedCount: 0,
+                SkippedCount: 0,
+                ReplacedCount: 0,
+                FileErrorCount: extraction?.Warnings.Count ?? 0,
+                UnknownFieldNames: Array.Empty<string>()
+            );
+        }
+
+        var routedEntries = extraction.ExtractedRelativePaths
+            .Select(path => (RelativePath: path, Parser: ResolveParser(Path.GetExtension(path).ToLowerInvariant())))
+            .Where(item => item.Parser is not null)
+            .OrderBy(item => item.RelativePath, StringComparer.Ordinal)
+            .ToArray();
+
+        AppFileLogger.LogEvent(
+            eventName: "LocationsIngestArchiveRoutingStarted",
+            level: "INFO",
+            message: "Locations ingest archive routing started.",
+            fields: new Dictionary<string, object?>
+            {
+                ["caseId"] = caseId.ToString("D"),
+                ["evidenceItemId"] = evidence.EvidenceItemId.ToString("D"),
+                ["sourceLabel"] = evidence.OriginalFileName,
+                ["supportedEntryCount"] = routedEntries.Length,
+                ["unsupportedEntryCount"] = extraction.ExtractedRelativePaths.Count - routedEntries.Length
+            }
+        );
+
+        var result = await _workspaceWriteGate.ExecuteWriteWithResultAsync(
+            operationName: "LocationsIngest.PersistArchive",
+            async writeCt =>
+            {
+                await _databaseInitializer.EnsureInitializedAsync(writeCt);
+                await using var db = await _dbContextFactory.CreateDbContextAsync(writeCt);
+                await using var transaction = await db.Database.BeginTransactionAsync(writeCt);
+
+                var replacedCount = await db.LocationObservations
+                    .Where(item => item.CaseId == caseId && item.SourceEvidenceItemId == evidence.EvidenceItemId)
+                    .ExecuteDeleteAsync(writeCt);
+
+                var pendingInserts = 0;
+                var processedCount = 0;
+                var insertedCount = 0;
+                var skippedCount = 0;
+                var fileErrorCount = extraction.Warnings.Count;
+                var unknownFieldNames = new HashSet<string>(StringComparer.Ordinal);
+
+                for (var index = 0; index < routedEntries.Length; index++)
+                {
+                    writeCt.ThrowIfCancellationRequested();
+                    var entry = routedEntries[index];
+                    var absolutePath = Path.Combine(
+                        extraction.ExtractedRootPath,
+                        entry.RelativePath.Replace('/', Path.DirectorySeparatorChar)
+                    );
+
+                    AppFileLogger.LogEvent(
+                        eventName: "LocationsIngestArchiveEntryDetected",
+                        level: "INFO",
+                        message: "Locations ingest archive entry matched a parser.",
+                        fields: new Dictionary<string, object?>
+                        {
+                            ["caseId"] = caseId.ToString("D"),
+                            ["evidenceItemId"] = evidence.EvidenceItemId.ToString("D"),
+                            ["sourceLabel"] = evidence.OriginalFileName,
+                            ["entryPath"] = entry.RelativePath,
+                            ["parserFamily"] = Path.GetExtension(entry.RelativePath).TrimStart('.').ToUpperInvariant()
+                        }
+                    );
+
+                    try
+                    {
+                        var parseResult = await entry.Parser!.ParseAsync(
+                            absolutePath,
+                            entry.RelativePath,
+                            async (observation, callbackCt) =>
+                            {
+                                callbackCt.ThrowIfCancellationRequested();
+                                db.LocationObservations.Add(
+                                    new LocationObservationRecord
+                                    {
+                                        LocationObservationId = Guid.NewGuid(),
+                                        CaseId = caseId,
+                                        ObservedUtc = observation.ObservedUtc,
+                                        Latitude = observation.Latitude,
+                                        Longitude = observation.Longitude,
+                                        AccuracyMeters = observation.AccuracyMeters,
+                                        AltitudeMeters = observation.AltitudeMeters,
+                                        SpeedMps = observation.SpeedMps,
+                                        HeadingDegrees = observation.HeadingDegrees,
+                                        SourceType = observation.SourceType,
+                                        SourceLabel = observation.SourceLabel,
+                                        SubjectType = observation.SubjectType,
+                                        SubjectId = observation.SubjectId,
+                                        SourceEvidenceItemId = evidence.EvidenceItemId,
+                                        SourceLocator = CanonicalizeArchiveLocationLocator(observation.SourceLocator, entry.RelativePath),
+                                        IngestModuleVersion = IngestModuleVersion,
+                                        CreatedUtc = _clock.UtcNow.ToUniversalTime()
+                                    }
+                                );
+
+                                pendingInserts++;
+                                if (pendingInserts < SaveBatchSize)
+                                {
+                                    return;
+                                }
+
+                                await db.SaveChangesAsync(callbackCt);
+                                db.ChangeTracker.Clear();
+                                pendingInserts = 0;
+                            },
+                            parserProgress =>
+                            {
+                                var routedFraction = routedEntries.Length == 0
+                                    ? 1
+                                    : 0.10 + (((index + Math.Clamp(parserProgress.FractionComplete, 0, 1)) / routedEntries.Length) * 0.85);
+                                progress?.Report(new LocationsIngestProgress(
+                                    FractionComplete: routedFraction,
+                                    Phase: $"Routing archive entry {index + 1}/{routedEntries.Length}: {entry.RelativePath}",
+                                    Processed: processedCount + parserProgress.ProcessedCount,
+                                    Accepted: insertedCount + parserProgress.AcceptedCount,
+                                    Skipped: skippedCount + parserProgress.SkippedCount
+                                ));
+                            },
+                            writeCt
+                        );
+
+                        processedCount += parseResult.ProcessedCount;
+                        insertedCount += parseResult.AcceptedCount;
+                        skippedCount += parseResult.SkippedCount;
+                        foreach (var field in parseResult.UnknownFieldNames)
+                        {
+                            unknownFieldNames.Add(field);
+                        }
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        throw;
+                    }
+                    catch (Exception ex)
+                    {
+                        fileErrorCount++;
+                        AppFileLogger.LogEvent(
+                            eventName: "LocationsIngestArchiveEntryFailed",
+                            level: "WARN",
+                            message: "Locations ingest archive entry failed and was skipped.",
+                            ex: ex,
+                            fields: new Dictionary<string, object?>
+                            {
+                                ["caseId"] = caseId.ToString("D"),
+                                ["evidenceItemId"] = evidence.EvidenceItemId.ToString("D"),
+                                ["sourceLabel"] = evidence.OriginalFileName,
+                                ["entryPath"] = entry.RelativePath
+                            }
+                        );
+                    }
+                }
+
+                if (pendingInserts > 0)
+                {
+                    await db.SaveChangesAsync(writeCt);
+                    db.ChangeTracker.Clear();
+                }
+
+                await transaction.CommitAsync(writeCt);
+
+                return new LocationsIngestResult(
+                    ProcessedCount: processedCount,
+                    InsertedCount: insertedCount,
+                    SkippedCount: skippedCount,
+                    ReplacedCount: replacedCount,
+                    FileErrorCount: fileErrorCount,
+                    UnknownFieldNames: unknownFieldNames.OrderBy(item => item, StringComparer.Ordinal).ToArray()
+                );
+            },
+            ct,
+            correlationId: AppFileLogger.GetScopeValue("correlationId"),
+            fields: new Dictionary<string, object?>
+            {
+                ["caseId"] = caseId.ToString("D"),
+                ["evidenceItemId"] = evidence.EvidenceItemId.ToString("D")
+            }
+        );
+
+        AppFileLogger.LogEvent(
+            eventName: "LocationsIngestArchiveRoutingCompleted",
+            level: "INFO",
+            message: result.Summary,
+            fields: new Dictionary<string, object?>
+            {
+                ["caseId"] = caseId.ToString("D"),
+                ["evidenceItemId"] = evidence.EvidenceItemId.ToString("D"),
+                ["processedCount"] = result.ProcessedCount,
+                ["insertedCount"] = result.InsertedCount,
+                ["skippedCount"] = result.SkippedCount,
+                ["fileErrorCount"] = result.FileErrorCount
+            }
+        );
+
+        foreach (var field in result.UnknownFieldNames)
+        {
+            AppFileLogger.LogEvent(
+                eventName: "LocationsIngestUnknownField",
+                level: "INFO",
+                message: "Locations ingest skipped unknown schema field.",
+                fields: new Dictionary<string, object?>
+                {
+                    ["field"] = field,
+                    ["file"] = evidence.OriginalFileName,
+                    ["evidenceItemId"] = evidence.EvidenceItemId.ToString("D")
+                }
+            );
+        }
+
+        progress?.Report(new LocationsIngestProgress(
+            FractionComplete: 1,
+            Phase: result.Summary,
+            Processed: result.ProcessedCount,
+            Accepted: result.InsertedCount,
+            Skipped: result.SkippedCount
+        ));
+
+        return result;
+    }
+
     private ILocationObservationParser? ResolveParser(string extension)
     {
         return extension switch
@@ -268,6 +518,57 @@ public sealed class LocationsIngestJob
             ".plist" => _plistParser,
             _ => null
         };
+    }
+
+    private static EvidenceItem ToEvidenceItem(EvidenceItemRecord evidence)
+    {
+        return new EvidenceItem
+        {
+            EvidenceItemId = evidence.EvidenceItemId,
+            CaseId = evidence.CaseId,
+            DisplayName = evidence.DisplayName,
+            OriginalPath = evidence.OriginalPath,
+            OriginalFileName = evidence.OriginalFileName,
+            AddedAtUtc = evidence.AddedAtUtc,
+            SizeBytes = evidence.SizeBytes,
+            Sha256Hex = evidence.Sha256Hex,
+            FileExtension = evidence.FileExtension,
+            SourceType = evidence.SourceType,
+            ManifestRelativePath = evidence.ManifestRelativePath,
+            StoredRelativePath = evidence.StoredRelativePath
+        };
+    }
+
+    private static string CanonicalizeArchiveLocationLocator(string rawLocator, string relativePath)
+    {
+        var extension = Path.GetExtension(relativePath).ToLowerInvariant();
+        if (extension == ".csv")
+        {
+            var rowToken = rawLocator.Split("#row=", StringSplitOptions.None).LastOrDefault();
+            return int.TryParse(rowToken, out var rowNumber)
+                ? $"csv:{relativePath}#row:{rowNumber}"
+                : $"csv:{relativePath}";
+        }
+
+        if (extension == ".json")
+        {
+            var pointer = rawLocator.Split("#ptr=", StringSplitOptions.None).LastOrDefault() ?? "/";
+            return $"json:{relativePath}#{pointer}";
+        }
+
+        if (extension == ".plist")
+        {
+            var keyPath = rawLocator.Split("#keyPath=", StringSplitOptions.None).LastOrDefault() ?? "Root";
+            keyPath = Uri.UnescapeDataString(keyPath);
+            if (keyPath.StartsWith("root", StringComparison.Ordinal))
+            {
+                keyPath = $"Root{keyPath[4..]}";
+            }
+
+            return $"plist:{relativePath}#{keyPath}";
+        }
+
+        return rawLocator;
     }
 }
 

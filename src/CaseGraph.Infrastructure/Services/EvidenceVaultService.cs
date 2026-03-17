@@ -1,6 +1,8 @@
 using CaseGraph.Core.Abstractions;
+using CaseGraph.Core.Diagnostics;
 using CaseGraph.Core.Models;
 using System.Buffers;
+using System.IO.Compression;
 using System.Security.Cryptography;
 using System.Text.Json;
 
@@ -12,6 +14,8 @@ public sealed class EvidenceVaultService : IEvidenceVaultService
     {
         WriteIndented = true
     };
+
+    private const int ArchiveExtractionSchemaVersion = 1;
 
     private readonly IClock _clock;
     private readonly IWorkspacePathProvider _pathProvider;
@@ -65,6 +69,9 @@ public sealed class EvidenceVaultService : IEvidenceVaultService
 
         long sizeBytes;
         string sha256Hex;
+        var copyProgress = sourceType == "ZIP"
+            ? new Progress<double>(value => progress?.Report(Math.Clamp(value, 0, 1) * 0.85))
+            : progress;
         await using (var sourceStream = CreateReadStream(filePath))
         await using (var destinationStream = CreateWriteStream(storedFilePath))
         {
@@ -73,7 +80,7 @@ public sealed class EvidenceVaultService : IEvidenceVaultService
                 sourceStream,
                 destinationStream,
                 sizeBytes,
-                progress,
+                copyProgress,
                 ct
             );
         }
@@ -116,6 +123,14 @@ public sealed class EvidenceVaultService : IEvidenceVaultService
             await manifestStream.FlushAsync(ct);
         }
 
+        ArchiveExtractionResult? archiveExtraction = null;
+        if (string.Equals(sourceType, "ZIP", StringComparison.Ordinal))
+        {
+            progress?.Report(0.9);
+            archiveExtraction = await EnsureArchiveExtractedAsync(caseInfo.CaseId, evidenceItem, ct);
+            progress?.Report(1.0);
+        }
+
         var (storedCaseInfo, storedEvidence) = await _caseWorkspaceService.LoadCaseAsync(caseInfo.CaseId, ct);
         storedEvidence.Add(evidenceItem);
         await _caseWorkspaceService.SaveCaseAsync(storedCaseInfo, storedEvidence, ct);
@@ -132,7 +147,10 @@ public sealed class EvidenceVaultService : IEvidenceVaultService
                 JsonPayload = JsonSerializer.Serialize(new
                 {
                     evidenceItem.OriginalFileName,
+                    evidenceItem.SourceType,
                     evidenceItem.SizeBytes,
+                    ExtractedEntryCount = archiveExtraction?.ExtractedRelativePaths.Count ?? 0,
+                    ArchiveWarningCount = archiveExtraction?.Warnings.Count ?? 0,
                     Sha256Short = evidenceItem.Sha256Hex.Length >= 12
                         ? evidenceItem.Sha256Hex[..12]
                         : evidenceItem.Sha256Hex
@@ -142,6 +160,221 @@ public sealed class EvidenceVaultService : IEvidenceVaultService
         );
 
         return evidenceItem;
+    }
+
+    public async Task<ArchiveExtractionResult?> EnsureArchiveExtractedAsync(
+        Guid caseId,
+        EvidenceItem item,
+        CancellationToken ct
+    )
+    {
+        ArgumentNullException.ThrowIfNull(item);
+
+        if (!string.Equals(item.FileExtension, ".zip", StringComparison.OrdinalIgnoreCase)
+            && !string.Equals(item.SourceType, "ZIP", StringComparison.OrdinalIgnoreCase))
+        {
+            return null;
+        }
+
+        var caseRootPath = GetCaseRootPath(caseId);
+        var storedAbsolutePath = Path.Combine(
+            caseRootPath,
+            item.StoredRelativePath.Replace('/', Path.DirectorySeparatorChar)
+        );
+        if (!File.Exists(storedAbsolutePath))
+        {
+            throw new FileNotFoundException("Stored archive file is missing.", storedAbsolutePath);
+        }
+
+        var derivedRootPath = Path.Combine(
+            caseRootPath,
+            "vault",
+            item.EvidenceItemId.ToString("D"),
+            "derived",
+            "extracted"
+        );
+        var extractionManifestPath = Path.Combine(
+            caseRootPath,
+            "vault",
+            item.EvidenceItemId.ToString("D"),
+            "derived",
+            "archive-extraction.json"
+        );
+
+        var cached = await TryReadExtractionManifestAsync(
+            extractionManifestPath,
+            item.EvidenceItemId,
+            item.Sha256Hex,
+            derivedRootPath,
+            ct
+        );
+        if (cached is not null)
+        {
+            AppFileLogger.LogEvent(
+                eventName: "ArchiveExtractionReused",
+                level: "INFO",
+                message: "Reused previously extracted archive contents.",
+                fields: new Dictionary<string, object?>
+                {
+                    ["caseId"] = caseId.ToString("D"),
+                    ["evidenceItemId"] = item.EvidenceItemId.ToString("D"),
+                    ["fileName"] = item.OriginalFileName,
+                    ["entryCount"] = cached.ExtractedRelativePaths.Count,
+                    ["warningCount"] = cached.Warnings.Count
+                }
+            );
+            return cached;
+        }
+
+        AppFileLogger.LogEvent(
+            eventName: "ArchiveExtractionStarted",
+            level: "INFO",
+            message: "Archive extraction started.",
+            fields: new Dictionary<string, object?>
+            {
+                ["caseId"] = caseId.ToString("D"),
+                ["evidenceItemId"] = item.EvidenceItemId.ToString("D"),
+                ["fileName"] = item.OriginalFileName
+            }
+        );
+
+        Directory.CreateDirectory(Path.GetDirectoryName(extractionManifestPath)!);
+        if (Directory.Exists(derivedRootPath))
+        {
+            Directory.Delete(derivedRootPath, recursive: true);
+        }
+
+        Directory.CreateDirectory(derivedRootPath);
+
+        var extractedRelativePaths = new List<string>();
+        var warnings = new List<string>();
+
+        try
+        {
+            await using var archiveStream = CreateReadStream(storedAbsolutePath);
+            using var archive = new ZipArchive(archiveStream, ZipArchiveMode.Read, leaveOpen: false);
+            foreach (var entry in archive.Entries.OrderBy(item => item.FullName, StringComparer.Ordinal))
+            {
+                ct.ThrowIfCancellationRequested();
+
+                if (string.IsNullOrEmpty(entry.Name))
+                {
+                    continue;
+                }
+
+                var normalizedRelativePath = NormalizeArchiveEntryPath(entry.FullName);
+                if (normalizedRelativePath is null)
+                {
+                    var warning = $"Skipped unsafe archive entry \"{entry.FullName}\".";
+                    warnings.Add(warning);
+                    LogArchiveEntryIssue("ArchiveExtractionEntrySkipped", caseId, item, entry.FullName, warning);
+                    continue;
+                }
+
+                var destinationPath = ResolveExtractedDestinationPath(derivedRootPath, normalizedRelativePath);
+                if (destinationPath is null)
+                {
+                    var warning = $"Skipped out-of-bounds archive entry \"{entry.FullName}\".";
+                    warnings.Add(warning);
+                    LogArchiveEntryIssue("ArchiveExtractionEntrySkipped", caseId, item, entry.FullName, warning);
+                    continue;
+                }
+
+                Directory.CreateDirectory(Path.GetDirectoryName(destinationPath)!);
+
+                try
+                {
+                    await using var entryStream = entry.Open();
+                    await using var destinationStream = CreateWriteStream(destinationPath);
+                    await entryStream.CopyToAsync(destinationStream, ct);
+                    await destinationStream.FlushAsync(ct);
+                    extractedRelativePaths.Add(normalizedRelativePath);
+                }
+                catch (OperationCanceledException)
+                {
+                    throw;
+                }
+                catch (Exception ex)
+                {
+                    var warning = $"Failed to extract archive entry \"{entry.FullName}\": {ex.GetBaseException().Message}";
+                    warnings.Add(warning);
+                    LogArchiveEntryIssue(
+                        "ArchiveExtractionEntryFailed",
+                        caseId,
+                        item,
+                        entry.FullName,
+                        warning,
+                        ex
+                    );
+                }
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (InvalidDataException ex)
+        {
+            var warning = $"Archive could not be opened for extraction: {ex.GetBaseException().Message}";
+            warnings.Add(warning);
+            AppFileLogger.LogEvent(
+                eventName: "ArchiveExtractionFailed",
+                level: "WARN",
+                message: "Archive extraction failed; the original evidence item was preserved.",
+                ex: ex,
+                fields: new Dictionary<string, object?>
+                {
+                    ["caseId"] = caseId.ToString("D"),
+                    ["evidenceItemId"] = item.EvidenceItemId.ToString("D"),
+                    ["fileName"] = item.OriginalFileName
+                }
+            );
+        }
+
+        var extractionManifest = new ArchiveExtractionManifest
+        {
+            SchemaVersion = ArchiveExtractionSchemaVersion,
+            EvidenceItemId = item.EvidenceItemId,
+            CaseId = caseId,
+            ExtractedAtUtc = _clock.UtcNow.ToUniversalTime().ToString("O"),
+            SourceSha256Hex = item.Sha256Hex,
+            ExtractedRootRelativePath = ToRelativePath(
+                "vault",
+                item.EvidenceItemId.ToString("D"),
+                "derived",
+                "extracted"
+            ),
+            ExtractedRelativePaths = extractedRelativePaths,
+            Warnings = warnings
+        };
+
+        await using (var manifestStream = CreateWriteStream(extractionManifestPath))
+        {
+            await JsonSerializer.SerializeAsync(manifestStream, extractionManifest, SerializerOptions, ct);
+            await manifestStream.FlushAsync(ct);
+        }
+
+        AppFileLogger.LogEvent(
+            eventName: "ArchiveExtractionCompleted",
+            level: "INFO",
+            message: "Archive extraction completed.",
+            fields: new Dictionary<string, object?>
+            {
+                ["caseId"] = caseId.ToString("D"),
+                ["evidenceItemId"] = item.EvidenceItemId.ToString("D"),
+                ["fileName"] = item.OriginalFileName,
+                ["entryCount"] = extractedRelativePaths.Count,
+                ["warningCount"] = warnings.Count
+            }
+        );
+
+        return new ArchiveExtractionResult(
+            derivedRootPath,
+            extractedRelativePaths
+                .OrderBy(path => path, StringComparer.Ordinal)
+                .ToArray(),
+            warnings.ToArray()
+        );
     }
 
     public async Task<(bool ok, string message)> VerifyEvidenceAsync(
@@ -258,6 +491,117 @@ public sealed class EvidenceVaultService : IEvidenceVaultService
             ".plist" => "PLIST",
             _ => "OTHER"
         };
+    }
+
+    private static string? NormalizeArchiveEntryPath(string value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return null;
+        }
+
+        var normalized = value.Replace('\\', '/').Trim();
+        if (normalized.StartsWith("/", StringComparison.Ordinal))
+        {
+            normalized = normalized.TrimStart('/');
+        }
+
+        if (normalized.Length == 0)
+        {
+            return null;
+        }
+
+        var segments = normalized.Split('/', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        if (segments.Length == 0)
+        {
+            return null;
+        }
+
+        foreach (var segment in segments)
+        {
+            if (segment is "." or "..")
+            {
+                return null;
+            }
+
+            if (segment.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0)
+            {
+                return null;
+            }
+        }
+
+        return string.Join("/", segments);
+    }
+
+    private static string? ResolveExtractedDestinationPath(string extractedRootPath, string relativePath)
+    {
+        var fullRoot = Path.GetFullPath(extractedRootPath);
+        var fullPath = Path.GetFullPath(
+            Path.Combine(extractedRootPath, relativePath.Replace('/', Path.DirectorySeparatorChar))
+        );
+        var rootWithSeparator = fullRoot.EndsWith(Path.DirectorySeparatorChar)
+            ? fullRoot
+            : fullRoot + Path.DirectorySeparatorChar;
+
+        return fullPath.StartsWith(rootWithSeparator, StringComparison.OrdinalIgnoreCase)
+            ? fullPath
+            : null;
+    }
+
+    private async Task<ArchiveExtractionResult?> TryReadExtractionManifestAsync(
+        string manifestPath,
+        Guid evidenceItemId,
+        string sourceSha256Hex,
+        string extractedRootPath,
+        CancellationToken ct
+    )
+    {
+        if (!File.Exists(manifestPath) || !Directory.Exists(extractedRootPath))
+        {
+            return null;
+        }
+
+        await using var stream = CreateReadStream(manifestPath);
+        var manifest = await JsonSerializer.DeserializeAsync<ArchiveExtractionManifest>(stream, SerializerOptions, ct);
+        if (manifest is null
+            || manifest.SchemaVersion != ArchiveExtractionSchemaVersion
+            || manifest.EvidenceItemId != evidenceItemId
+            || !string.Equals(manifest.SourceSha256Hex, sourceSha256Hex, StringComparison.OrdinalIgnoreCase))
+        {
+            return null;
+        }
+
+        return new ArchiveExtractionResult(
+            extractedRootPath,
+            manifest.ExtractedRelativePaths
+                .OrderBy(path => path, StringComparer.Ordinal)
+                .ToArray(),
+            manifest.Warnings.ToArray()
+        );
+    }
+
+    private static void LogArchiveEntryIssue(
+        string eventName,
+        Guid caseId,
+        EvidenceItem item,
+        string entryPath,
+        string warning,
+        Exception? ex = null
+    )
+    {
+        AppFileLogger.LogEvent(
+            eventName: eventName,
+            level: "WARN",
+            message: warning,
+            ex: ex,
+            fields: new Dictionary<string, object?>
+            {
+                ["caseId"] = caseId.ToString("D"),
+                ["evidenceItemId"] = item.EvidenceItemId.ToString("D"),
+                ["fileName"] = item.OriginalFileName,
+                ["entryPath"] = entryPath
+            }
+        );
     }
 
     private static string ToRelativePath(params string[] segments)
@@ -394,5 +738,24 @@ public sealed class EvidenceVaultService : IEvidenceVaultService
         public string FileExtension { get; set; } = string.Empty;
 
         public string SourceType { get; set; } = string.Empty;
+    }
+
+    private sealed class ArchiveExtractionManifest
+    {
+        public int SchemaVersion { get; set; }
+
+        public Guid EvidenceItemId { get; set; }
+
+        public Guid CaseId { get; set; }
+
+        public string ExtractedAtUtc { get; set; } = string.Empty;
+
+        public string SourceSha256Hex { get; set; } = string.Empty;
+
+        public string ExtractedRootRelativePath { get; set; } = string.Empty;
+
+        public List<string> ExtractedRelativePaths { get; set; } = new();
+
+        public List<string> Warnings { get; set; } = new();
     }
 }

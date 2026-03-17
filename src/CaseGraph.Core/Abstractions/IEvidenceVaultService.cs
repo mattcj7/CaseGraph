@@ -17,4 +17,10 @@ public interface IEvidenceVaultService
         IProgress<double>? progress,
         CancellationToken ct
     );
+
+    Task<ArchiveExtractionResult?> EnsureArchiveExtractedAsync(
+        Guid caseId,
+        EvidenceItem item,
+        CancellationToken ct
+    );
 }

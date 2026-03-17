@@ -1,5 +1,6 @@
 using CaseGraph.Core.Abstractions;
 using CaseGraph.Core.Diagnostics;
+using CaseGraph.Core.Models;
 using CaseGraph.Infrastructure.Diagnostics;
 using CaseGraph.Infrastructure.Import;
 using CaseGraph.Infrastructure.Persistence;
@@ -58,6 +59,7 @@ public sealed class MessageIngestService : IMessageIngestService
     private readonly IWorkspaceDatabaseInitializer _databaseInitializer;
     private readonly IWorkspacePathProvider _workspacePathProvider;
     private readonly IWorkspaceWriteGate _workspaceWriteGate;
+    private readonly IEvidenceVaultService _evidenceVaultService;
     private readonly IClock _clock;
     private readonly IPerformanceInstrumentation _performanceInstrumentation;
 
@@ -66,6 +68,7 @@ public sealed class MessageIngestService : IMessageIngestService
         IWorkspaceDatabaseInitializer databaseInitializer,
         IWorkspacePathProvider workspacePathProvider,
         IWorkspaceWriteGate workspaceWriteGate,
+        IEvidenceVaultService evidenceVaultService,
         IClock clock,
         IPerformanceInstrumentation? performanceInstrumentation = null
     )
@@ -74,6 +77,7 @@ public sealed class MessageIngestService : IMessageIngestService
         _databaseInitializer = databaseInitializer;
         _workspacePathProvider = workspacePathProvider;
         _workspaceWriteGate = workspaceWriteGate;
+        _evidenceVaultService = evidenceVaultService;
         _clock = clock;
         _performanceInstrumentation = performanceInstrumentation
             ?? new PerformanceInstrumentation(new PerformanceBudgetOptions(), TimeProvider.System);
@@ -171,6 +175,13 @@ public sealed class MessageIngestService : IMessageIngestService
                         logContext,
                         innerCt
                     ),
+                    ".zip" => await ParseArchiveAsync(
+                        caseId,
+                        evidence,
+                        progress,
+                        logContext,
+                        innerCt
+                    ),
                     _ => ParseBatch.Empty("No message parser is available for this evidence type.")
                 };
 
@@ -205,7 +216,7 @@ public sealed class MessageIngestService : IMessageIngestService
                     parseBatch.Messages,
                     innerCt
                 );
-                var summaryOverride = (string?)null;
+                var summaryOverride = parseBatch.SummaryOverride;
                 AppFileLogger.Log(
                     BuildLogMessage(
                         logContext,
@@ -220,6 +231,179 @@ public sealed class MessageIngestService : IMessageIngestService
             },
             ct
         );
+    }
+
+    private async Task<ParseBatch> ParseArchiveAsync(
+        Guid caseId,
+        EvidenceItemRecord evidence,
+        IProgress<MessageIngestProgress>? progress,
+        string? logContext,
+        CancellationToken ct
+    )
+    {
+        var extraction = await _evidenceVaultService.EnsureArchiveExtractedAsync(
+            caseId,
+            ToEvidenceItem(evidence),
+            ct
+        );
+        if (extraction is null || extraction.ExtractedRelativePaths.Count == 0)
+        {
+            return ParseBatch.Empty("Archive extraction completed, but no extracted files were available for message routing.");
+        }
+
+        var supportedEntries = extraction.ExtractedRelativePaths
+            .Where(path => ResolveArchiveMessageParser(path) is not null)
+            .OrderBy(path => path, StringComparer.Ordinal)
+            .ToArray();
+        var unsupportedEntryCount = extraction.ExtractedRelativePaths.Count - supportedEntries.Length;
+        if (supportedEntries.Length == 0)
+        {
+            return ParseBatch.Empty("No supported message artifacts were found in the archive.");
+        }
+
+        AppFileLogger.LogEvent(
+            eventName: "MessagesIngestArchiveRoutingStarted",
+            level: "INFO",
+            message: BuildLogMessage(logContext, "Message ingest archive routing started."),
+            fields: new Dictionary<string, object?>
+            {
+                ["sourceLabel"] = evidence.OriginalFileName,
+                ["supportedEntryCount"] = supportedEntries.Length,
+                ["unsupportedEntryCount"] = unsupportedEntryCount
+            }
+        );
+
+        var messages = new List<CanonicalMessageRecord>();
+        var filesWithMessages = 0;
+        var failedEntries = 0;
+
+        for (var index = 0; index < supportedEntries.Length; index++)
+        {
+            ct.ThrowIfCancellationRequested();
+
+            var relativePath = supportedEntries[index];
+            var parserFamily = ResolveArchiveMessageParser(relativePath)!;
+            var absolutePath = Path.Combine(
+                extraction.ExtractedRootPath,
+                relativePath.Replace('/', Path.DirectorySeparatorChar)
+            );
+
+            LogArchiveRouteSelected(logContext, evidence.OriginalFileName, relativePath, parserFamily);
+
+            ParseBatch innerBatch;
+            try
+            {
+                var baseFraction = 0.03 + (index / (double)supportedEntries.Length) * 0.67;
+                var fractionWidth = 0.67 / supportedEntries.Length;
+                var routedProgress = new Progress<MessageIngestProgress>(update =>
+                {
+                    progress?.Report(update with
+                    {
+                        FractionComplete = baseFraction + (Math.Clamp(update.FractionComplete, 0, 1) * fractionWidth),
+                        Phase = $"Routing archive entry {index + 1}/{supportedEntries.Length}: {relativePath}",
+                        Processed = index + 1,
+                        Total = supportedEntries.Length
+                    });
+                });
+
+                innerBatch = parserFamily switch
+                {
+                    "CSV" => await ParseCsvAsync(
+                        absolutePath,
+                        evidence.EvidenceItemId,
+                        relativePath,
+                        routedProgress,
+                        logContext,
+                        ct
+                    ),
+                    "XLSX" => await ParseXlsxAsync(
+                        absolutePath,
+                        evidence.EvidenceItemId,
+                        relativePath,
+                        routedProgress,
+                        logContext,
+                        ct
+                    ),
+                    "UFDR" => await ParseUfdrAsync(
+                        absolutePath,
+                        evidence.EvidenceItemId,
+                        relativePath,
+                        routedProgress,
+                        logContext,
+                        ct
+                    ),
+                    "HTML" => await ParseHtmlAsync(
+                        absolutePath,
+                        evidence.EvidenceItemId,
+                        relativePath,
+                        routedProgress,
+                        logContext,
+                        ct
+                    ),
+                    _ => ParseBatch.Empty($"No message parser is available for archive entry \"{relativePath}\".")
+                };
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                failedEntries++;
+                AppFileLogger.LogEvent(
+                    eventName: "MessagesIngestArchiveEntryFailed",
+                    level: "WARN",
+                    message: BuildLogMessage(logContext, "Archive entry failed during message parsing and was skipped."),
+                    ex: ex,
+                    fields: new Dictionary<string, object?>
+                    {
+                        ["sourceLabel"] = evidence.OriginalFileName,
+                        ["entryPath"] = relativePath,
+                        ["parserFamily"] = parserFamily
+                    }
+                );
+                continue;
+            }
+
+            if (innerBatch.Messages.Count > 0)
+            {
+                filesWithMessages++;
+                messages.AddRange(innerBatch.Messages.Select(record =>
+                    record with
+                    {
+                        SourceLocator = CanonicalizeArchiveMessageLocator(relativePath, record.SourceLocator)
+                    }));
+            }
+        }
+
+        var summary = BuildArchiveMessageSummary(
+            messages.Count,
+            filesWithMessages,
+            supportedEntries.Length,
+            unsupportedEntryCount,
+            failedEntries,
+            extraction.Warnings.Count
+        );
+
+        AppFileLogger.LogEvent(
+            eventName: "MessagesIngestArchiveRoutingCompleted",
+            level: "INFO",
+            message: BuildLogMessage(logContext, "Message ingest archive routing completed."),
+            fields: new Dictionary<string, object?>
+            {
+                ["sourceLabel"] = evidence.OriginalFileName,
+                ["messagesExtracted"] = messages.Count,
+                ["filesWithMessages"] = filesWithMessages,
+                ["supportedEntryCount"] = supportedEntries.Length,
+                ["unsupportedEntryCount"] = unsupportedEntryCount,
+                ["failedEntryCount"] = failedEntries,
+                ["archiveWarningCount"] = extraction.Warnings.Count
+            }
+        );
+
+        return messages.Count == 0
+            ? ParseBatch.Empty(summary)
+            : new ParseBatch(messages, EmptyStatusMessage: null, SummaryOverride: summary);
     }
 
     private async Task<ParseBatch> ParseCsvAsync(
@@ -631,6 +815,145 @@ public sealed class MessageIngestService : IMessageIngestService
         }
 
         return new ParseBatch(result, EmptyStatusMessage: null);
+    }
+
+    private async Task<ParseBatch> ParseHtmlAsync(
+        string filePath,
+        Guid evidenceItemId,
+        string originalFileName,
+        IProgress<MessageIngestProgress>? progress,
+        string? logContext,
+        CancellationToken ct
+    )
+    {
+        await using var stream = new FileStream(
+            filePath,
+            FileMode.Open,
+            FileAccess.Read,
+            FileShare.Read,
+            bufferSize: 1024 * 64,
+            FileOptions.Asynchronous | FileOptions.SequentialScan
+        );
+        using var reader = XmlReader.Create(
+            stream,
+            new XmlReaderSettings
+            {
+                Async = true,
+                IgnoreComments = true,
+                IgnoreWhitespace = true,
+                DtdProcessing = DtdProcessing.Ignore
+            }
+        );
+        var document = await XDocument.LoadAsync(reader, LoadOptions.None, ct);
+        var messageNodes = document
+            .Descendants()
+            .Where(node => LooksLikeHtmlMessageNode(node))
+            .ToList();
+
+        if (messageNodes.Count == 0)
+        {
+            LogParserSelected(logContext, "HTML", originalFileName, null, "dom-no-message-nodes");
+            LogParserResult(logContext, "HTML", originalFileName, null, fieldMap: null, 0, 0, 0, 0);
+            return ParseBatch.Empty("No supported HTML message nodes were found.");
+        }
+
+        LogParserSelected(logContext, "HTML", originalFileName, null, $"dom-message-nodes={messageNodes.Count}");
+
+        var result = new List<CanonicalMessageRecord>();
+        var warningsCount = 0;
+
+        for (var index = 0; index < messageNodes.Count; index++)
+        {
+            ct.ThrowIfCancellationRequested();
+            var node = messageNodes[index];
+            var stableId = ResolveHtmlStableId(node, index + 1);
+            var parseResult = CanonicalMessageRecord.TryCreate(
+                new Dictionary<CanonicalMessageField, string?>
+                {
+                    [CanonicalMessageField.MessageExternalId] = PickFirstNonEmpty(
+                        ReadAttribute(node, "data-message-id"),
+                        ReadAttribute(node, "id")
+                    ),
+                    [CanonicalMessageField.ThreadExternalId] = PickFirstNonEmpty(
+                        ReadAttribute(node, "data-thread-id"),
+                        ReadDescendantValue(node, "thread-id"),
+                        ReadDescendantValue(node, "conversation-id")
+                    ),
+                    [CanonicalMessageField.ThreadTitle] = PickFirstNonEmpty(
+                        ReadAttribute(node, "data-thread-title"),
+                        ReadDescendantValue(node, "thread-title"),
+                        ReadDescendantValue(node, "conversation-title")
+                    ),
+                    [CanonicalMessageField.Platform] = PickFirstNonEmpty(
+                        ReadAttribute(node, "data-platform"),
+                        ReadDescendantValue(node, "platform")
+                    ),
+                    [CanonicalMessageField.SentUtc] = PickFirstNonEmpty(
+                        ReadAttribute(node, "data-sent-utc"),
+                        ReadAttribute(node, "datetime"),
+                        ReadDescendantTimeValue(node),
+                        ReadDescendantValue(node, "timestamp")
+                    ),
+                    [CanonicalMessageField.Direction] = PickFirstNonEmpty(
+                        ReadAttribute(node, "data-direction"),
+                        ReadDescendantValue(node, "direction")
+                    ),
+                    [CanonicalMessageField.SenderDisplay] = PickFirstNonEmpty(
+                        ReadAttribute(node, "data-sender"),
+                        ReadDescendantValue(node, "sender"),
+                        ReadDescendantValue(node, "author")
+                    ),
+                    [CanonicalMessageField.RecipientDisplays] = PickFirstNonEmpty(
+                        ReadAttribute(node, "data-recipients"),
+                        ReadDescendantValue(node, "recipients"),
+                        ReadDescendantValue(node, "to")
+                    ),
+                    [CanonicalMessageField.Body] = PickFirstNonEmpty(
+                        ReadDescendantValue(node, "body"),
+                        ReadDescendantValue(node, "text"),
+                        NormalizeElementText(node)
+                    )
+                },
+                new CanonicalMessageContext(
+                    evidenceItemId,
+                    $"html:{originalFileName}#{stableId}",
+                    "HTML",
+                    IngestModuleVersion,
+                    PlatformHint: null
+                )
+            );
+            if (!parseResult.Success)
+            {
+                continue;
+            }
+
+            var record = parseResult.Record!;
+            warningsCount += record.ParseWarnings.Count;
+            result.Add(record);
+
+            progress?.Report(new MessageIngestProgress(
+                FractionComplete: 0.03 + ((index + 1) / (double)messageNodes.Count) * 0.67,
+                Phase: "Parsing HTML message export...",
+                Processed: index + 1,
+                Total: messageNodes.Count
+            ));
+        }
+
+        LogParserResult(
+            logContext,
+            "HTML",
+            originalFileName,
+            containerLabel: null,
+            fieldMap: null,
+            processedRows: messageNodes.Count,
+            parsedRows: result.Count,
+            skippedRows: Math.Max(messageNodes.Count - result.Count, 0),
+            warningsCount: warningsCount
+        );
+
+        return result.Count == 0
+            ? ParseBatch.Empty("HTML content did not yield any canonical messages.")
+            : new ParseBatch(result, EmptyStatusMessage: null);
     }
 
     private async Task<int> PersistAsync(
@@ -1091,6 +1414,188 @@ public sealed class MessageIngestService : IMessageIngestService
         );
     }
 
+    private static string? ResolveArchiveMessageParser(string relativePath)
+    {
+        return Path.GetExtension(relativePath).ToLowerInvariant() switch
+        {
+            ".csv" => "CSV",
+            ".xlsx" or ".xls" => "XLSX",
+            ".ufdr" => "UFDR",
+            ".html" or ".htm" or ".xhtml" => "HTML",
+            _ => null
+        };
+    }
+
+    private static EvidenceItem ToEvidenceItem(EvidenceItemRecord evidence)
+    {
+        return new EvidenceItem
+        {
+            EvidenceItemId = evidence.EvidenceItemId,
+            CaseId = evidence.CaseId,
+            DisplayName = evidence.DisplayName,
+            OriginalPath = evidence.OriginalPath,
+            OriginalFileName = evidence.OriginalFileName,
+            AddedAtUtc = evidence.AddedAtUtc,
+            SizeBytes = evidence.SizeBytes,
+            Sha256Hex = evidence.Sha256Hex,
+            FileExtension = evidence.FileExtension,
+            SourceType = evidence.SourceType,
+            ManifestRelativePath = evidence.ManifestRelativePath,
+            StoredRelativePath = evidence.StoredRelativePath
+        };
+    }
+
+    private static string CanonicalizeArchiveMessageLocator(string relativePath, string rawLocator)
+    {
+        var extension = Path.GetExtension(relativePath).ToLowerInvariant();
+        if (extension == ".csv")
+        {
+            var rowToken = rawLocator.Split("#row=", StringSplitOptions.None).LastOrDefault();
+            return int.TryParse(rowToken, out var rowNumber)
+                ? $"csv:{relativePath}#row:{rowNumber}"
+                : $"csv:{relativePath}";
+        }
+
+        return rawLocator;
+    }
+
+    private static string BuildArchiveMessageSummary(
+        int messagesExtracted,
+        int filesWithMessages,
+        int supportedEntryCount,
+        int unsupportedEntryCount,
+        int failedEntryCount,
+        int archiveWarningCount
+    )
+    {
+        var parts = new List<string>
+        {
+            $"Extracted {messagesExtracted} message(s) from {filesWithMessages} archive file(s)."
+        };
+
+        if (supportedEntryCount > filesWithMessages)
+        {
+            parts.Add($"Inspected {supportedEntryCount} supported archive file(s).");
+        }
+
+        if (unsupportedEntryCount > 0)
+        {
+            parts.Add($"Skipped {unsupportedEntryCount} unsupported archive file(s).");
+        }
+
+        if (failedEntryCount > 0)
+        {
+            parts.Add($"Failed {failedEntryCount} archive file(s) without aborting the ingest.");
+        }
+
+        if (archiveWarningCount > 0)
+        {
+            parts.Add($"Archive extraction reported {archiveWarningCount} warning(s).");
+        }
+
+        return string.Join(" ", parts);
+    }
+
+    private static void LogArchiveRouteSelected(
+        string? logContext,
+        string sourceLabel,
+        string entryPath,
+        string parserFamily
+    )
+    {
+        AppFileLogger.LogEvent(
+            eventName: "MessagesIngestArchiveEntryDetected",
+            level: "INFO",
+            message: BuildLogMessage(logContext, "Message ingest archive entry matched a parser."),
+            fields: new Dictionary<string, object?>
+            {
+                ["sourceLabel"] = sourceLabel,
+                ["entryPath"] = entryPath,
+                ["parserFamily"] = parserFamily
+            }
+        );
+    }
+
+    private static bool LooksLikeHtmlMessageNode(XElement node)
+    {
+        var localName = node.Name.LocalName;
+        if (string.Equals(localName, "message", StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        if (!string.IsNullOrWhiteSpace(ReadAttribute(node, "data-message-id")))
+        {
+            return true;
+        }
+
+        var className = ReadAttribute(node, "class");
+        return !string.IsNullOrWhiteSpace(className)
+            && className.Contains("message", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string ResolveHtmlStableId(XElement node, int index)
+    {
+        return PickFirstNonEmpty(
+                ReadAttribute(node, "data-message-id"),
+                ReadAttribute(node, "id"))
+            ?? $"element:{index}";
+    }
+
+    private static string? ReadAttribute(XElement node, string name)
+    {
+        return node.Attributes()
+            .FirstOrDefault(item => string.Equals(item.Name.LocalName, name, StringComparison.OrdinalIgnoreCase))
+            ?.Value
+            ?.Trim();
+    }
+
+    private static string? ReadDescendantValue(XElement node, string token)
+    {
+        return node
+            .Descendants()
+            .FirstOrDefault(item =>
+                string.Equals(item.Name.LocalName, token, StringComparison.OrdinalIgnoreCase)
+                || AttributeContainsToken(item, "class", token)
+                || AttributeContainsToken(item, "data-role", token))
+            ?.Value
+            ?.Trim();
+    }
+
+    private static string? ReadDescendantTimeValue(XElement node)
+    {
+        var timeNode = node.Descendants()
+            .FirstOrDefault(item => string.Equals(item.Name.LocalName, "time", StringComparison.OrdinalIgnoreCase));
+        return PickFirstNonEmpty(ReadAttribute(timeNode ?? node, "datetime"), timeNode?.Value?.Trim());
+    }
+
+    private static string? NormalizeElementText(XElement node)
+    {
+        var value = string.Join(" ", node
+            .DescendantNodesAndSelf()
+            .OfType<XText>()
+            .Select(text => text.Value.Trim())
+            .Where(text => !string.IsNullOrWhiteSpace(text)));
+        return string.IsNullOrWhiteSpace(value) ? null : value;
+    }
+
+    private static string? PickFirstNonEmpty(params string?[] values)
+    {
+        return values.FirstOrDefault(value => !string.IsNullOrWhiteSpace(value));
+    }
+
+    private static bool AttributeContainsToken(XElement node, string attributeName, string token)
+    {
+        var value = ReadAttribute(node, attributeName);
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return false;
+        }
+
+        return value.Split([' ', ';', ','], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Any(part => string.Equals(part, token, StringComparison.OrdinalIgnoreCase));
+    }
+
     private static string ResolveThreadKey(CanonicalMessageRecord item)
     {
         if (!string.IsNullOrWhiteSpace(item.ThreadExternalId))
@@ -1304,9 +1809,17 @@ public sealed class MessageIngestService : IMessageIngestService
             : $"{context} {message}";
     }
 
-    private sealed record ParseBatch(IReadOnlyList<CanonicalMessageRecord> Messages, string? EmptyStatusMessage)
+    private sealed record ParseBatch(
+        IReadOnlyList<CanonicalMessageRecord> Messages,
+        string? EmptyStatusMessage,
+        string? SummaryOverride = null
+    )
     {
-        public static ParseBatch Empty(string statusMessage) => new(Array.Empty<CanonicalMessageRecord>(), statusMessage);
+        public static ParseBatch Empty(string statusMessage) => new(
+            Array.Empty<CanonicalMessageRecord>(),
+            statusMessage,
+            SummaryOverride: statusMessage
+        );
     }
 
     private sealed record WorksheetCandidate(

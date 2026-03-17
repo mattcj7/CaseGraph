@@ -26,3 +26,9 @@ public sealed class EvidenceItem
 
     public string StoredRelativePath { get; set; } = string.Empty;
 }
+
+public sealed record ArchiveExtractionResult(
+    string ExtractedRootPath,
+    IReadOnlyList<string> ExtractedRelativePaths,
+    IReadOnlyList<string> Warnings
+);

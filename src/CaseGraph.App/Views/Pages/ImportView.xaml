@@ -66,9 +66,12 @@
         <StackPanel Grid.Row="2"
                     Margin="{StaticResource SpaceTop12}"
                     Orientation="Horizontal">
-            <Button Content="Import Files..."
+            <Button Content="Import Evidence or ZIP..."
                     Command="{Binding ImportFilesCommand}"
                     Style="{StaticResource TopBarButtonStyle}" />
+            <TextBlock Margin="16,8,0,0"
+                       Style="{StaticResource SecondaryBodyTextStyle}"
+                       Text="ZIP archives are preserved in the vault and extracted to a controlled derived folder automatically." />
         </StackPanel>
 
         <DataGrid Grid.Row="3"

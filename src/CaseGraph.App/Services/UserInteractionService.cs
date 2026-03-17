@@ -23,7 +23,7 @@ public sealed class UserInteractionService : IUserInteractionService
         {
             Multiselect = true,
             CheckFileExists = true,
-            Filter = "All files (*.*)|*.*"
+            Filter = "Evidence archives and files (*.zip;*.xlsx;*.xls;*.csv;*.json;*.plist;*.ufdr;*.html;*.htm)|*.zip;*.xlsx;*.xls;*.csv;*.json;*.plist;*.ufdr;*.html;*.htm|ZIP archive (*.zip)|*.zip|All files (*.*)|*.*"
         };
 
         var result = fileDialog.ShowDialog(Application.Current.MainWindow);
