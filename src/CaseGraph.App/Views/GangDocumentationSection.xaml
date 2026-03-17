@@ -124,6 +124,18 @@
                     </TextBlock>
 
                     <TextBlock Margin="{StaticResource SpaceTop8}"
+                               Text="{Binding CurrentWorkflowStatusDisplay}"
+                               Style="{StaticResource BodyTextStyle}" />
+                    <TextBlock Margin="{StaticResource SpaceTop4}"
+                               Text="{Binding CurrentReviewSummary}"
+                               TextWrapping="Wrap"
+                               Style="{StaticResource SecondaryBodyTextStyle}" />
+                    <TextBlock Margin="{StaticResource SpaceTop4}"
+                               Text="{Binding CurrentDecisionNoteDisplay}"
+                               TextWrapping="Wrap"
+                               Style="{StaticResource SecondaryBodyTextStyle}" />
+
+                    <TextBlock Margin="{StaticResource SpaceTop8}"
                                Text="{Binding CurrentOrganizationDisplay}"
                                TextWrapping="Wrap"
                                Style="{StaticResource BodyTextStyle}" />
@@ -187,58 +199,6 @@
                               IsEnabled="{Binding CanEditDocumentation}" />
 
                     <StackPanel Margin="{StaticResource SpaceTop8}" Orientation="Horizontal">
-                        <TextBlock Text="Documentation Status" Style="{StaticResource SecondaryBodyTextStyle}" />
-                        <TextBlock Margin="4,0,0,0"
-                                   Text="*"
-                                   Foreground="IndianRed">
-                            <TextBlock.Style>
-                                <Style TargetType="TextBlock">
-                                    <Setter Property="Visibility" Value="Collapsed" />
-                                    <Style.Triggers>
-                                        <DataTrigger Binding="{Binding ShowDocumentationStatusRequiredIndicator}" Value="True">
-                                            <Setter Property="Visibility" Value="Visible" />
-                                        </DataTrigger>
-                                    </Style.Triggers>
-                                </Style>
-                            </TextBlock.Style>
-                        </TextBlock>
-                    </StackPanel>
-                    <ComboBox x:Name="DocumentationStatusComboBox"
-                              ItemsSource="{Binding DocumentationStatuses}"
-                              SelectedItem="{Binding DocumentationStatus, Mode=TwoWay}"
-                              IsEnabled="{Binding CanEditDocumentation}" />
-
-                    <StackPanel Margin="{StaticResource SpaceTop8}" Orientation="Horizontal">
-                        <TextBlock Text="Approval Status" Style="{StaticResource SecondaryBodyTextStyle}" />
-                        <TextBlock Margin="4,0,0,0"
-                                   Text="*"
-                                   Foreground="IndianRed">
-                            <TextBlock.Style>
-                                <Style TargetType="TextBlock">
-                                    <Setter Property="Visibility" Value="Collapsed" />
-                                    <Style.Triggers>
-                                        <DataTrigger Binding="{Binding ShowApprovalStatusRequiredIndicator}" Value="True">
-                                            <Setter Property="Visibility" Value="Visible" />
-                                        </DataTrigger>
-                                    </Style.Triggers>
-                                </Style>
-                            </TextBlock.Style>
-                        </TextBlock>
-                    </StackPanel>
-                    <ComboBox x:Name="ApprovalStatusComboBox"
-                              ItemsSource="{Binding ApprovalStatuses}"
-                              SelectedItem="{Binding ApprovalStatus, Mode=TwoWay}"
-                              IsEnabled="{Binding CanEditDocumentation}" />
-
-                    <TextBlock Margin="{StaticResource SpaceTop8}" Text="Reviewer" Style="{StaticResource SecondaryBodyTextStyle}" />
-                    <TextBox Text="{Binding Reviewer, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
-                             IsEnabled="{Binding CanEditDocumentation}" />
-
-                    <TextBlock Margin="{StaticResource SpaceTop8}" Text="Review Due" Style="{StaticResource SecondaryBodyTextStyle}" />
-                    <DatePicker SelectedDate="{Binding ReviewDueDate, Mode=TwoWay}"
-                                IsEnabled="{Binding CanEditDocumentation}" />
-
-                    <StackPanel Margin="{StaticResource SpaceTop8}" Orientation="Horizontal">
                         <TextBlock Text="Summary" Style="{StaticResource SecondaryBodyTextStyle}" />
                         <TextBlock Margin="4,0,0,0"
                                    Text="*"
@@ -262,7 +222,7 @@
                              MinHeight="72"
                              IsEnabled="{Binding CanEditDocumentation}" />
 
-                    <TextBlock Margin="{StaticResource SpaceTop8}" Text="Notes" Style="{StaticResource SecondaryBodyTextStyle}" />
+                    <TextBlock Margin="{StaticResource SpaceTop8}" Text="Analyst Notes" Style="{StaticResource SecondaryBodyTextStyle}" />
                     <TextBox Text="{Binding Notes, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
                              TextWrapping="Wrap"
                              AcceptsReturn="True"
@@ -277,7 +237,63 @@
                 </StackPanel>
 
                 <StackPanel Grid.Column="1">
-                    <DockPanel>
+                    <TextBlock Text="Supervisor Workflow" Style="{StaticResource SectionTitleTextStyle}" />
+                    <TextBlock Margin="{StaticResource SpaceTop8}"
+                               Text="{Binding WorkflowHint}"
+                               TextWrapping="Wrap"
+                               Style="{StaticResource SecondaryBodyTextStyle}" />
+
+                    <TextBlock Margin="{StaticResource SpaceTop8}"
+                               Text="Reviewer / Supervisor Name"
+                               Style="{StaticResource SecondaryBodyTextStyle}" />
+                    <TextBox x:Name="WorkflowReviewerTextBox"
+                             Text="{Binding WorkflowReviewerName, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                             IsEnabled="{Binding CanManageWorkflow}" />
+
+                    <TextBlock Margin="{StaticResource SpaceTop8}"
+                               Text="Decision Note"
+                               Style="{StaticResource SecondaryBodyTextStyle}" />
+                    <TextBox x:Name="WorkflowDecisionNoteTextBox"
+                             Text="{Binding WorkflowDecisionNote, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                             TextWrapping="Wrap"
+                             AcceptsReturn="True"
+                             MinHeight="72"
+                             IsEnabled="{Binding CanManageWorkflow}" />
+
+                    <WrapPanel Margin="{StaticResource SpaceTop12}">
+                        <Button Margin="0,0,8,8"
+                                Content="Submit for Review"
+                                Command="{Binding SubmitForReviewCommand}"
+                                Style="{StaticResource TopBarButtonStyle}"
+                                IsEnabled="{Binding CanSubmitForReview}" />
+                        <Button Margin="0,0,8,8"
+                                Content="Approve"
+                                Command="{Binding ApproveCommand}"
+                                Style="{StaticResource TopBarButtonStyle}"
+                                IsEnabled="{Binding CanApprove}" />
+                        <Button Margin="0,0,8,8"
+                                Content="Return for Changes"
+                                Command="{Binding ReturnForChangesCommand}"
+                                Style="{StaticResource TopBarButtonStyle}"
+                                IsEnabled="{Binding CanReturnForChanges}" />
+                        <Button Margin="0,0,8,8"
+                                Content="Mark Inactive"
+                                Command="{Binding MarkInactiveCommand}"
+                                Style="{StaticResource TopBarButtonStyle}"
+                                IsEnabled="{Binding CanMarkInactive}" />
+                        <Button Margin="0,0,8,8"
+                                Content="Mark Purge Review"
+                                Command="{Binding MarkPurgeReviewCommand}"
+                                Style="{StaticResource TopBarButtonStyle}"
+                                IsEnabled="{Binding CanMarkPurgeReview}" />
+                        <Button Margin="0,0,8,8"
+                                Content="Purge"
+                                Command="{Binding PurgeCommand}"
+                                Style="{StaticResource TopBarButtonStyle}"
+                                IsEnabled="{Binding CanPurge}" />
+                    </WrapPanel>
+
+                    <DockPanel Margin="{StaticResource SpaceTop12}">
                         <TextBlock Text="Criteria Checklist" Style="{StaticResource SectionTitleTextStyle}" />
                         <Button DockPanel.Dock="Right"
                                 Content="New Criterion"
@@ -461,6 +477,10 @@
                                         <TextBlock Text="{Binding Summary}" TextWrapping="Wrap" Style="{StaticResource BodyTextStyle}" />
                                         <TextBlock Margin="{StaticResource SpaceTop4}"
                                                    Text="{Binding DetailText}"
+                                                   TextWrapping="Wrap"
+                                                   Style="{StaticResource SecondaryBodyTextStyle}" />
+                                        <TextBlock Margin="{StaticResource SpaceTop4}"
+                                                   Text="{Binding NoteDisplay}"
                                                    TextWrapping="Wrap"
                                                    Style="{StaticResource SecondaryBodyTextStyle}" />
                                     </StackPanel>

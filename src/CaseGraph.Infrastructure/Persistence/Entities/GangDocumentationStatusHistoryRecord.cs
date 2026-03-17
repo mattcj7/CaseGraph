@@ -10,7 +10,15 @@ public sealed class GangDocumentationStatusHistoryRecord
 
     public string Summary { get; set; } = string.Empty;
 
+    public string? PreviousWorkflowStatus { get; set; }
+
+    public string? NewWorkflowStatus { get; set; }
+
+    public string? DecisionNote { get; set; }
+
     public string? ChangedBy { get; set; }
+
+    public string? ChangedByIdentity { get; set; }
 
     public DateTimeOffset ChangedAtUtc { get; set; }
 

@@ -10,11 +10,11 @@ public sealed partial class GangDocumentationViewModel : ObservableObject
 {
     private const string FocusOrganizationField = "Organization";
     private const string FocusAffiliationRoleField = "AffiliationRole";
-    private const string FocusDocumentationStatusField = "DocumentationStatus";
-    private const string FocusApprovalStatusField = "ApprovalStatus";
     private const string FocusSummaryField = "Summary";
     private const string FocusCriterionTypeField = "CriterionType";
     private const string FocusCriterionBasisSummaryField = "CriterionBasisSummary";
+    private const string FocusWorkflowReviewerField = "WorkflowReviewer";
+    private const string FocusWorkflowDecisionNoteField = "WorkflowDecisionNote";
 
     private readonly IGangDocumentationService _gangDocumentationService;
     private readonly IOrganizationService _organizationService;
@@ -29,16 +29,6 @@ public sealed partial class GangDocumentationViewModel : ObservableObject
         _gangDocumentationService = gangDocumentationService;
         _organizationService = organizationService;
 
-        foreach (var status in GangDocumentationCatalog.DocumentationStatuses)
-        {
-            DocumentationStatuses.Add(status);
-        }
-
-        foreach (var status in GangDocumentationCatalog.ApprovalStatuses)
-        {
-            ApprovalStatuses.Add(status);
-        }
-
         foreach (var role in GangDocumentationCatalog.AffiliationRoles)
         {
             AffiliationRoles.Add(role);
@@ -49,13 +39,17 @@ public sealed partial class GangDocumentationViewModel : ObservableObject
             CriterionTypes.Add(criterionType);
         }
 
-        documentationStatus = DocumentationStatuses.FirstOrDefault() ?? "draft";
-        approvalStatus = ApprovalStatuses.FirstOrDefault() ?? "not submitted";
         affiliationRole = AffiliationRoles.FirstOrDefault() ?? "member";
         criterionType = CriterionTypes.FirstOrDefault() ?? "self-admission";
 
         NewRecordCommand = new RelayCommand(BeginNewRecord);
         SaveRecordCommand = new AsyncRelayCommand(SaveRecordAsync);
+        SubmitForReviewCommand = new AsyncRelayCommand(SubmitForReviewAsync);
+        ApproveCommand = new AsyncRelayCommand(ApproveAsync);
+        ReturnForChangesCommand = new AsyncRelayCommand(ReturnForChangesAsync);
+        MarkInactiveCommand = new AsyncRelayCommand(MarkInactiveAsync);
+        MarkPurgeReviewCommand = new AsyncRelayCommand(MarkPurgeReviewAsync);
+        PurgeCommand = new AsyncRelayCommand(PurgeAsync);
         EditCriterionCommand = new RelayCommand<GangDocumentationCriterionItem?>(BeginCriterionEdit);
         NewCriterionCommand = new RelayCommand(BeginNewCriterion);
         SaveCriterionCommand = new AsyncRelayCommand(SaveCriterionAsync);
@@ -74,10 +68,6 @@ public sealed partial class GangDocumentationViewModel : ObservableObject
 
     public ObservableCollection<OrganizationOptionItem> SubgroupOptions { get; } = new();
 
-    public ObservableCollection<string> DocumentationStatuses { get; } = new();
-
-    public ObservableCollection<string> ApprovalStatuses { get; } = new();
-
     public ObservableCollection<string> AffiliationRoles { get; } = new();
 
     public ObservableCollection<string> CriterionTypes { get; } = new();
@@ -85,6 +75,18 @@ public sealed partial class GangDocumentationViewModel : ObservableObject
     public IRelayCommand NewRecordCommand { get; }
 
     public IAsyncRelayCommand SaveRecordCommand { get; }
+
+    public IAsyncRelayCommand SubmitForReviewCommand { get; }
+
+    public IAsyncRelayCommand ApproveCommand { get; }
+
+    public IAsyncRelayCommand ReturnForChangesCommand { get; }
+
+    public IAsyncRelayCommand MarkInactiveCommand { get; }
+
+    public IAsyncRelayCommand MarkPurgeReviewCommand { get; }
+
+    public IAsyncRelayCommand PurgeCommand { get; }
 
     public IRelayCommand<GangDocumentationCriterionItem?> EditCriterionCommand { get; }
 
@@ -95,7 +97,7 @@ public sealed partial class GangDocumentationViewModel : ObservableObject
     public IAsyncRelayCommand<GangDocumentationCriterionItem?> RemoveCriterionCommand { get; }
 
     public string SectionIntro =>
-        "Formal gang documentation is separate from general profile notes and affiliation summaries.";
+        "Formal gang documentation preserves evidence basis and analyst judgment separately from supervisor review metadata.";
 
     public string RecordsEmptyState => "No formal gang documentation records recorded for this profile.";
 
@@ -121,17 +123,42 @@ public sealed partial class GangDocumentationViewModel : ObservableObject
 
     public bool HasSelectedDocumentation => CurrentDocumentationId.HasValue;
 
-    public bool CanEditDocumentation => HasOrganizationOptions && !IsBusy;
+    public bool IsCurrentWorkflowEditable => !HasSelectedDocumentation
+        || (SelectedRecord is not null && SelectedRecord.IsEditable);
 
-    public bool CanManageCriteria => HasSelectedDocumentation && !IsBusy;
+    public bool CanEditDocumentation => HasOrganizationOptions && !IsBusy && IsCurrentWorkflowEditable;
 
-    public string CreateWorkflowHint => HasOrganizationOptions
-        ? "Select an organization, complete the documentation fields, and save to create a formal record."
-        : "Create or load at least one organization before creating gang documentation.";
+    public bool CanManageCriteria => HasSelectedDocumentation && !IsBusy && IsCurrentWorkflowEditable;
 
-    public string CriteriaWorkflowHint => HasSelectedDocumentation
-        ? "Add criteria to the saved documentation record below."
-        : "Save the documentation record first, then add criteria entries.";
+    public bool CanManageWorkflow => HasSelectedDocumentation && !IsBusy;
+
+    public bool CanSubmitForReview => CanManageWorkflow && SelectedRecord?.CanSubmitForReview == true;
+
+    public bool CanApprove => CanManageWorkflow && SelectedRecord?.CanApprove == true;
+
+    public bool CanReturnForChanges => CanManageWorkflow && SelectedRecord?.CanReturnForChanges == true;
+
+    public bool CanMarkInactive => CanManageWorkflow && SelectedRecord?.CanMarkInactive == true;
+
+    public bool CanMarkPurgeReview => CanManageWorkflow && SelectedRecord?.CanMarkPurgeReview == true;
+
+    public bool CanPurge => CanManageWorkflow && SelectedRecord?.CanPurge == true;
+
+    public string CreateWorkflowHint => !HasOrganizationOptions
+        ? "Create or load at least one organization before creating gang documentation."
+        : IsCurrentWorkflowEditable
+            ? "Edit documentation content while the record is in Draft or Returned for Changes, then submit it for supervisor review."
+            : "Content is read-only in the current workflow state. Use supervisor actions below to move the record.";
+
+    public string CriteriaWorkflowHint => !HasSelectedDocumentation
+        ? "Save the documentation record first, then add criteria entries."
+        : IsCurrentWorkflowEditable
+            ? "Criteria remain editable while the record is in Draft or Returned for Changes."
+            : "Criteria are read-only until the record returns to an editable workflow state.";
+
+    public string WorkflowHint => SelectedRecord is null
+        ? "Select or create a documentation record to manage its workflow."
+        : SelectedRecord.WorkflowHint;
 
     public string CurrentOrganizationDisplay =>
         ResolveOrganizationName(SelectedOrganizationId) ?? "(none selected)";
@@ -139,17 +166,19 @@ public sealed partial class GangDocumentationViewModel : ObservableObject
     public string CurrentSubgroupDisplay =>
         ResolveOrganizationName(SelectedSubgroupOrganizationId) ?? "(none selected)";
 
+    public string CurrentWorkflowStatusDisplay => SelectedRecord?.WorkflowStatusDisplay ?? "Draft";
+
+    public string CurrentReviewSummary => SelectedRecord?.ReviewSummary ?? "No workflow review metadata recorded yet.";
+
+    public string CurrentDecisionNoteDisplay => string.IsNullOrWhiteSpace(SelectedRecord?.DecisionNote)
+        ? "Decision note: (none)"
+        : $"Decision note: {SelectedRecord!.DecisionNote}";
+
     public bool ShowOrganizationRequiredIndicator =>
         RecordSubmitAttempted && !SelectedOrganizationId.HasValue;
 
     public bool ShowAffiliationRoleRequiredIndicator =>
         RecordSubmitAttempted && string.IsNullOrWhiteSpace(AffiliationRole);
-
-    public bool ShowDocumentationStatusRequiredIndicator =>
-        RecordSubmitAttempted && string.IsNullOrWhiteSpace(DocumentationStatus);
-
-    public bool ShowApprovalStatusRequiredIndicator =>
-        RecordSubmitAttempted && string.IsNullOrWhiteSpace(ApprovalStatus);
 
     public bool ShowSummaryRequiredIndicator =>
         RecordSubmitAttempted && string.IsNullOrWhiteSpace(Summary);
@@ -163,8 +192,6 @@ public sealed partial class GangDocumentationViewModel : ObservableObject
     public bool HasRecordValidationIssues =>
         ShowOrganizationRequiredIndicator
         || ShowAffiliationRoleRequiredIndicator
-        || ShowDocumentationStatusRequiredIndicator
-        || ShowApprovalStatusRequiredIndicator
         || ShowSummaryRequiredIndicator;
 
     public bool HasCriterionValidationIssues =>
@@ -210,22 +237,16 @@ public sealed partial class GangDocumentationViewModel : ObservableObject
     private string notes = string.Empty;
 
     [ObservableProperty]
-    private string reviewer = string.Empty;
-
-    [ObservableProperty]
-    private string documentationStatus;
-
-    [ObservableProperty]
-    private string approvalStatus;
-
-    [ObservableProperty]
     private string affiliationRole;
 
     [ObservableProperty]
-    private DateTime? reviewDueDate;
+    private bool recordSubmitAttempted;
 
     [ObservableProperty]
-    private bool recordSubmitAttempted;
+    private string workflowReviewerName = string.Empty;
+
+    [ObservableProperty]
+    private string workflowDecisionNote = string.Empty;
 
     [ObservableProperty]
     private Guid? currentCriterionId;
@@ -307,16 +328,6 @@ public sealed partial class GangDocumentationViewModel : ObservableObject
     }
 
     partial void OnAffiliationRoleChanged(string value)
-    {
-        RaiseValidationStateChanged();
-    }
-
-    partial void OnDocumentationStatusChanged(string value)
-    {
-        RaiseValidationStateChanged();
-    }
-
-    partial void OnApprovalStatusChanged(string value)
     {
         RaiseValidationStateChanged();
     }
@@ -408,14 +419,18 @@ public sealed partial class GangDocumentationViewModel : ObservableObject
                 record.SubgroupOrganizationId,
                 record.SubgroupOrganizationName,
                 record.AffiliationRole,
-                record.DocumentationStatus,
-                record.ApprovalStatus,
-                record.Reviewer,
-                record.ReviewDueDateUtc,
                 record.Summary,
                 record.Notes,
                 record.CreatedAtUtc,
                 record.UpdatedAtUtc,
+                record.Review.WorkflowStatus,
+                record.Review.WorkflowStatusDisplay,
+                record.Review.ReviewerName,
+                record.Review.ReviewerIdentity,
+                record.Review.SubmittedForReviewAtUtc,
+                record.Review.ReviewedAtUtc,
+                record.Review.ApprovedAtUtc,
+                record.Review.DecisionNote,
                 record.Criteria.Count,
                 record.Criteria.Select(MapCriterionItem).ToList(),
                 record.StatusHistory.Select(MapHistoryItem).ToList()
@@ -445,11 +460,9 @@ public sealed partial class GangDocumentationViewModel : ObservableObject
             SelectedOrganizationId = OrganizationOptions.FirstOrDefault()?.OrganizationId;
             Summary = string.Empty;
             Notes = string.Empty;
-            Reviewer = string.Empty;
-            DocumentationStatus = DocumentationStatuses.FirstOrDefault() ?? "draft";
-            ApprovalStatus = ApprovalStatuses.FirstOrDefault() ?? "not submitted";
             AffiliationRole = AffiliationRoles.FirstOrDefault() ?? "member";
-            ReviewDueDate = null;
+            WorkflowReviewerName = string.Empty;
+            WorkflowDecisionNote = string.Empty;
             SelectedSubgroupOrganizationId = null;
             BeginNewCriterion();
             RaiseSectionStateChanged();
@@ -462,11 +475,9 @@ public sealed partial class GangDocumentationViewModel : ObservableObject
         SelectedSubgroupOrganizationId = value.SubgroupOrganizationId;
         Summary = value.Summary;
         Notes = value.Notes ?? string.Empty;
-        Reviewer = value.Reviewer ?? string.Empty;
-        DocumentationStatus = value.DocumentationStatus;
-        ApprovalStatus = value.ApprovalStatus;
         AffiliationRole = value.AffiliationRole;
-        ReviewDueDate = value.ReviewDueDateUtc?.UtcDateTime.Date;
+        WorkflowReviewerName = value.ReviewerName ?? string.Empty;
+        WorkflowDecisionNote = string.Empty;
 
         foreach (var criterion in value.Criteria)
         {
@@ -524,10 +535,6 @@ public sealed partial class GangDocumentationViewModel : ObservableObject
                         organizationId,
                         SelectedSubgroupOrganizationId,
                         AffiliationRole,
-                        DocumentationStatus,
-                        ApprovalStatus,
-                        NullIfWhiteSpace(Reviewer),
-                        ToDateOffset(ReviewDueDate),
                         Summary,
                         NullIfWhiteSpace(Notes)
                     ),
@@ -544,10 +551,6 @@ public sealed partial class GangDocumentationViewModel : ObservableObject
                         organizationId,
                         SelectedSubgroupOrganizationId,
                         AffiliationRole,
-                        DocumentationStatus,
-                        ApprovalStatus,
-                        NullIfWhiteSpace(Reviewer),
-                        ToDateOffset(ReviewDueDate),
                         Summary,
                         NullIfWhiteSpace(Notes)
                     ),
@@ -559,6 +562,123 @@ public sealed partial class GangDocumentationViewModel : ObservableObject
             RecordSubmitAttempted = false;
             RaiseValidationStateChanged();
             StatusMessage = "Gang documentation saved.";
+        }
+        catch (Exception ex)
+        {
+            StatusMessage = ex.Message;
+        }
+        finally
+        {
+            IsBusy = false;
+        }
+    }
+
+    private Task SubmitForReviewAsync()
+    {
+        return ExecuteWorkflowAsync(
+            GangDocumentationCatalog.WorkflowActionSubmitForReview,
+            requiresReviewer: false,
+            requiresDecisionNote: false,
+            successMessage: "Gang documentation submitted for review."
+        );
+    }
+
+    private Task ApproveAsync()
+    {
+        return ExecuteWorkflowAsync(
+            GangDocumentationCatalog.WorkflowActionApprove,
+            requiresReviewer: true,
+            requiresDecisionNote: true,
+            successMessage: "Gang documentation approved."
+        );
+    }
+
+    private Task ReturnForChangesAsync()
+    {
+        return ExecuteWorkflowAsync(
+            GangDocumentationCatalog.WorkflowActionReturnForChanges,
+            requiresReviewer: true,
+            requiresDecisionNote: true,
+            successMessage: "Gang documentation returned for changes."
+        );
+    }
+
+    private Task MarkInactiveAsync()
+    {
+        return ExecuteWorkflowAsync(
+            GangDocumentationCatalog.WorkflowActionMarkInactive,
+            requiresReviewer: true,
+            requiresDecisionNote: true,
+            successMessage: "Gang documentation marked inactive."
+        );
+    }
+
+    private Task MarkPurgeReviewAsync()
+    {
+        return ExecuteWorkflowAsync(
+            GangDocumentationCatalog.WorkflowActionMarkPurgeReview,
+            requiresReviewer: true,
+            requiresDecisionNote: true,
+            successMessage: "Gang documentation moved to purge review."
+        );
+    }
+
+    private Task PurgeAsync()
+    {
+        return ExecuteWorkflowAsync(
+            GangDocumentationCatalog.WorkflowActionPurge,
+            requiresReviewer: true,
+            requiresDecisionNote: true,
+            successMessage: "Gang documentation purged."
+        );
+    }
+
+    private async Task ExecuteWorkflowAsync(
+        string workflowAction,
+        bool requiresReviewer,
+        bool requiresDecisionNote,
+        string successMessage
+    )
+    {
+        if (!CurrentCaseId.HasValue || !CurrentDocumentationId.HasValue)
+        {
+            StatusMessage = "Select a documentation record before running workflow actions.";
+            return;
+        }
+
+        if (requiresReviewer && string.IsNullOrWhiteSpace(WorkflowReviewerName))
+        {
+            StatusMessage = "Reviewer name is required for this workflow action.";
+            RequestFocus(FocusWorkflowReviewerField);
+            return;
+        }
+
+        if (requiresDecisionNote && string.IsNullOrWhiteSpace(WorkflowDecisionNote))
+        {
+            StatusMessage = "Decision note is required for this workflow action.";
+            RequestFocus(FocusWorkflowDecisionNoteField);
+            return;
+        }
+
+        StatusMessage = string.Empty;
+        IsBusy = true;
+
+        try
+        {
+            await _gangDocumentationService.TransitionWorkflowAsync(
+                new TransitionGangDocumentationWorkflowRequest(
+                    CurrentCaseId.Value,
+                    CurrentDocumentationId.Value,
+                    workflowAction,
+                    NullIfWhiteSpace(WorkflowReviewerName),
+                    NullIfWhiteSpace(WorkflowDecisionNote)
+                ),
+                CancellationToken.None
+            );
+
+            await ReloadAndSelectAsync(CurrentDocumentationId.Value);
+            WorkflowDecisionNote = string.Empty;
+            StatusMessage = successMessage;
         }
         catch (Exception ex)
         {
@@ -713,11 +833,9 @@ public sealed partial class GangDocumentationViewModel : ObservableObject
         SelectedSubgroupOrganizationId = null;
         Summary = string.Empty;
         Notes = string.Empty;
-        Reviewer = string.Empty;
-        DocumentationStatus = DocumentationStatuses.FirstOrDefault() ?? "draft";
-        ApprovalStatus = ApprovalStatuses.FirstOrDefault() ?? "not submitted";
         AffiliationRole = AffiliationRoles.FirstOrDefault() ?? "member";
-        ReviewDueDate = null;
+        WorkflowReviewerName = string.Empty;
+        WorkflowDecisionNote = string.Empty;
         BeginNewCriterion();
         RaiseSectionStateChanged();
     }
@@ -729,10 +847,22 @@ public sealed partial class GangDocumentationViewModel : ObservableObject
         OnPropertyChanged(nameof(HasCriteria));
         OnPropertyChanged(nameof(HasHistory));
         OnPropertyChanged(nameof(HasSelectedDocumentation));
+        OnPropertyChanged(nameof(IsCurrentWorkflowEditable));
         OnPropertyChanged(nameof(CanEditDocumentation));
         OnPropertyChanged(nameof(CanManageCriteria));
+        OnPropertyChanged(nameof(CanManageWorkflow));
+        OnPropertyChanged(nameof(CanSubmitForReview));
+        OnPropertyChanged(nameof(CanApprove));
+        OnPropertyChanged(nameof(CanReturnForChanges));
+        OnPropertyChanged(nameof(CanMarkInactive));
+        OnPropertyChanged(nameof(CanMarkPurgeReview));
+        OnPropertyChanged(nameof(CanPurge));
         OnPropertyChanged(nameof(CreateWorkflowHint));
         OnPropertyChanged(nameof(CriteriaWorkflowHint));
+        OnPropertyChanged(nameof(WorkflowHint));
+        OnPropertyChanged(nameof(CurrentWorkflowStatusDisplay));
+        OnPropertyChanged(nameof(CurrentReviewSummary));
+        OnPropertyChanged(nameof(CurrentDecisionNoteDisplay));
         OnPropertyChanged(nameof(CurrentOrganizationDisplay));
         OnPropertyChanged(nameof(CurrentSubgroupDisplay));
         OnPropertyChanged(nameof(SaveRecordButtonText));
@@ -763,8 +893,6 @@ public sealed partial class GangDocumentationViewModel : ObservableObject
     {
         OnPropertyChanged(nameof(ShowOrganizationRequiredIndicator));
         OnPropertyChanged(nameof(ShowAffiliationRoleRequiredIndicator));
-        OnPropertyChanged(nameof(ShowDocumentationStatusRequiredIndicator));
-        OnPropertyChanged(nameof(ShowApprovalStatusRequiredIndicator));
         OnPropertyChanged(nameof(ShowSummaryRequiredIndicator));
         OnPropertyChanged(nameof(ShowCriterionTypeRequiredIndicator));
         OnPropertyChanged(nameof(ShowCriterionBasisSummaryRequiredIndicator));
@@ -785,18 +913,6 @@ public sealed partial class GangDocumentationViewModel : ObservableObject
         if (string.IsNullOrWhiteSpace(AffiliationRole))
         {
             focusTarget = FocusAffiliationRoleField;
-            return false;
-        }
-
-        if (string.IsNullOrWhiteSpace(DocumentationStatus))
-        {
-            focusTarget = FocusDocumentationStatusField;
-            return false;
-        }
-
-        if (string.IsNullOrWhiteSpace(ApprovalStatus))
-        {
-            focusTarget = FocusApprovalStatusField;
             return false;
         }
 
@@ -868,7 +984,11 @@ public sealed partial class GangDocumentationViewModel : ObservableObject
             history.HistoryEntryId,
             history.ActionType,
             history.Summary,
+            history.PreviousWorkflowStatus,
+            history.NewWorkflowStatus,
+            history.DecisionNote,
             history.ChangedBy,
+            history.ChangedByIdentity,
             history.ChangedAtUtc
         );
     }
@@ -892,14 +1012,18 @@ public sealed partial class GangDocumentationViewModel : ObservableObject
         Guid? SubgroupOrganizationId,
         string? SubgroupOrganizationName,
         string AffiliationRole,
-        string DocumentationStatus,
-        string ApprovalStatus,
-        string? Reviewer,
-        DateTimeOffset? ReviewDueDateUtc,
         string Summary,
         string? Notes,
         DateTimeOffset CreatedAtUtc,
         DateTimeOffset UpdatedAtUtc,
+        string WorkflowStatus,
+        string WorkflowStatusDisplay,
+        string? ReviewerName,
+        string? ReviewerIdentity,
+        DateTimeOffset? SubmittedForReviewAtUtc,
+        DateTimeOffset? ReviewedAtUtc,
+        DateTimeOffset? ApprovedAtUtc,
+        string? DecisionNote,
         int CriteriaCount,
         IReadOnlyList<GangDocumentationCriterionItem> Criteria,
         IReadOnlyList<GangDocumentationHistoryItem> History
@@ -910,11 +1034,71 @@ public sealed partial class GangDocumentationViewModel : ObservableObject
             : $"{OrganizationName} / {SubgroupOrganizationName}";
 
         public string RecordSubtitle =>
-            $"{AffiliationRole} | status: {DocumentationStatus} | approval: {ApprovalStatus}";
+            $"{AffiliationRole} | workflow: {WorkflowStatusDisplay}";
 
-        public string ReviewDisplay => ReviewDueDateUtc.HasValue
-            ? $"Reviewer: {Reviewer ?? "(none)"} | review due {ReviewDueDateUtc.Value:yyyy-MM-dd}"
-            : $"Reviewer: {Reviewer ?? "(none)"} | review due (none)";
+        public string ReviewDisplay => ReviewSummary;
+
+        public string ReviewSummary
+        {
+            get
+            {
+                if (ReviewedAtUtc.HasValue)
+                {
+                    var reviewer = ReviewerName ?? ReviewerIdentity ?? "(unknown reviewer)";
+                    return $"Reviewed by {reviewer} on {ReviewedAtUtc.Value:yyyy-MM-dd HH:mm} UTC";
+                }
+
+                if (SubmittedForReviewAtUtc.HasValue)
+                {
+                    return ReviewerName is null
+                        ? $"Submitted for review on {SubmittedForReviewAtUtc.Value:yyyy-MM-dd HH:mm} UTC"
+                        : $"Submitted for review on {SubmittedForReviewAtUtc.Value:yyyy-MM-dd HH:mm} UTC | reviewer: {ReviewerName}";
+                }
+
+                return "Not yet submitted for supervisor review.";
+            }
+        }
+
+        public string WorkflowHint => WorkflowStatus switch
+        {
+            var status when string.Equals(status, GangDocumentationCatalog.WorkflowStatusDraft, StringComparison.Ordinal)
+                => "Draft content is editable. Submit it for supervisor review when ready.",
+            var status when string.Equals(status, GangDocumentationCatalog.WorkflowStatusReturnedForChanges, StringComparison.Ordinal)
+                => "Supervisor returned this record for changes. Update the content, then resubmit for review.",
+            var status when string.Equals(status, GangDocumentationCatalog.WorkflowStatusPendingSupervisorReview, StringComparison.Ordinal)
+                => "Awaiting supervisor decision. Approve, return for changes, mark inactive, or move to purge review.",
+            var status when string.Equals(status, GangDocumentationCatalog.WorkflowStatusApproved, StringComparison.Ordinal)
+                => "Approved records are read-only. You can mark the record inactive or move it to purge review.",
+            var status when string.Equals(status, GangDocumentationCatalog.WorkflowStatusInactive, StringComparison.Ordinal)
+                => "Inactive records stay visible for history and can move to purge review.",
+            var status when string.Equals(status, GangDocumentationCatalog.WorkflowStatusPurgeReview, StringComparison.Ordinal)
+                => "Purge review is pending. Purge the record or move it back to inactive.",
+            var status when string.Equals(status, GangDocumentationCatalog.WorkflowStatusPurged, StringComparison.Ordinal)
+                => "Purged records remain historically traceable but are terminal in workflow.",
+            _ => "Workflow state available."
+        };
+
+        public bool IsEditable => GangDocumentationCatalog.IsEditableWorkflowStatus(WorkflowStatus);
+
+        public bool CanSubmitForReview => WorkflowStatus is GangDocumentationCatalog.WorkflowStatusDraft
+            or GangDocumentationCatalog.WorkflowStatusReturnedForChanges;
+
+        public bool CanApprove => WorkflowStatus == GangDocumentationCatalog.WorkflowStatusPendingSupervisorReview;
+
+        public bool CanReturnForChanges => WorkflowStatus == GangDocumentationCatalog.WorkflowStatusPendingSupervisorReview;
+
+        public bool CanMarkInactive => WorkflowStatus is GangDocumentationCatalog.WorkflowStatusDraft
+            or GangDocumentationCatalog.WorkflowStatusPendingSupervisorReview
+            or GangDocumentationCatalog.WorkflowStatusApproved
+            or GangDocumentationCatalog.WorkflowStatusReturnedForChanges
+            or GangDocumentationCatalog.WorkflowStatusPurgeReview;
+
+        public bool CanMarkPurgeReview => WorkflowStatus is GangDocumentationCatalog.WorkflowStatusPendingSupervisorReview
+            or GangDocumentationCatalog.WorkflowStatusApproved
+            or GangDocumentationCatalog.WorkflowStatusInactive
+            or GangDocumentationCatalog.WorkflowStatusReturnedForChanges;
+
+        public bool CanPurge => WorkflowStatus == GangDocumentationCatalog.WorkflowStatusPurgeReview;
 
         public string OrganizationDisplay => $"Linked organization: {OrganizationName}";
 
@@ -943,12 +1127,31 @@ public sealed partial class GangDocumentationViewModel : ObservableObject
         Guid HistoryEntryId,
         string ActionType,
         string Summary,
+        string? PreviousWorkflowStatus,
+        string? NewWorkflowStatus,
+        string? DecisionNote,
         string? ChangedBy,
+        string? ChangedByIdentity,
         DateTimeOffset ChangedAtUtc
     )
     {
-        public string DetailText =>
-            $"{ChangedAtUtc:yyyy-MM-dd HH:mm} UTC | {ChangedBy ?? "(system)"} | {ActionType}";
+        public string DetailText
+        {
+            get
+            {
+                var statusText = string.IsNullOrWhiteSpace(NewWorkflowStatus)
+                    ? ActionType
+                    : string.IsNullOrWhiteSpace(PreviousWorkflowStatus)
+                        ? GangDocumentationCatalog.GetWorkflowStatusDisplayName(NewWorkflowStatus)
+                        : $"{GangDocumentationCatalog.GetWorkflowStatusDisplayName(PreviousWorkflowStatus!)} -> {GangDocumentationCatalog.GetWorkflowStatusDisplayName(NewWorkflowStatus)}";
+                var actor = ChangedBy ?? ChangedByIdentity ?? "(system)";
+                return $"{ChangedAtUtc:yyyy-MM-dd HH:mm} UTC | {actor} | {statusText}";
+            }
+        }
+
+        public string NoteDisplay => string.IsNullOrWhiteSpace(DecisionNote)
+            ? string.Empty
+            : $"Decision note: {DecisionNote}";
     }
 
     public sealed record OrganizationOptionItem(

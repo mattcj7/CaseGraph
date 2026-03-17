@@ -42,6 +42,8 @@ public sealed class GangDocumentationRecordEntity
 
     public OrganizationRecord? SubgroupOrganization { get; set; }
 
+    public GangDocumentationReviewRecord? Review { get; set; }
+
     public ICollection<GangDocumentationCriterionRecord> Criteria { get; set; } =
         new List<GangDocumentationCriterionRecord>();
 

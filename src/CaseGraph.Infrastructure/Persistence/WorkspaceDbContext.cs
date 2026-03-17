@@ -51,6 +51,9 @@ public sealed class WorkspaceDbContext : DbContext
     public DbSet<GangDocumentationCriterionRecord> GangDocumentationCriteria =>
         Set<GangDocumentationCriterionRecord>();
 
+    public DbSet<GangDocumentationReviewRecord> GangDocumentationReviews =>
+        Set<GangDocumentationReviewRecord>();
+
     public DbSet<GangDocumentationStatusHistoryRecord> GangDocumentationStatusHistory =>
         Set<GangDocumentationStatusHistoryRecord>();
 
@@ -354,6 +357,11 @@ public sealed class WorkspaceDbContext : DbContext
                 .WithMany()
                 .HasForeignKey(e => e.SubgroupOrganizationId)
                 .OnDelete(DeleteBehavior.Restrict);
+
+            entity.HasOne(e => e.Review)
+                .WithOne(e => e.Documentation)
+                .HasForeignKey<GangDocumentationReviewRecord>(e => e.DocumentationId)
+                .OnDelete(DeleteBehavior.Cascade);
         });
 
         modelBuilder.Entity<GangDocumentationCriterionRecord>(entity =>
@@ -368,6 +376,14 @@ public sealed class WorkspaceDbContext : DbContext
                 .WithMany(e => e.Criteria)
                 .HasForeignKey(e => e.DocumentationId)
                 .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.Entity<GangDocumentationReviewRecord>(entity =>
+        {
+            entity.ToTable("GangDocumentationReview");
+            entity.HasKey(e => e.ReviewId);
+            entity.Property(e => e.WorkflowStatus).IsRequired();
+            entity.HasIndex(e => e.DocumentationId).IsUnique();
         });
 
         modelBuilder.Entity<GangDocumentationStatusHistoryRecord>(entity =>
@@ -593,3 +609,4 @@ public sealed class WorkspaceDbContext : DbContext
         });
     }
 }
+

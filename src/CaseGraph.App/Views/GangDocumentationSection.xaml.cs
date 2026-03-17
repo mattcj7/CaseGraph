@@ -77,15 +77,17 @@ public partial class GangDocumentationSection : UserControl
                 case "AffiliationRole":
                     AffiliationRoleComboBox.Focus();
                     break;
-                case "DocumentationStatus":
-                    DocumentationStatusComboBox.Focus();
-                    break;
-                case "ApprovalStatus":
-                    ApprovalStatusComboBox.Focus();
-                    break;
                 case "Summary":
                     SummaryTextBox.Focus();
                     SummaryTextBox.SelectAll();
+                    break;
+                case "WorkflowReviewer":
+                    WorkflowReviewerTextBox.Focus();
+                    WorkflowReviewerTextBox.SelectAll();
+                    break;
+                case "WorkflowDecisionNote":
+                    WorkflowDecisionNoteTextBox.Focus();
+                    WorkflowDecisionNoteTextBox.SelectAll();
                     break;
                 case "CriterionType":
                     CriterionTypeComboBox.Focus();

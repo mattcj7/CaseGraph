@@ -69,14 +69,22 @@ public sealed class EntityProfileViewModelTests
                             null,
                             null,
                             "member",
-                            "approved",
-                            "approved",
-                            "Detective Hale",
-                            new DateTimeOffset(2026, 3, 20, 0, 0, 0, TimeSpan.Zero),
                             "Validated during review meeting.",
                             "Formal record notes",
                             new DateTimeOffset(2026, 3, 1, 0, 0, 0, TimeSpan.Zero),
                             new DateTimeOffset(2026, 3, 5, 0, 0, 0, TimeSpan.Zero),
+                            new GangDocumentationReview(
+                                Guid.NewGuid(),
+                                Guid.NewGuid(),
+                                GangDocumentationCatalog.WorkflowStatusApproved,
+                                "Detective Hale",
+                                "detective.hale",
+                                new DateTimeOffset(2026, 3, 2, 0, 0, 0, TimeSpan.Zero),
+                                new DateTimeOffset(2026, 3, 5, 0, 0, 0, TimeSpan.Zero),
+                                new DateTimeOffset(2026, 3, 5, 0, 0, 0, TimeSpan.Zero),
+                                null,
+                                "Approved during review meeting."
+                            ),
                             [
                                 new GangDocumentationCriterion(
                                     Guid.NewGuid(),
@@ -97,7 +105,11 @@ public sealed class EntityProfileViewModelTests
                                     Guid.NewGuid(),
                                     "Created",
                                     "Created in approved state.",
+                                    null,
+                                    GangDocumentationCatalog.WorkflowStatusApproved,
+                                    "Approved during review meeting.",
                                     "Detective Hale",
+                                    "detective.hale",
                                     new DateTimeOffset(2026, 3, 1, 0, 0, 0, TimeSpan.Zero)
                                 )
                             ]
@@ -230,9 +242,6 @@ public sealed class EntityProfileViewModelTests
         viewModel.SelectedSubgroupOrganizationId = subgroupId;
         viewModel.Summary = "Formal documentation summary";
         viewModel.Notes = "Formal documentation notes";
-        viewModel.Reviewer = "Detective Hale";
-        viewModel.DocumentationStatus = "draft";
-        viewModel.ApprovalStatus = "pending approval";
         await viewModel.SaveRecordCommand.ExecuteAsync(null);
 
         Assert.True(viewModel.HasRecords);
@@ -538,6 +547,11 @@ public sealed class EntityProfileViewModelTests
             CancellationToken ct
         ) => throw new NotSupportedException();
 
+        public Task<GangDocumentationRecord> TransitionWorkflowAsync(
+            TransitionGangDocumentationWorkflowRequest request,
+            CancellationToken ct
+        ) => throw new NotSupportedException();
+
         public Task<GangDocumentationCriterion> SaveCriterionAsync(
             SaveGangDocumentationCriterionRequest request,
             CancellationToken ct
@@ -591,26 +605,22 @@ public sealed class EntityProfileViewModelTests
             CancellationToken ct
         )
         {
-            _record = new GangDocumentationRecord(
-                Guid.NewGuid(),
-                request.CaseId,
-                request.TargetId,
-                null,
-                request.OrganizationId,
-                "Neighborhood Crips",
-                request.SubgroupOrganizationId,
-                request.SubgroupOrganizationId == _subgroupId ? "Neighborhood Crips East" : null,
-                request.AffiliationRole,
-                request.DocumentationStatus,
-                request.ApprovalStatus,
-                request.Reviewer,
-                request.ReviewDueDateUtc,
-                request.Summary,
-                request.Notes,
-                DateTimeOffset.UtcNow,
-                DateTimeOffset.UtcNow,
-                [],
-                []
+            _record = BuildRecord(
+                documentationId: Guid.NewGuid(),
+                organizationId: request.OrganizationId,
+                subgroupOrganizationId: request.SubgroupOrganizationId,
+                affiliationRole: request.AffiliationRole,
+                summary: request.Summary,
+                notes: request.Notes,
+                workflowStatus: GangDocumentationCatalog.WorkflowStatusDraft,
+                reviewerName: null,
+                reviewerIdentity: null,
+                submittedForReviewAtUtc: null,
+                reviewedAtUtc: null,
+                approvedAtUtc: null,
+                decisionNote: null,
+                criteria: [],
+                history: []
             );
             return Task.FromResult(_record);
         }
@@ -620,26 +630,75 @@ public sealed class EntityProfileViewModelTests
             CancellationToken ct
         )
         {
-            _record = new GangDocumentationRecord(
+            _record = BuildRecord(
+                documentationId: request.DocumentationId,
+                organizationId: request.OrganizationId,
+                subgroupOrganizationId: request.SubgroupOrganizationId,
+                affiliationRole: request.AffiliationRole,
+                summary: request.Summary,
+                notes: request.Notes,
+                workflowStatus: _record?.Review.WorkflowStatus ?? GangDocumentationCatalog.WorkflowStatusDraft,
+                reviewerName: _record?.Review.ReviewerName,
+                reviewerIdentity: _record?.Review.ReviewerIdentity,
+                submittedForReviewAtUtc: _record?.Review.SubmittedForReviewAtUtc,
+                reviewedAtUtc: _record?.Review.ReviewedAtUtc,
+                approvedAtUtc: _record?.Review.ApprovedAtUtc,
+                decisionNote: _record?.Review.DecisionNote,
+                criteria: _record?.Criteria ?? [],
+                history: _record?.StatusHistory ?? []
+            );
+            return Task.FromResult(_record);
+        }
+
+        public Task<GangDocumentationRecord> TransitionWorkflowAsync(
+            TransitionGangDocumentationWorkflowRequest request,
+            CancellationToken ct
+        )
+        {
+            var now = DateTimeOffset.UtcNow;
+            var reviewerName = string.IsNullOrWhiteSpace(request.ReviewerName) ? _record?.Review.ReviewerName : request.ReviewerName;
+            var reviewerIdentity = string.IsNullOrWhiteSpace(reviewerName) ? _record?.Review.ReviewerIdentity : "test.user";
+            var targetWorkflowStatus = request.WorkflowAction switch
+            {
+                var action when action == GangDocumentationCatalog.WorkflowActionSubmitForReview => GangDocumentationCatalog.WorkflowStatusPendingSupervisorReview,
+                var action when action == GangDocumentationCatalog.WorkflowActionApprove => GangDocumentationCatalog.WorkflowStatusApproved,
+                var action when action == GangDocumentationCatalog.WorkflowActionReturnForChanges => GangDocumentationCatalog.WorkflowStatusReturnedForChanges,
+                var action when action == GangDocumentationCatalog.WorkflowActionMarkInactive => GangDocumentationCatalog.WorkflowStatusInactive,
+                var action when action == GangDocumentationCatalog.WorkflowActionMarkPurgeReview => GangDocumentationCatalog.WorkflowStatusPurgeReview,
+                var action when action == GangDocumentationCatalog.WorkflowActionPurge => GangDocumentationCatalog.WorkflowStatusPurged,
+                _ => _record?.Review.WorkflowStatus ?? GangDocumentationCatalog.WorkflowStatusDraft
+            };
+
+            var history = (_record?.StatusHistory ?? []).ToList();
+            history.Insert(0, new GangDocumentationStatusHistoryEntry(
+                Guid.NewGuid(),
                 request.DocumentationId,
-                request.CaseId,
-                _targetId,
-                null,
-                request.OrganizationId,
-                "Neighborhood Crips",
-                request.SubgroupOrganizationId,
-                request.SubgroupOrganizationId == _subgroupId ? "Neighborhood Crips East" : null,
-                request.AffiliationRole,
-                request.DocumentationStatus,
-                request.ApprovalStatus,
-                request.Reviewer,
-                request.ReviewDueDateUtc,
-                request.Summary,
-                request.Notes,
-                _record?.CreatedAtUtc ?? DateTimeOffset.UtcNow,
-                DateTimeOffset.UtcNow,
-                _record?.Criteria ?? [],
-                _record?.StatusHistory ?? []
+                request.WorkflowAction,
+                GangDocumentationCatalog.GetWorkflowActionDisplayName(request.WorkflowAction),
+                _record?.Review.WorkflowStatus,
+                targetWorkflowStatus,
+                request.DecisionNote,
+                reviewerName,
+                reviewerIdentity,
+                now
+            ));
+
+            _record = BuildRecord(
+                documentationId: request.DocumentationId,
+                organizationId: _record?.OrganizationId ?? _organizationId,
+                subgroupOrganizationId: _record?.SubgroupOrganizationId,
+                affiliationRole: _record?.AffiliationRole ?? "member",
+                summary: _record?.Summary ?? string.Empty,
+                notes: _record?.Notes,
+                workflowStatus: targetWorkflowStatus,
+                reviewerName: reviewerName,
+                reviewerIdentity: reviewerIdentity,
+                submittedForReviewAtUtc: request.WorkflowAction == GangDocumentationCatalog.WorkflowActionSubmitForReview ? now : _record?.Review.SubmittedForReviewAtUtc,
+                reviewedAtUtc: request.WorkflowAction == GangDocumentationCatalog.WorkflowActionSubmitForReview ? null : now,
+                approvedAtUtc: request.WorkflowAction == GangDocumentationCatalog.WorkflowActionApprove ? now : _record?.Review.ApprovedAtUtc,
+                decisionNote: request.DecisionNote,
+                criteria: _record?.Criteria ?? [],
+                history: history
             );
             return Task.FromResult(_record);
         }
@@ -662,26 +721,22 @@ public sealed class EntityProfileViewModelTests
                 DateTimeOffset.UtcNow
             );
 
-            _record = new GangDocumentationRecord(
-                _record?.DocumentationId ?? Guid.NewGuid(),
-                request.CaseId,
-                _targetId,
-                null,
-                _organizationId,
-                "Neighborhood Crips",
-                _record?.SubgroupOrganizationId,
-                _record?.SubgroupOrganizationName,
-                _record?.AffiliationRole ?? "member",
-                _record?.DocumentationStatus ?? "draft",
-                _record?.ApprovalStatus ?? "pending approval",
-                _record?.Reviewer,
-                _record?.ReviewDueDateUtc,
-                _record?.Summary ?? string.Empty,
-                _record?.Notes,
-                _record?.CreatedAtUtc ?? DateTimeOffset.UtcNow,
-                DateTimeOffset.UtcNow,
-                [criterion],
-                _record?.StatusHistory ?? []
+            _record = BuildRecord(
+                documentationId: _record?.DocumentationId ?? Guid.NewGuid(),
+                organizationId: _organizationId,
+                subgroupOrganizationId: _record?.SubgroupOrganizationId,
+                affiliationRole: _record?.AffiliationRole ?? "member",
+                summary: _record?.Summary ?? string.Empty,
+                notes: _record?.Notes,
+                workflowStatus: _record?.Review.WorkflowStatus ?? GangDocumentationCatalog.WorkflowStatusDraft,
+                reviewerName: _record?.Review.ReviewerName,
+                reviewerIdentity: _record?.Review.ReviewerIdentity,
+                submittedForReviewAtUtc: _record?.Review.SubmittedForReviewAtUtc,
+                reviewedAtUtc: _record?.Review.ReviewedAtUtc,
+                approvedAtUtc: _record?.Review.ApprovedAtUtc,
+                decisionNote: _record?.Review.DecisionNote,
+                criteria: [criterion],
+                history: _record?.StatusHistory ?? []
             );
 
             return Task.FromResult(criterion);
@@ -700,6 +755,55 @@ public sealed class EntityProfileViewModelTests
             }
 
             return Task.CompletedTask;
+        }
+
+        private GangDocumentationRecord BuildRecord(
+            Guid documentationId,
+            Guid organizationId,
+            Guid? subgroupOrganizationId,
+            string affiliationRole,
+            string summary,
+            string? notes,
+            string workflowStatus,
+            string? reviewerName,
+            string? reviewerIdentity,
+            DateTimeOffset? submittedForReviewAtUtc,
+            DateTimeOffset? reviewedAtUtc,
+            DateTimeOffset? approvedAtUtc,
+            string? decisionNote,
+            IReadOnlyList<GangDocumentationCriterion> criteria,
+            IReadOnlyList<GangDocumentationStatusHistoryEntry> history
+        )
+        {
+            return new GangDocumentationRecord(
+                documentationId,
+                _caseId,
+                _targetId,
+                null,
+                organizationId,
+                "Neighborhood Crips",
+                subgroupOrganizationId,
+                subgroupOrganizationId == _subgroupId ? "Neighborhood Crips East" : null,
+                affiliationRole,
+                summary,
+                notes,
+                _record?.CreatedAtUtc ?? DateTimeOffset.UtcNow,
+                DateTimeOffset.UtcNow,
+                new GangDocumentationReview(
+                    documentationId,
+                    documentationId,
+                    workflowStatus,
+                    reviewerName,
+                    reviewerIdentity,
+                    submittedForReviewAtUtc,
+                    reviewedAtUtc,
+                    approvedAtUtc,
+                    null,
+                    decisionNote
+                ),
+                criteria,
+                history
+            );
         }
     }
 }

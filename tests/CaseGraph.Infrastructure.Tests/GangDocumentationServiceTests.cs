@@ -14,7 +14,7 @@ public sealed class GangDocumentationServiceTests
     [Fact]
     public async Task CreateDocumentationAsync_PersistsAndReloadsRecord()
     {
-        await using var fixture = await WorkspaceFixture.CreateAsync();
+        await using var fixture = await GangDocumentationTestWorkspaceFixture.CreateAsync();
         var service = fixture.Services.GetRequiredService<IGangDocumentationService>();
         var organizationService = fixture.Services.GetRequiredService<IOrganizationService>();
 
@@ -31,10 +31,6 @@ public sealed class GangDocumentationServiceTests
                 organization.OrganizationId,
                 null,
                 "member",
-                "draft",
-                "pending approval",
-                "Detective Hale",
-                new DateTimeOffset(2026, 3, 25, 0, 0, 0, TimeSpan.Zero),
                 "Documented during street check.",
                 "Formal documentation notes"
             ),
@@ -51,9 +47,8 @@ public sealed class GangDocumentationServiceTests
         Assert.Equal(created.DocumentationId, record.DocumentationId);
         Assert.Equal("Rollin 60s", record.OrganizationName);
         Assert.Equal("member", record.AffiliationRole);
-        Assert.Equal("draft", record.DocumentationStatus);
-        Assert.Equal("pending approval", record.ApprovalStatus);
-        Assert.Equal("Detective Hale", record.Reviewer);
+        Assert.Equal(GangDocumentationCatalog.WorkflowStatusDraft, record.Review.WorkflowStatus);
+        Assert.Null(record.Review.ReviewerName);
         Assert.Equal("Documented during street check.", record.Summary);
         Assert.Equal(createdTarget.GlobalEntityId, record.GlobalEntityId);
 
@@ -69,7 +64,7 @@ public sealed class GangDocumentationServiceTests
     [Fact]
     public async Task SaveCriterionAsync_PersistsAndReloadsCriteria()
     {
-        await using var fixture = await WorkspaceFixture.CreateAsync();
+        await using var fixture = await GangDocumentationTestWorkspaceFixture.CreateAsync();
         var service = fixture.Services.GetRequiredService<IGangDocumentationService>();
         var organizationService = fixture.Services.GetRequiredService<IOrganizationService>();
 
@@ -85,10 +80,6 @@ public sealed class GangDocumentationServiceTests
                 organization.OrganizationId,
                 null,
                 "associate",
-                "pending review",
-                "pending approval",
-                null,
-                null,
                 "Pending formal review.",
                 null
             ),
@@ -145,7 +136,7 @@ public sealed class GangDocumentationServiceTests
     [Fact]
     public async Task CreateDocumentationAsync_PersistsOrganizationAndSubgroupLinkage()
     {
-        await using var fixture = await WorkspaceFixture.CreateAsync();
+        await using var fixture = await GangDocumentationTestWorkspaceFixture.CreateAsync();
         var service = fixture.Services.GetRequiredService<IGangDocumentationService>();
         var organizationService = fixture.Services.GetRequiredService<IOrganizationService>();
 
@@ -166,10 +157,6 @@ public sealed class GangDocumentationServiceTests
                 organization.OrganizationId,
                 subgroup.OrganizationId,
                 "member",
-                "approved",
-                "approved",
-                "Sergeant Cole",
-                new DateTimeOffset(2026, 4, 1, 0, 0, 0, TimeSpan.Zero),
                 "Confirmed set linkage.",
                 null
             ),
@@ -193,7 +180,7 @@ public sealed class GangDocumentationServiceTests
     [Fact]
     public async Task UpdateDocumentationAsync_ReloadsLinkedOrganizationAndSubgroup()
     {
-        await using var fixture = await WorkspaceFixture.CreateAsync();
+        await using var fixture = await GangDocumentationTestWorkspaceFixture.CreateAsync();
         var service = fixture.Services.GetRequiredService<IGangDocumentationService>();
         var organizationService = fixture.Services.GetRequiredService<IOrganizationService>();
 
@@ -218,10 +205,6 @@ public sealed class GangDocumentationServiceTests
                 originalOrganization.OrganizationId,
                 null,
                 "associate",
-                "draft",
-                "not submitted",
-                null,
-                null,
                 "Initial documentation.",
                 null
             ),
@@ -235,10 +218,6 @@ public sealed class GangDocumentationServiceTests
                 updatedOrganization.OrganizationId,
                 updatedSubgroup.OrganizationId,
                 "member",
-                "approved",
-                "approved",
-                "Detective Shaw",
-                new DateTimeOffset(2026, 4, 22, 0, 0, 0, TimeSpan.Zero),
                 "Updated organization linkage.",
                 null
             ),
@@ -256,216 +235,152 @@ public sealed class GangDocumentationServiceTests
         Assert.Equal(updatedSubgroup.OrganizationId, reloaded.SubgroupOrganizationId);
         Assert.Equal("Bounty Hunters South", reloaded.SubgroupOrganizationName);
     }
+}
 
-    [Fact]
-    public async Task UpdateDocumentationAsync_PersistsWorkflowReviewFieldsAndHistory()
+internal sealed class GangDocumentationTestWorkspaceFixture : IAsyncDisposable
+{
+    private readonly ServiceProvider _provider;
+    private readonly GangDocumentationTestWorkspacePathProvider _pathProvider;
+
+    private GangDocumentationTestWorkspaceFixture(ServiceProvider provider, GangDocumentationTestWorkspacePathProvider pathProvider)
     {
-        await using var fixture = await WorkspaceFixture.CreateAsync();
-        var service = fixture.Services.GetRequiredService<IGangDocumentationService>();
-        var organizationService = fixture.Services.GetRequiredService<IOrganizationService>();
-
-        var createdTarget = await fixture.CreateTargetAsync("Tyrone Hill", createGlobalPerson: true);
-        var organization = await organizationService.CreateOrganizationAsync(
-            new CreateOrganizationRequest("Hoover Criminals", "gang", "active", null, null),
-            CancellationToken.None
-        );
-        var documentation = await service.CreateDocumentationAsync(
-            new CreateGangDocumentationRequest(
-                createdTarget.CaseId,
-                createdTarget.TargetId,
-                organization.OrganizationId,
-                null,
-                "suspected",
-                "draft",
-                "not submitted",
-                null,
-                null,
-                "Initial documentation.",
-                null
-            ),
-            CancellationToken.None
-        );
-
-        var updated = await service.UpdateDocumentationAsync(
-            new UpdateGangDocumentationRequest(
-                createdTarget.CaseId,
-                documentation.DocumentationId,
-                organization.OrganizationId,
-                null,
-                "associate",
-                "pending review",
-                "approved",
-                "Lieutenant Shaw",
-                new DateTimeOffset(2026, 4, 15, 0, 0, 0, TimeSpan.Zero),
-                "Documentation advanced for approval.",
-                "Reviewed against current packet."
-            ),
-            CancellationToken.None
-        );
-
-        Assert.Equal("associate", updated.AffiliationRole);
-        Assert.Equal("pending review", updated.DocumentationStatus);
-        Assert.Equal("approved", updated.ApprovalStatus);
-        Assert.Equal("Lieutenant Shaw", updated.Reviewer);
-        Assert.Equal(new DateTimeOffset(2026, 4, 15, 0, 0, 0, TimeSpan.Zero), updated.ReviewDueDateUtc);
-        Assert.True(updated.StatusHistory.Count >= 2);
-        Assert.Contains(updated.StatusHistory, item => item.ActionType == "WorkflowUpdated");
-
-        await using var db = await fixture.CreateDbContextAsync();
-        var actionTypes = await db.AuditEvents
-            .AsNoTracking()
-            .Where(item => item.CaseId == createdTarget.CaseId)
-            .Select(item => item.ActionType)
-            .ToListAsync();
-        Assert.Contains("GangDocumentationUpdated", actionTypes);
-        Assert.Contains("GangDocumentationStatusChanged", actionTypes);
+        _provider = provider;
+        _pathProvider = pathProvider;
     }
 
-    private sealed class WorkspaceFixture : IAsyncDisposable
+    public IServiceProvider Services => _provider;
+
+    public static async Task<GangDocumentationTestWorkspaceFixture> CreateAsync()
     {
-        private readonly ServiceProvider _provider;
-        private readonly TestWorkspacePathProvider _pathProvider;
+        var workspaceRoot = Path.Combine(
+            Path.GetTempPath(),
+            "CaseGraph.Infrastructure.Tests",
+            Guid.NewGuid().ToString("N")
+        );
+        Directory.CreateDirectory(workspaceRoot);
 
-        private WorkspaceFixture(ServiceProvider provider, TestWorkspacePathProvider pathProvider)
+        var pathProvider = new GangDocumentationTestWorkspacePathProvider(workspaceRoot);
+        var services = new ServiceCollection();
+        services.AddSingleton<IClock>(
+            new GangDocumentationFixedClock(new DateTimeOffset(2026, 3, 14, 12, 0, 0, TimeSpan.Zero))
+        );
+        services.AddSingleton<IWorkspacePathProvider>(pathProvider);
+        services.AddDbContextFactory<WorkspaceDbContext>(options =>
         {
-            _provider = provider;
-            _pathProvider = pathProvider;
+            Directory.CreateDirectory(pathProvider.WorkspaceRoot);
+            options.UseSqlite($"Data Source={pathProvider.WorkspaceDbPath}");
+        });
+        services.AddSingleton<WorkspaceDbRebuilder>();
+        services.AddSingleton<WorkspaceDbInitializer>();
+        services.AddSingleton<IWorkspaceDbInitializer>(
+            provider => provider.GetRequiredService<WorkspaceDbInitializer>()
+        );
+        services.AddSingleton<IWorkspaceDatabaseInitializer>(
+            provider => provider.GetRequiredService<WorkspaceDbInitializer>()
+        );
+        services.AddSingleton<IWorkspaceWriteGate, WorkspaceWriteGate>();
+        services.AddSingleton<IAuditLogService, AuditLogService>();
+        services.AddSingleton<ICaseWorkspaceService, CaseWorkspaceService>();
+        services.AddSingleton<IMessageSearchService, MessageSearchService>();
+        services.AddSingleton<ITargetMessagePresenceIndexService, TargetMessagePresenceIndexService>();
+        services.AddSingleton<ITargetRegistryService, TargetRegistryService>();
+        services.AddSingleton<IOrganizationService, OrganizationService>();
+        services.AddSingleton<IGangDocumentationService, GangDocumentationService>();
+
+        var provider = services.BuildServiceProvider();
+        var initializer = provider.GetRequiredService<IWorkspaceDatabaseInitializer>();
+        await initializer.EnsureInitializedAsync(CancellationToken.None);
+
+        return new GangDocumentationTestWorkspaceFixture(provider, pathProvider);
+    }
+
+    public Task<WorkspaceDbContext> CreateDbContextAsync()
+    {
+        var factory = _provider.GetRequiredService<IDbContextFactory<WorkspaceDbContext>>();
+        return factory.CreateDbContextAsync(CancellationToken.None);
+    }
+
+    public async Task<GangDocumentationCreatedTarget> CreateTargetAsync(string displayName, bool createGlobalPerson)
+    {
+        var workspace = _provider.GetRequiredService<ICaseWorkspaceService>();
+        var targetRegistry = _provider.GetRequiredService<ITargetRegistryService>();
+        var caseInfo = await workspace.CreateCaseAsync($"{displayName} Case", CancellationToken.None);
+        var target = await targetRegistry.CreateTargetAsync(
+            new CreateTargetRequest(caseInfo.CaseId, displayName, null, null, CreateGlobalPerson: createGlobalPerson),
+            CancellationToken.None
+        );
+        var details = await targetRegistry.GetTargetDetailsAsync(caseInfo.CaseId, target.TargetId, CancellationToken.None);
+        Assert.NotNull(details);
+
+        return new GangDocumentationCreatedTarget(
+            caseInfo.CaseId,
+            target.TargetId,
+            details!.GlobalPerson?.GlobalEntityId
+        );
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        await _provider.DisposeAsync();
+
+        if (!Directory.Exists(_pathProvider.WorkspaceRoot))
+        {
+            return;
         }
 
-        public IServiceProvider Services => _provider;
-
-        public static async Task<WorkspaceFixture> CreateAsync()
+        for (var attempt = 1; attempt <= 5; attempt++)
         {
-            var workspaceRoot = Path.Combine(
-                Path.GetTempPath(),
-                "CaseGraph.Infrastructure.Tests",
-                Guid.NewGuid().ToString("N")
-            );
-            Directory.CreateDirectory(workspaceRoot);
-
-            var pathProvider = new TestWorkspacePathProvider(workspaceRoot);
-            var services = new ServiceCollection();
-            services.AddSingleton<IClock>(
-                new FixedClock(new DateTimeOffset(2026, 3, 14, 12, 0, 0, TimeSpan.Zero))
-            );
-            services.AddSingleton<IWorkspacePathProvider>(pathProvider);
-            services.AddDbContextFactory<WorkspaceDbContext>(options =>
+            try
             {
-                Directory.CreateDirectory(pathProvider.WorkspaceRoot);
-                options.UseSqlite($"Data Source={pathProvider.WorkspaceDbPath}");
-            });
-            services.AddSingleton<WorkspaceDbRebuilder>();
-            services.AddSingleton<WorkspaceDbInitializer>();
-            services.AddSingleton<IWorkspaceDbInitializer>(
-                provider => provider.GetRequiredService<WorkspaceDbInitializer>()
-            );
-            services.AddSingleton<IWorkspaceDatabaseInitializer>(
-                provider => provider.GetRequiredService<WorkspaceDbInitializer>()
-            );
-            services.AddSingleton<IWorkspaceWriteGate, WorkspaceWriteGate>();
-            services.AddSingleton<IAuditLogService, AuditLogService>();
-            services.AddSingleton<ICaseWorkspaceService, CaseWorkspaceService>();
-            services.AddSingleton<IMessageSearchService, MessageSearchService>();
-            services.AddSingleton<ITargetMessagePresenceIndexService, TargetMessagePresenceIndexService>();
-            services.AddSingleton<ITargetRegistryService, TargetRegistryService>();
-            services.AddSingleton<IOrganizationService, OrganizationService>();
-            services.AddSingleton<IGangDocumentationService, GangDocumentationService>();
-
-            var provider = services.BuildServiceProvider();
-            var initializer = provider.GetRequiredService<IWorkspaceDatabaseInitializer>();
-            await initializer.EnsureInitializedAsync(CancellationToken.None);
-
-            return new WorkspaceFixture(provider, pathProvider);
-        }
-
-        public Task<WorkspaceDbContext> CreateDbContextAsync()
-        {
-            var factory = _provider.GetRequiredService<IDbContextFactory<WorkspaceDbContext>>();
-            return factory.CreateDbContextAsync(CancellationToken.None);
-        }
-
-        public async Task<CreatedTarget> CreateTargetAsync(string displayName, bool createGlobalPerson)
-        {
-            var workspace = _provider.GetRequiredService<ICaseWorkspaceService>();
-            var targetRegistry = _provider.GetRequiredService<ITargetRegistryService>();
-            var caseInfo = await workspace.CreateCaseAsync($"{displayName} Case", CancellationToken.None);
-            var target = await targetRegistry.CreateTargetAsync(
-                new CreateTargetRequest(caseInfo.CaseId, displayName, null, null, CreateGlobalPerson: createGlobalPerson),
-                CancellationToken.None
-            );
-            var details = await targetRegistry.GetTargetDetailsAsync(caseInfo.CaseId, target.TargetId, CancellationToken.None);
-            Assert.NotNull(details);
-
-            return new CreatedTarget(
-                caseInfo.CaseId,
-                target.TargetId,
-                details!.GlobalPerson?.GlobalEntityId
-            );
-        }
-
-        public async ValueTask DisposeAsync()
-        {
-            await _provider.DisposeAsync();
-
-            if (!Directory.Exists(_pathProvider.WorkspaceRoot))
-            {
+                Directory.Delete(_pathProvider.WorkspaceRoot, recursive: true);
                 return;
             }
-
-            for (var attempt = 1; attempt <= 5; attempt++)
+            catch (IOException)
             {
-                try
+                if (attempt == 5)
                 {
-                    Directory.Delete(_pathProvider.WorkspaceRoot, recursive: true);
                     return;
                 }
-                catch (IOException)
-                {
-                    if (attempt == 5)
-                    {
-                        return;
-                    }
 
-                    await Task.Delay(50);
-                }
-                catch (UnauthorizedAccessException)
+                await Task.Delay(50);
+            }
+            catch (UnauthorizedAccessException)
+            {
+                if (attempt == 5)
                 {
-                    if (attempt == 5)
-                    {
-                        return;
-                    }
-
-                    await Task.Delay(50);
+                    return;
                 }
+
+                await Task.Delay(50);
             }
         }
     }
-
-    private sealed class TestWorkspacePathProvider : IWorkspacePathProvider
-    {
-        public TestWorkspacePathProvider(string workspaceRoot)
-        {
-            WorkspaceRoot = workspaceRoot;
-            WorkspaceDbPath = Path.Combine(workspaceRoot, "workspace.db");
-            CasesRoot = Path.Combine(workspaceRoot, "cases");
-        }
-
-        public string WorkspaceRoot { get; }
-
-        public string WorkspaceDbPath { get; }
-
-        public string CasesRoot { get; }
-    }
-
-    private sealed class FixedClock : IClock
-    {
-        public FixedClock(DateTimeOffset utcNow)
-        {
-            UtcNow = utcNow;
-        }
-
-        public DateTimeOffset UtcNow { get; }
-    }
-
-    private sealed record CreatedTarget(Guid CaseId, Guid TargetId, Guid? GlobalEntityId);
 }
+
+internal sealed class GangDocumentationTestWorkspacePathProvider : IWorkspacePathProvider
+{
+    public GangDocumentationTestWorkspacePathProvider(string workspaceRoot)
+    {
+        WorkspaceRoot = workspaceRoot;
+        WorkspaceDbPath = Path.Combine(workspaceRoot, "workspace.db");
+        CasesRoot = Path.Combine(workspaceRoot, "cases");
+    }
+
+    public string WorkspaceRoot { get; }
+
+    public string WorkspaceDbPath { get; }
+
+    public string CasesRoot { get; }
+}
+
+internal sealed class GangDocumentationFixedClock : IClock
+{
+    public GangDocumentationFixedClock(DateTimeOffset utcNow)
+    {
+        UtcNow = utcNow;
+    }
+
+    public DateTimeOffset UtcNow { get; }
+}
+
+internal sealed record GangDocumentationCreatedTarget(Guid CaseId, Guid TargetId, Guid? GlobalEntityId);

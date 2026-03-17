@@ -10,23 +10,20 @@ public sealed record GangDocumentationRecord(
     Guid? SubgroupOrganizationId,
     string? SubgroupOrganizationName,
     string AffiliationRole,
-    string DocumentationStatus,
-    string ApprovalStatus,
-    string? Reviewer,
-    DateTimeOffset? ReviewDueDateUtc,
     string Summary,
     string? Notes,
     DateTimeOffset CreatedAtUtc,
     DateTimeOffset UpdatedAtUtc,
+    GangDocumentationReview Review,
     IReadOnlyList<GangDocumentationCriterion> Criteria,
     IReadOnlyList<GangDocumentationStatusHistoryEntry> StatusHistory
-);
+)
+{
+    public string DocumentationStatus => Review.WorkflowStatus;
 
-public sealed record GangDocumentationStatusHistoryEntry(
-    Guid HistoryEntryId,
-    Guid DocumentationId,
-    string ActionType,
-    string Summary,
-    string? ChangedBy,
-    DateTimeOffset ChangedAtUtc
-);
+    public string ApprovalStatus => Review.ApprovalStatus;
+
+    public string? Reviewer => Review.ReviewerName;
+
+    public DateTimeOffset? ReviewDueDateUtc => Review.ReviewDueDateUtc;
+}

@@ -853,14 +853,22 @@ public sealed class OrganizationService : IOrganizationService
                         record.SubgroupOrganizationId,
                         record.SubgroupOrganization?.Name,
                         record.AffiliationRole,
-                        record.DocumentationStatus,
-                        record.ApprovalStatus,
-                        record.Reviewer,
-                        record.ReviewDueDateUtc,
                         record.Summary,
                         record.Notes,
                         record.CreatedAtUtc,
                         record.UpdatedAtUtc,
+                        new GangDocumentationReview(
+                            record.DocumentationId,
+                            record.DocumentationId,
+                            record.Review?.WorkflowStatus ?? record.DocumentationStatus,
+                            record.Review?.ReviewerName ?? record.Reviewer,
+                            record.Review?.ReviewerIdentity,
+                            record.Review?.SubmittedForReviewAtUtc,
+                            record.Review?.ReviewedAtUtc,
+                            record.Review?.ApprovedAtUtc,
+                            record.Review?.ReviewDueDateUtc ?? record.ReviewDueDateUtc,
+                            record.Review?.DecisionNote
+                        ),
                         [],
                         []
                     ))
@@ -1034,3 +1042,4 @@ public sealed class OrganizationService : IOrganizationService
         }
     }
 }
+

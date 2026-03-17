@@ -18,6 +18,73 @@ public sealed class GangDocumentationService : IGangDocumentationService
         "subgroup"
     ];
 
+    private static readonly IReadOnlyDictionary<string, WorkflowTransitionDefinition> WorkflowTransitions =
+        new Dictionary<string, WorkflowTransitionDefinition>(StringComparer.Ordinal)
+        {
+            [GangDocumentationCatalog.WorkflowActionSubmitForReview] = new WorkflowTransitionDefinition(
+                GangDocumentationCatalog.WorkflowStatusPendingSupervisorReview,
+                new HashSet<string>(StringComparer.Ordinal)
+                {
+                    GangDocumentationCatalog.WorkflowStatusDraft,
+                    GangDocumentationCatalog.WorkflowStatusReturnedForChanges
+                },
+                RequiresReviewer: false,
+                RequiresDecisionNote: false
+            ),
+            [GangDocumentationCatalog.WorkflowActionApprove] = new WorkflowTransitionDefinition(
+                GangDocumentationCatalog.WorkflowStatusApproved,
+                new HashSet<string>(StringComparer.Ordinal)
+                {
+                    GangDocumentationCatalog.WorkflowStatusPendingSupervisorReview
+                },
+                RequiresReviewer: true,
+                RequiresDecisionNote: true
+            ),
+            [GangDocumentationCatalog.WorkflowActionReturnForChanges] = new WorkflowTransitionDefinition(
+                GangDocumentationCatalog.WorkflowStatusReturnedForChanges,
+                new HashSet<string>(StringComparer.Ordinal)
+                {
+                    GangDocumentationCatalog.WorkflowStatusPendingSupervisorReview
+                },
+                RequiresReviewer: true,
+                RequiresDecisionNote: true
+            ),
+            [GangDocumentationCatalog.WorkflowActionMarkInactive] = new WorkflowTransitionDefinition(
+                GangDocumentationCatalog.WorkflowStatusInactive,
+                new HashSet<string>(StringComparer.Ordinal)
+                {
+                    GangDocumentationCatalog.WorkflowStatusDraft,
+                    GangDocumentationCatalog.WorkflowStatusPendingSupervisorReview,
+                    GangDocumentationCatalog.WorkflowStatusApproved,
+                    GangDocumentationCatalog.WorkflowStatusReturnedForChanges,
+                    GangDocumentationCatalog.WorkflowStatusPurgeReview
+                },
+                RequiresReviewer: true,
+                RequiresDecisionNote: true
+            ),
+            [GangDocumentationCatalog.WorkflowActionMarkPurgeReview] = new WorkflowTransitionDefinition(
+                GangDocumentationCatalog.WorkflowStatusPurgeReview,
+                new HashSet<string>(StringComparer.Ordinal)
+                {
+                    GangDocumentationCatalog.WorkflowStatusPendingSupervisorReview,
+                    GangDocumentationCatalog.WorkflowStatusApproved,
+                    GangDocumentationCatalog.WorkflowStatusInactive,
+                    GangDocumentationCatalog.WorkflowStatusReturnedForChanges
+                },
+                RequiresReviewer: true,
+                RequiresDecisionNote: true
+            ),
+            [GangDocumentationCatalog.WorkflowActionPurge] = new WorkflowTransitionDefinition(
+                GangDocumentationCatalog.WorkflowStatusPurged,
+                new HashSet<string>(StringComparer.Ordinal)
+                {
+                    GangDocumentationCatalog.WorkflowStatusPurgeReview
+                },
+                RequiresReviewer: true,
+                RequiresDecisionNote: true
+            )
+        };
+
     private readonly IDbContextFactory<WorkspaceDbContext> _dbContextFactory;
     private readonly IWorkspaceDatabaseInitializer _databaseInitializer;
     private readonly IWorkspaceWriteGate _workspaceWriteGate;
@@ -64,6 +131,14 @@ public sealed class GangDocumentationService : IGangDocumentationService
         return UpdateDocumentationCoreAsync(request, ct);
     }
 
+    public Task<GangDocumentationRecord> TransitionWorkflowAsync(
+        TransitionGangDocumentationWorkflowRequest request,
+        CancellationToken ct
+    )
+    {
+        return TransitionWorkflowCoreAsync(request, ct);
+    }
+
     public Task<GangDocumentationCriterion> SaveCriterionAsync(
         SaveGangDocumentationCriterionRequest request,
         CancellationToken ct
@@ -95,6 +170,7 @@ public sealed class GangDocumentationService : IGangDocumentationService
             .AsNoTracking()
             .Include(record => record.Organization)
             .Include(record => record.SubgroupOrganization)
+            .Include(record => record.Review)
             .Where(record => record.CaseId == caseId && record.TargetId == targetId)
             .ToListAsync(ct);
 
@@ -178,31 +254,36 @@ public sealed class GangDocumentationService : IGangDocumentationService
                 GangDocumentationCatalog.AffiliationRoles,
                 nameof(request.AffiliationRole)
             ),
-            DocumentationStatus = NormalizeCatalogValue(
-                request.DocumentationStatus,
-                GangDocumentationCatalog.DocumentationStatuses,
-                nameof(request.DocumentationStatus)
-            ),
-            ApprovalStatus = NormalizeCatalogValue(
-                request.ApprovalStatus,
-                GangDocumentationCatalog.ApprovalStatuses,
-                nameof(request.ApprovalStatus)
-            ),
-            Reviewer = NormalizeOptional(request.Reviewer),
-            ReviewDueDateUtc = NormalizeDate(request.ReviewDueDateUtc),
+            DocumentationStatus = GangDocumentationCatalog.WorkflowStatusDraft,
+            ApprovalStatus = GangDocumentationCatalog.GetApprovalStatus(GangDocumentationCatalog.WorkflowStatusDraft),
+            Reviewer = null,
+            ReviewDueDateUtc = null,
             Summary = NormalizeRequired(request.Summary, "Summary is required."),
             Notes = NormalizeOptional(request.Notes),
             CreatedAtUtc = now,
             UpdatedAtUtc = now
         };
 
+        documentation.Review = new GangDocumentationReviewRecord
+        {
+            ReviewId = documentation.DocumentationId,
+            DocumentationId = documentation.DocumentationId,
+            WorkflowStatus = GangDocumentationCatalog.WorkflowStatusDraft,
+            ReviewDueDateUtc = documentation.ReviewDueDateUtc
+        };
+
         db.GangDocumentationRecords.Add(documentation);
         AddHistoryEntry(
             db,
             documentation.DocumentationId,
-            "Created",
-            $"Documentation created with status {documentation.DocumentationStatus} and approval {documentation.ApprovalStatus}.",
-            now
+            actionType: "Created",
+            summary: "Documentation created in Draft.",
+            previousWorkflowStatus: null,
+            newWorkflowStatus: GangDocumentationCatalog.WorkflowStatusDraft,
+            decisionNote: null,
+            changedBy: Environment.UserName,
+            changedByIdentity: Environment.UserName,
+            timestampUtc: now
         );
 
         await SaveChangesWithWritePolicyAsync(
@@ -223,8 +304,7 @@ public sealed class GangDocumentationService : IGangDocumentationService
             {
                 ["organizationId"] = documentation.OrganizationId.ToString("D"),
                 ["subgroupOrganizationId"] = documentation.SubgroupOrganizationId?.ToString("D"),
-                ["documentationStatus"] = documentation.DocumentationStatus,
-                ["approvalStatus"] = documentation.ApprovalStatus
+                ["workflowStatus"] = documentation.Review.WorkflowStatus
             }
         );
 
@@ -243,11 +323,9 @@ public sealed class GangDocumentationService : IGangDocumentationService
                 documentation.SubgroupOrganizationId,
                 SubgroupOrganizationName = subgroup?.Name,
                 documentation.AffiliationRole,
-                documentation.DocumentationStatus,
-                documentation.ApprovalStatus,
-                documentation.Reviewer,
-                documentation.ReviewDueDateUtc,
-                documentation.Summary
+                documentation.Summary,
+                documentation.Notes,
+                WorkflowStatus = documentation.Review.WorkflowStatus
             },
             ct
         );
@@ -268,14 +346,19 @@ public sealed class GangDocumentationService : IGangDocumentationService
         await _databaseInitializer.EnsureInitializedAsync(ct);
         await using var db = await _dbContextFactory.CreateDbContextAsync(ct);
 
-        var documentation = await db.GangDocumentationRecords.FirstOrDefaultAsync(
-            record => record.CaseId == request.CaseId && record.DocumentationId == request.DocumentationId,
-            ct
-        );
+        var documentation = await db.GangDocumentationRecords
+            .Include(record => record.Review)
+            .FirstOrDefaultAsync(
+                record => record.CaseId == request.CaseId && record.DocumentationId == request.DocumentationId,
+                ct
+            );
         if (documentation is null)
         {
             throw new InvalidOperationException("Gang documentation record not found.");
         }
+
+        var review = EnsureReviewRecord(db, documentation);
+        EnsureWorkflowEditableForContent(review.WorkflowStatus);
 
         var target = await GetTargetAsync(db, documentation.CaseId, documentation.TargetId, ct);
         var organization = await GetOrganizationAsync(db, request.OrganizationId, ct);
@@ -286,11 +369,6 @@ public sealed class GangDocumentationService : IGangDocumentationService
             ct
         );
 
-        var previousDocumentationStatus = documentation.DocumentationStatus;
-        var previousApprovalStatus = documentation.ApprovalStatus;
-        var previousReviewer = documentation.Reviewer;
-        var previousReviewDueDateUtc = documentation.ReviewDueDateUtc;
-
         documentation.GlobalEntityId = target.GlobalEntityId;
         documentation.OrganizationId = organization.OrganizationId;
         documentation.SubgroupOrganizationId = subgroup?.OrganizationId;
@@ -299,52 +377,10 @@ public sealed class GangDocumentationService : IGangDocumentationService
             GangDocumentationCatalog.AffiliationRoles,
             nameof(request.AffiliationRole)
         );
-        documentation.DocumentationStatus = NormalizeCatalogValue(
-            request.DocumentationStatus,
-            GangDocumentationCatalog.DocumentationStatuses,
-            nameof(request.DocumentationStatus)
-        );
-        documentation.ApprovalStatus = NormalizeCatalogValue(
-            request.ApprovalStatus,
-            GangDocumentationCatalog.ApprovalStatuses,
-            nameof(request.ApprovalStatus)
-        );
-        documentation.Reviewer = NormalizeOptional(request.Reviewer);
-        documentation.ReviewDueDateUtc = NormalizeDate(request.ReviewDueDateUtc);
         documentation.Summary = NormalizeRequired(request.Summary, "Summary is required.");
         documentation.Notes = NormalizeOptional(request.Notes);
         documentation.UpdatedAtUtc = _clock.UtcNow.ToUniversalTime();
-
-        var workflowChanged = HasWorkflowChanged(
-            previousDocumentationStatus,
-            documentation.DocumentationStatus,
-            previousApprovalStatus,
-            documentation.ApprovalStatus,
-            previousReviewer,
-            documentation.Reviewer,
-            previousReviewDueDateUtc,
-            documentation.ReviewDueDateUtc
-        );
-
-        if (workflowChanged)
-        {
-            AddHistoryEntry(
-                db,
-                documentation.DocumentationId,
-                "WorkflowUpdated",
-                BuildWorkflowSummary(
-                    previousDocumentationStatus,
-                    documentation.DocumentationStatus,
-                    previousApprovalStatus,
-                    documentation.ApprovalStatus,
-                    previousReviewer,
-                    documentation.Reviewer,
-                    previousReviewDueDateUtc,
-                    documentation.ReviewDueDateUtc
-                ),
-                documentation.UpdatedAtUtc
-            );
-        }
+        SyncLegacyWorkflowFields(documentation, review);
 
         await SaveChangesWithWritePolicyAsync(
             db,
@@ -364,8 +400,7 @@ public sealed class GangDocumentationService : IGangDocumentationService
             {
                 ["organizationId"] = documentation.OrganizationId.ToString("D"),
                 ["subgroupOrganizationId"] = documentation.SubgroupOrganizationId?.ToString("D"),
-                ["documentationStatus"] = documentation.DocumentationStatus,
-                ["approvalStatus"] = documentation.ApprovalStatus
+                ["workflowStatus"] = review.WorkflowStatus
             }
         );
 
@@ -384,38 +419,133 @@ public sealed class GangDocumentationService : IGangDocumentationService
                 documentation.SubgroupOrganizationId,
                 SubgroupOrganizationName = subgroup?.Name,
                 documentation.AffiliationRole,
-                documentation.DocumentationStatus,
-                documentation.ApprovalStatus,
-                documentation.Reviewer,
-                documentation.ReviewDueDateUtc,
-                documentation.Summary
+                documentation.Summary,
+                documentation.Notes,
+                WorkflowStatus = review.WorkflowStatus
             },
             ct
         );
 
-        if (workflowChanged)
+        return await GetDocumentationByIdAsync(request.CaseId, documentation.DocumentationId, ct);
+    }
+
+    private async Task<GangDocumentationRecord> TransitionWorkflowCoreAsync(
+        TransitionGangDocumentationWorkflowRequest request,
+        CancellationToken ct
+    )
+    {
+        if (request.CaseId == Guid.Empty || request.DocumentationId == Guid.Empty)
         {
-            await WriteAuditAsync(
-                "GangDocumentationStatusChanged",
-                request.CaseId,
-                $"Gang documentation workflow updated for {target.DisplayName}.",
-                new
-                {
-                    documentation.DocumentationId,
-                    documentation.TargetId,
-                    target.DisplayName,
-                    PreviousDocumentationStatus = previousDocumentationStatus,
-                    documentation.DocumentationStatus,
-                    PreviousApprovalStatus = previousApprovalStatus,
-                    documentation.ApprovalStatus,
-                    PreviousReviewer = previousReviewer,
-                    documentation.Reviewer,
-                    PreviousReviewDueDateUtc = previousReviewDueDateUtc,
-                    documentation.ReviewDueDateUtc
-                },
-                ct
-            );
+            throw new ArgumentException("CaseId and DocumentationId are required.", nameof(request));
         }
+
+        var workflowAction = NormalizeCatalogValue(
+            request.WorkflowAction,
+            GangDocumentationCatalog.WorkflowActions,
+            nameof(request.WorkflowAction)
+        );
+        var transition = WorkflowTransitions[workflowAction];
+        var reviewerName = NormalizeOptional(request.ReviewerName);
+        var decisionNote = NormalizeOptional(request.DecisionNote);
+
+        if (transition.RequiresReviewer && reviewerName is null)
+        {
+            throw new ArgumentException("Reviewer name is required for this workflow action.", nameof(request.ReviewerName));
+        }
+
+        if (transition.RequiresDecisionNote && decisionNote is null)
+        {
+            throw new ArgumentException("Decision note is required for this workflow action.", nameof(request.DecisionNote));
+        }
+
+        await _databaseInitializer.EnsureInitializedAsync(ct);
+        await using var db = await _dbContextFactory.CreateDbContextAsync(ct);
+
+        var documentation = await db.GangDocumentationRecords
+            .Include(record => record.Review)
+            .FirstOrDefaultAsync(
+                record => record.CaseId == request.CaseId && record.DocumentationId == request.DocumentationId,
+                ct
+            ) ?? throw new InvalidOperationException("Gang documentation record not found.");
+
+        var targetDisplayName = await GetTargetDisplayNameAsync(db, documentation.TargetId, ct);
+        var review = EnsureReviewRecord(db, documentation);
+        var previousWorkflowStatus = NormalizeWorkflowStatus(review.WorkflowStatus);
+        EnsureValidTransition(previousWorkflowStatus, workflowAction, transition);
+
+        var now = _clock.UtcNow.ToUniversalTime();
+        ApplyWorkflowTransition(review, documentation, workflowAction, reviewerName, decisionNote, now);
+        documentation.UpdatedAtUtc = now;
+        SyncLegacyWorkflowFields(documentation, review);
+
+        var changedByIdentity = Environment.UserName;
+        var changedBy = reviewerName ?? changedByIdentity;
+        var summary = BuildTransitionSummary(
+            workflowAction,
+            previousWorkflowStatus,
+            review.WorkflowStatus,
+            reviewerName,
+            decisionNote
+        );
+
+        AddHistoryEntry(
+            db,
+            documentation.DocumentationId,
+            actionType: workflowAction,
+            summary: summary,
+            previousWorkflowStatus: previousWorkflowStatus,
+            newWorkflowStatus: review.WorkflowStatus,
+            decisionNote: decisionNote,
+            changedBy: changedBy,
+            changedByIdentity: changedByIdentity,
+            timestampUtc: now
+        );
+
+        await SaveChangesWithWritePolicyAsync(
+            db,
+            "GangDocumentation.TransitionWorkflow",
+            request.CaseId,
+            documentation.DocumentationId,
+            ct
+        );
+
+        LogDiagnostic(
+            GetDiagnosticEventName(workflowAction),
+            summary,
+            request.CaseId,
+            documentation.DocumentationId,
+            documentation.TargetId,
+            new Dictionary<string, object?>
+            {
+                ["workflowAction"] = workflowAction,
+                ["previousWorkflowStatus"] = previousWorkflowStatus,
+                ["workflowStatus"] = review.WorkflowStatus,
+                ["reviewerName"] = reviewerName,
+                ["decisionNote"] = decisionNote
+            }
+        );
+
+        await WriteAuditAsync(
+            GetAuditActionType(workflowAction),
+            request.CaseId,
+            $"{GangDocumentationCatalog.GetWorkflowActionDisplayName(workflowAction)} completed for {targetDisplayName}.",
+            new
+            {
+                documentation.DocumentationId,
+                documentation.TargetId,
+                targetDisplayName,
+                WorkflowAction = workflowAction,
+                PreviousWorkflowStatus = previousWorkflowStatus,
+                WorkflowStatus = review.WorkflowStatus,
+                review.ReviewerName,
+                review.ReviewerIdentity,
+                review.SubmittedForReviewAtUtc,
+                review.ReviewedAtUtc,
+                review.ApprovedAtUtc,
+                review.DecisionNote
+            },
+            ct
+        );
 
         return await GetDocumentationByIdAsync(request.CaseId, documentation.DocumentationId, ct);
     }
@@ -433,21 +563,21 @@ public sealed class GangDocumentationService : IGangDocumentationService
         await _databaseInitializer.EnsureInitializedAsync(ct);
         await using var db = await _dbContextFactory.CreateDbContextAsync(ct);
 
-        var documentation = await db.GangDocumentationRecords.FirstOrDefaultAsync(
-            record => record.CaseId == request.CaseId && record.DocumentationId == request.DocumentationId,
-            ct
-        );
+        var documentation = await db.GangDocumentationRecords
+            .Include(record => record.Review)
+            .FirstOrDefaultAsync(
+                record => record.CaseId == request.CaseId && record.DocumentationId == request.DocumentationId,
+                ct
+            );
         if (documentation is null)
         {
             throw new InvalidOperationException("Gang documentation record not found.");
         }
 
-        var targetDisplayName = await db.Targets
-            .AsNoTracking()
-            .Where(target => target.TargetId == documentation.TargetId)
-            .Select(target => target.DisplayName)
-            .FirstOrDefaultAsync(ct)
-            ?? $"Target {documentation.TargetId:D}";
+        var review = EnsureReviewRecord(db, documentation);
+        EnsureWorkflowEditableForContent(review.WorkflowStatus);
+
+        var targetDisplayName = await GetTargetDisplayNameAsync(db, documentation.TargetId, ct);
 
         var now = _clock.UtcNow.ToUniversalTime();
         var isCreate = !request.CriterionId.HasValue || request.CriterionId.Value == Guid.Empty;
@@ -501,6 +631,7 @@ public sealed class GangDocumentationService : IGangDocumentationService
         }
 
         documentation.UpdatedAtUtc = now;
+        SyncLegacyWorkflowFields(documentation, review);
         await SaveChangesWithWritePolicyAsync(
             db,
             "GangDocumentation.SaveCriterion",
@@ -519,7 +650,8 @@ public sealed class GangDocumentationService : IGangDocumentationService
             {
                 ["criterionId"] = criterion.CriterionId.ToString("D"),
                 ["criterionType"] = criterion.CriterionType,
-                ["isMet"] = criterion.IsMet
+                ["isMet"] = criterion.IsMet,
+                ["workflowStatus"] = review.WorkflowStatus
             }
         );
 
@@ -538,7 +670,8 @@ public sealed class GangDocumentationService : IGangDocumentationService
                 criterion.BasisSummary,
                 criterion.ObservedDateUtc,
                 criterion.SourceNote,
-                criterion.SortOrder
+                criterion.SortOrder,
+                WorkflowStatus = review.WorkflowStatus
             },
             ct
         );
@@ -561,14 +694,19 @@ public sealed class GangDocumentationService : IGangDocumentationService
         await _databaseInitializer.EnsureInitializedAsync(ct);
         await using var db = await _dbContextFactory.CreateDbContextAsync(ct);
 
-        var documentation = await db.GangDocumentationRecords.FirstOrDefaultAsync(
-            record => record.CaseId == caseId && record.DocumentationId == documentationId,
-            ct
-        );
+        var documentation = await db.GangDocumentationRecords
+            .Include(record => record.Review)
+            .FirstOrDefaultAsync(
+                record => record.CaseId == caseId && record.DocumentationId == documentationId,
+                ct
+            );
         if (documentation is null)
         {
             return;
         }
+
+        var review = EnsureReviewRecord(db, documentation);
+        EnsureWorkflowEditableForContent(review.WorkflowStatus);
 
         var criterion = await db.GangDocumentationCriteria.FirstOrDefaultAsync(
             record => record.DocumentationId == documentationId && record.CriterionId == criterionId,
@@ -579,15 +717,11 @@ public sealed class GangDocumentationService : IGangDocumentationService
             return;
         }
 
-        var targetDisplayName = await db.Targets
-            .AsNoTracking()
-            .Where(target => target.TargetId == documentation.TargetId)
-            .Select(target => target.DisplayName)
-            .FirstOrDefaultAsync(ct)
-            ?? $"Target {documentation.TargetId:D}";
+        var targetDisplayName = await GetTargetDisplayNameAsync(db, documentation.TargetId, ct);
 
         documentation.UpdatedAtUtc = _clock.UtcNow.ToUniversalTime();
         db.GangDocumentationCriteria.Remove(criterion);
+        SyncLegacyWorkflowFields(documentation, review);
         await SaveChangesWithWritePolicyAsync(
             db,
             "GangDocumentation.RemoveCriterion",
@@ -605,7 +739,8 @@ public sealed class GangDocumentationService : IGangDocumentationService
             new Dictionary<string, object?>
             {
                 ["criterionId"] = criterionId.ToString("D"),
-                ["criterionType"] = criterion.CriterionType
+                ["criterionType"] = criterion.CriterionType,
+                ["workflowStatus"] = review.WorkflowStatus
             }
         );
 
@@ -619,7 +754,8 @@ public sealed class GangDocumentationService : IGangDocumentationService
                 documentation.TargetId,
                 targetDisplayName,
                 criterion.CriterionId,
-                criterion.CriterionType
+                criterion.CriterionType,
+                WorkflowStatus = review.WorkflowStatus
             },
             ct
         );
@@ -638,6 +774,7 @@ public sealed class GangDocumentationService : IGangDocumentationService
             .AsNoTracking()
             .Include(item => item.Organization)
             .Include(item => item.SubgroupOrganization)
+            .Include(item => item.Review)
             .FirstOrDefaultAsync(
                 item => item.CaseId == caseId && item.DocumentationId == documentationId,
                 ct
@@ -683,16 +820,33 @@ public sealed class GangDocumentationService : IGangDocumentationService
             record.SubgroupOrganizationId,
             record.SubgroupOrganization?.Name,
             record.AffiliationRole,
-            record.DocumentationStatus,
-            record.ApprovalStatus,
-            record.Reviewer,
-            record.ReviewDueDateUtc,
             record.Summary,
             record.Notes,
             record.CreatedAtUtc,
             record.UpdatedAtUtc,
+            MapReview(record.Review, record),
             criteria,
             history
+        );
+    }
+
+    private static GangDocumentationReview MapReview(
+        GangDocumentationReviewRecord? review,
+        GangDocumentationRecordEntity record
+    )
+    {
+        var effectiveReview = review ?? BuildLegacyReview(record);
+        return new GangDocumentationReview(
+            effectiveReview.ReviewId,
+            effectiveReview.DocumentationId,
+            NormalizeWorkflowStatus(effectiveReview.WorkflowStatus),
+            effectiveReview.ReviewerName,
+            effectiveReview.ReviewerIdentity,
+            effectiveReview.SubmittedForReviewAtUtc,
+            effectiveReview.ReviewedAtUtc,
+            effectiveReview.ApprovedAtUtc,
+            effectiveReview.ReviewDueDateUtc,
+            effectiveReview.DecisionNote
         );
     }
 
@@ -721,7 +875,11 @@ public sealed class GangDocumentationService : IGangDocumentationService
             record.DocumentationId,
             record.ActionType,
             record.Summary,
+            record.PreviousWorkflowStatus,
+            record.NewWorkflowStatus,
+            record.DecisionNote,
             record.ChangedBy,
+            record.ChangedByIdentity,
             record.ChangedAtUtc
         );
     }
@@ -737,6 +895,20 @@ public sealed class GangDocumentationService : IGangDocumentationService
             target => target.CaseId == caseId && target.TargetId == targetId,
             ct
         ) ?? throw new InvalidOperationException("Target not found.");
+    }
+
+    private static async Task<string> GetTargetDisplayNameAsync(
+        WorkspaceDbContext db,
+        Guid targetId,
+        CancellationToken ct
+    )
+    {
+        return await db.Targets
+            .AsNoTracking()
+            .Where(target => target.TargetId == targetId)
+            .Select(target => target.DisplayName)
+            .FirstOrDefaultAsync(ct)
+            ?? $"Target {targetId:D}";
     }
 
     private static async Task<OrganizationRecord> GetOrganizationAsync(
@@ -794,11 +966,110 @@ public sealed class GangDocumentationService : IGangDocumentationService
         return subgroup;
     }
 
+    private static GangDocumentationReviewRecord EnsureReviewRecord(
+        WorkspaceDbContext db,
+        GangDocumentationRecordEntity documentation
+    )
+    {
+        if (documentation.Review is not null)
+        {
+            documentation.Review.WorkflowStatus = NormalizeWorkflowStatus(documentation.Review.WorkflowStatus);
+            return documentation.Review;
+        }
+
+        var review = BuildLegacyReview(documentation);
+        documentation.Review = review;
+        db.GangDocumentationReviews.Add(review);
+        SyncLegacyWorkflowFields(documentation, review);
+        return review;
+    }
+
+    private static GangDocumentationReviewRecord BuildLegacyReview(
+        GangDocumentationRecordEntity documentation
+    )
+    {
+        return new GangDocumentationReviewRecord
+        {
+            ReviewId = documentation.DocumentationId,
+            DocumentationId = documentation.DocumentationId,
+            WorkflowStatus = NormalizeWorkflowStatus(documentation.DocumentationStatus),
+            ReviewerName = documentation.Reviewer,
+            ReviewerIdentity = null,
+            ApprovedAtUtc = string.Equals(
+                NormalizeWorkflowStatus(documentation.DocumentationStatus),
+                GangDocumentationCatalog.WorkflowStatusApproved,
+                StringComparison.Ordinal
+            )
+                ? documentation.UpdatedAtUtc
+                : null,
+            ReviewDueDateUtc = documentation.ReviewDueDateUtc
+        };
+    }
+
+    private static void ApplyWorkflowTransition(
+        GangDocumentationReviewRecord review,
+        GangDocumentationRecordEntity documentation,
+        string workflowAction,
+        string? reviewerName,
+        string? decisionNote,
+        DateTimeOffset timestampUtc
+    )
+    {
+        review.WorkflowStatus = WorkflowTransitions[workflowAction].TargetStatus;
+
+        switch (workflowAction)
+        {
+            case GangDocumentationCatalog.WorkflowActionSubmitForReview:
+                review.SubmittedForReviewAtUtc = timestampUtc;
+                review.ReviewedAtUtc = null;
+                review.ApprovedAtUtc = null;
+                review.DecisionNote = null;
+                review.ReviewerName = reviewerName;
+                review.ReviewerIdentity = null;
+                break;
+
+            case GangDocumentationCatalog.WorkflowActionApprove:
+                review.ReviewerName = reviewerName;
+                review.ReviewerIdentity = Environment.UserName;
+                review.ReviewedAtUtc = timestampUtc;
+                review.ApprovedAtUtc = timestampUtc;
+                review.DecisionNote = decisionNote;
+                break;
+
+            case GangDocumentationCatalog.WorkflowActionReturnForChanges:
+                review.ReviewerName = reviewerName;
+                review.ReviewerIdentity = Environment.UserName;
+                review.ReviewedAtUtc = timestampUtc;
+                review.ApprovedAtUtc = null;
+                review.DecisionNote = decisionNote;
+                break;
+
+            case GangDocumentationCatalog.WorkflowActionMarkInactive:
+            case GangDocumentationCatalog.WorkflowActionMarkPurgeReview:
+            case GangDocumentationCatalog.WorkflowActionPurge:
+                review.ReviewerName = reviewerName;
+                review.ReviewerIdentity = Environment.UserName;
+                review.ReviewedAtUtc = timestampUtc;
+                review.DecisionNote = decisionNote;
+                break;
+
+            default:
+                throw new InvalidOperationException($"Unsupported workflow action '{workflowAction}'.");
+        }
+
+        SyncLegacyWorkflowFields(documentation, review);
+    }
+
     private static void AddHistoryEntry(
         WorkspaceDbContext db,
         Guid documentationId,
         string actionType,
         string summary,
+        string? previousWorkflowStatus,
+        string? newWorkflowStatus,
+        string? decisionNote,
+        string? changedBy,
+        string? changedByIdentity,
         DateTimeOffset timestampUtc
     )
     {
@@ -808,9 +1079,56 @@ public sealed class GangDocumentationService : IGangDocumentationService
             DocumentationId = documentationId,
             ActionType = actionType,
             Summary = summary,
-            ChangedBy = Environment.UserName,
+            PreviousWorkflowStatus = previousWorkflowStatus,
+            NewWorkflowStatus = newWorkflowStatus,
+            DecisionNote = decisionNote,
+            ChangedBy = changedBy,
+            ChangedByIdentity = changedByIdentity,
             ChangedAtUtc = timestampUtc
         });
+    }
+
+    private static void SyncLegacyWorkflowFields(
+        GangDocumentationRecordEntity documentation,
+        GangDocumentationReviewRecord review
+    )
+    {
+        documentation.DocumentationStatus = review.WorkflowStatus;
+        documentation.ApprovalStatus = GangDocumentationCatalog.GetApprovalStatus(review.WorkflowStatus);
+        documentation.Reviewer = review.ReviewerName;
+        documentation.ReviewDueDateUtc = review.ReviewDueDateUtc;
+    }
+
+    private static void EnsureWorkflowEditableForContent(string workflowStatus)
+    {
+        if (GangDocumentationCatalog.IsEditableWorkflowStatus(workflowStatus))
+        {
+            return;
+        }
+
+        throw new InvalidOperationException(
+            "Gang documentation content can only be edited while the record is in Draft or Returned for Changes."
+        );
+    }
+
+    private static void EnsureValidTransition(
+        string currentWorkflowStatus,
+        string workflowAction,
+        WorkflowTransitionDefinition transition
+    )
+    {
+        if (transition.AllowedFrom.Contains(currentWorkflowStatus))
+        {
+            return;
+        }
+
+        var allowedFrom = string.Join(
+            ", ",
+            transition.AllowedFrom.Select(GangDocumentationCatalog.GetWorkflowStatusDisplayName)
+        );
+        throw new InvalidOperationException(
+            $"Cannot {workflowAction} when the record is in {GangDocumentationCatalog.GetWorkflowStatusDisplayName(currentWorkflowStatus)}. Allowed current states: {allowedFrom}."
+        );
     }
 
     private Task SaveChangesWithWritePolicyAsync(
@@ -881,64 +1199,58 @@ public sealed class GangDocumentationService : IGangDocumentationService
         );
     }
 
-    private static bool HasWorkflowChanged(
-        string previousDocumentationStatus,
-        string currentDocumentationStatus,
-        string previousApprovalStatus,
-        string currentApprovalStatus,
-        string? previousReviewer,
-        string? currentReviewer,
-        DateTimeOffset? previousReviewDueDateUtc,
-        DateTimeOffset? currentReviewDueDateUtc
+    private static string BuildTransitionSummary(
+        string workflowAction,
+        string previousWorkflowStatus,
+        string newWorkflowStatus,
+        string? reviewerName,
+        string? decisionNote
     )
     {
-        return !string.Equals(
-                previousDocumentationStatus,
-                currentDocumentationStatus,
-                StringComparison.Ordinal
-            )
-            || !string.Equals(previousApprovalStatus, currentApprovalStatus, StringComparison.Ordinal)
-            || !string.Equals(previousReviewer, currentReviewer, StringComparison.Ordinal)
-            || previousReviewDueDateUtc != currentReviewDueDateUtc;
+        var parts = new List<string>
+        {
+            $"{GangDocumentationCatalog.GetWorkflowActionDisplayName(workflowAction)} moved the record from {GangDocumentationCatalog.GetWorkflowStatusDisplayName(previousWorkflowStatus)} to {GangDocumentationCatalog.GetWorkflowStatusDisplayName(newWorkflowStatus)}."
+        };
+
+        if (!string.IsNullOrWhiteSpace(reviewerName))
+        {
+            parts.Add($"Reviewer: {reviewerName}.");
+        }
+
+        if (!string.IsNullOrWhiteSpace(decisionNote))
+        {
+            parts.Add($"Note: {decisionNote}.");
+        }
+
+        return string.Join(" ", parts);
     }
 
-    private static string BuildWorkflowSummary(
-        string previousDocumentationStatus,
-        string currentDocumentationStatus,
-        string previousApprovalStatus,
-        string currentApprovalStatus,
-        string? previousReviewer,
-        string? currentReviewer,
-        DateTimeOffset? previousReviewDueDateUtc,
-        DateTimeOffset? currentReviewDueDateUtc
-    )
+    private static string GetAuditActionType(string workflowAction)
     {
-        var changes = new List<string>();
-        if (!string.Equals(previousDocumentationStatus, currentDocumentationStatus, StringComparison.Ordinal))
+        return workflowAction switch
         {
-            changes.Add($"status {previousDocumentationStatus} -> {currentDocumentationStatus}");
-        }
+            GangDocumentationCatalog.WorkflowActionSubmitForReview => "GangDocumentationSubmittedForReview",
+            GangDocumentationCatalog.WorkflowActionApprove => "GangDocumentationApproved",
+            GangDocumentationCatalog.WorkflowActionReturnForChanges => "GangDocumentationReturnedForChanges",
+            GangDocumentationCatalog.WorkflowActionMarkInactive => "GangDocumentationMarkedInactive",
+            GangDocumentationCatalog.WorkflowActionMarkPurgeReview => "GangDocumentationMarkedPurgeReview",
+            GangDocumentationCatalog.WorkflowActionPurge => "GangDocumentationPurged",
+            _ => "GangDocumentationWorkflowChanged"
+        };
+    }
 
-        if (!string.Equals(previousApprovalStatus, currentApprovalStatus, StringComparison.Ordinal))
+    private static string GetDiagnosticEventName(string workflowAction)
+    {
+        return workflowAction switch
         {
-            changes.Add($"approval {previousApprovalStatus} -> {currentApprovalStatus}");
-        }
-
-        if (!string.Equals(previousReviewer, currentReviewer, StringComparison.Ordinal))
-        {
-            changes.Add($"reviewer {FormatNullable(previousReviewer)} -> {FormatNullable(currentReviewer)}");
-        }
-
-        if (previousReviewDueDateUtc != currentReviewDueDateUtc)
-        {
-            changes.Add(
-                $"review due {FormatNullableDate(previousReviewDueDateUtc)} -> {FormatNullableDate(currentReviewDueDateUtc)}"
-            );
-        }
-
-        return changes.Count == 0
-            ? "Gang documentation workflow updated."
-            : $"Gang documentation workflow updated: {string.Join("; ", changes)}.";
+            GangDocumentationCatalog.WorkflowActionSubmitForReview => "GangDocumentationSubmittedForReview",
+            GangDocumentationCatalog.WorkflowActionApprove => "GangDocumentationApproved",
+            GangDocumentationCatalog.WorkflowActionReturnForChanges => "GangDocumentationReturnedForChanges",
+            GangDocumentationCatalog.WorkflowActionMarkInactive => "GangDocumentationMarkedInactive",
+            GangDocumentationCatalog.WorkflowActionMarkPurgeReview => "GangDocumentationMarkedPurgeReview",
+            GangDocumentationCatalog.WorkflowActionPurge => "GangDocumentationPurged",
+            _ => "GangDocumentationWorkflowChanged"
+        };
     }
 
     private static void ValidateCaseAndTarget(Guid caseId, Guid targetId)
@@ -986,13 +1298,21 @@ public sealed class GangDocumentationService : IGangDocumentationService
         return normalized;
     }
 
-    private static string FormatNullable(string? value)
+    private static string NormalizeWorkflowStatus(string? workflowStatus)
     {
-        return string.IsNullOrWhiteSpace(value) ? "(none)" : value;
+        return workflowStatus?.Trim().ToLowerInvariant() switch
+        {
+            "pending review" => GangDocumentationCatalog.WorkflowStatusPendingSupervisorReview,
+            null or "" => GangDocumentationCatalog.WorkflowStatusDraft,
+            var normalized when GangDocumentationCatalog.WorkflowStatuses.Contains(normalized, StringComparer.Ordinal) => normalized,
+            _ => GangDocumentationCatalog.WorkflowStatusDraft
+        };
     }
 
-    private static string FormatNullableDate(DateTimeOffset? value)
-    {
-        return value.HasValue ? value.Value.ToString("yyyy-MM-dd") : "(none)";
-    }
+    private sealed record WorkflowTransitionDefinition(
+        string TargetStatus,
+        IReadOnlySet<string> AllowedFrom,
+        bool RequiresReviewer,
+        bool RequiresDecisionNote
+    );
 }
