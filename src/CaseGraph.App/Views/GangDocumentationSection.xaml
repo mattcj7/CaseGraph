@@ -413,6 +413,288 @@
                         </Button>
                     </WrapPanel>
 
+                    <TextBlock Margin="{StaticResource SpaceTop12}"
+                               Text="Export Packet"
+                               Style="{StaticResource SectionTitleTextStyle}" />
+                    <TextBlock Margin="{StaticResource SpaceTop8}"
+                               Text="{Binding PacketExportHint}"
+                               TextWrapping="Wrap"
+                               Style="{StaticResource SecondaryBodyTextStyle}" />
+
+                    <WrapPanel Margin="{StaticResource SpaceTop8}">
+                        <WrapPanel.Style>
+                            <Style TargetType="WrapPanel">
+                                <Setter Property="Visibility" Value="Collapsed" />
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding ShowPacketExportActions}" Value="True">
+                                        <Setter Property="Visibility" Value="Visible" />
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </WrapPanel.Style>
+                        <Button Margin="0,0,8,8"
+                                Content="Preview Packet"
+                                Command="{Binding PreviewPacketCommand}"
+                                Style="{StaticResource TopBarButtonStyle}"
+                                IsEnabled="{Binding CanPreviewPacket}" />
+                        <Button Margin="0,0,8,8"
+                                Content="Write HTML"
+                                Command="{Binding ExportPacketCommand}"
+                                IsEnabled="{Binding CanExportPacket}">
+                            <Button.Style>
+                                <Style TargetType="Button" BasedOn="{StaticResource TopBarButtonStyle}">
+                                    <Setter Property="Visibility" Value="Collapsed" />
+                                    <Style.Triggers>
+                                        <DataTrigger Binding="{Binding HasPacketPreview}" Value="True">
+                                            <Setter Property="Visibility" Value="Visible" />
+                                        </DataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </Button.Style>
+                        </Button>
+                        <Button Margin="0,0,8,8"
+                                Content="Close Preview"
+                                Command="{Binding ClosePacketPreviewCommand}">
+                            <Button.Style>
+                                <Style TargetType="Button" BasedOn="{StaticResource TopBarButtonStyle}">
+                                    <Setter Property="Visibility" Value="Collapsed" />
+                                    <Style.Triggers>
+                                        <DataTrigger Binding="{Binding HasPacketPreview}" Value="True">
+                                            <Setter Property="Visibility" Value="Visible" />
+                                        </DataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </Button.Style>
+                        </Button>
+                    </WrapPanel>
+
+                    <TextBlock Margin="{StaticResource SpaceTop8}"
+                               Text="{Binding PacketPreviewEmptyState}">
+                        <TextBlock.Style>
+                            <Style TargetType="TextBlock" BasedOn="{StaticResource SecondaryBodyTextStyle}">
+                                <Setter Property="Visibility" Value="Collapsed" />
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding ShowPacketExportActions}" Value="True">
+                                        <Setter Property="Visibility" Value="Visible" />
+                                    </DataTrigger>
+                                    <DataTrigger Binding="{Binding HasPacketPreview}" Value="True">
+                                        <Setter Property="Visibility" Value="Collapsed" />
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </TextBlock.Style>
+                    </TextBlock>
+
+                    <Border Margin="{StaticResource SpaceTop8}"
+                            Padding="12"
+                            BorderBrush="#33000000"
+                            BorderThickness="1"
+                            CornerRadius="6">
+                        <Border.Style>
+                            <Style TargetType="Border">
+                                <Setter Property="Visibility" Value="Collapsed" />
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding HasPacketPreview}" Value="True">
+                                        <Setter Property="Visibility" Value="Visible" />
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </Border.Style>
+                        <StackPanel>
+                            <TextBlock Text="Packet Preview" Style="{StaticResource SectionTitleTextStyle}" />
+                            <TextBlock Margin="{StaticResource SpaceTop8}"
+                                       Text="{Binding CurrentPacketPreview.Subject.SubjectDisplayName}"
+                                       Style="{StaticResource BodyTextStyle}" />
+                            <TextBlock Margin="{StaticResource SpaceTop4}"
+                                       Text="{Binding CurrentPacketPreview.CaseName, StringFormat=Case: {0}}"
+                                       TextWrapping="Wrap"
+                                       Style="{StaticResource SecondaryBodyTextStyle}" />
+                            <TextBlock Margin="{StaticResource SpaceTop4}"
+                                       Text="{Binding CurrentPacketPreview.GeneratedAtUtc, StringFormat=Preview generated (UTC): {0:yyyy-MM-dd HH:mm}}"
+                                       TextWrapping="Wrap"
+                                       Style="{StaticResource SecondaryBodyTextStyle}" />
+                            <TextBlock Margin="{StaticResource SpaceTop4}"
+                                       Text="{Binding CurrentPacketPreview.Operator, StringFormat=Operator: {0}}"
+                                       TextWrapping="Wrap"
+                                       Style="{StaticResource SecondaryBodyTextStyle}" />
+
+                            <TextBlock Margin="{StaticResource SpaceTop12}"
+                                       Text="Subject Summary"
+                                       Style="{StaticResource SecondaryBodyTextStyle}" />
+                            <TextBlock Margin="{StaticResource SpaceTop4}"
+                                       Text="{Binding CurrentPacketPreview.Subject.OrganizationName, StringFormat=Organization: {0}}"
+                                       TextWrapping="Wrap"
+                                       Style="{StaticResource BodyTextStyle}" />
+                            <TextBlock Margin="{StaticResource SpaceTop4}"
+                                       Text="{Binding CurrentPacketPreview.Subject.SubgroupOrganizationName, TargetNullValue=(none), StringFormat=Subgroup / Set / Clique: {0}}"
+                                       TextWrapping="Wrap"
+                                       Style="{StaticResource SecondaryBodyTextStyle}" />
+                            <TextBlock Margin="{StaticResource SpaceTop4}"
+                                       Text="{Binding CurrentPacketPreview.Subject.PrimaryAlias, TargetNullValue=(none), StringFormat=Primary Alias: {0}}"
+                                       TextWrapping="Wrap"
+                                       Style="{StaticResource SecondaryBodyTextStyle}" />
+                            <TextBlock Margin="{StaticResource SpaceTop4}"
+                                       Text="{Binding CurrentPacketPreview.Subject.GlobalDisplayName, TargetNullValue=(none), StringFormat=Linked Global Person: {0}}"
+                                       TextWrapping="Wrap"
+                                       Style="{StaticResource SecondaryBodyTextStyle}" />
+                            <TextBlock Margin="{StaticResource SpaceTop4}"
+                                       Text="{Binding CurrentPacketPreview.Subject.WorkflowStatusDisplay, StringFormat=Workflow Status: {0}}"
+                                       TextWrapping="Wrap"
+                                       Style="{StaticResource SecondaryBodyTextStyle}" />
+
+                            <TextBlock Margin="{StaticResource SpaceTop12}"
+                                       Text="{Binding CurrentPacketPreview.AnalystContent.SectionLabel}"
+                                       Style="{StaticResource SecondaryBodyTextStyle}" />
+                            <TextBlock Margin="{StaticResource SpaceTop4}"
+                                       Text="{Binding CurrentPacketPreview.AnalystContent.SectionDescription}"
+                                       TextWrapping="Wrap"
+                                       Style="{StaticResource SecondaryBodyTextStyle}" />
+                            <TextBlock Margin="{StaticResource SpaceTop4}"
+                                       Text="{Binding CurrentPacketPreview.AnalystContent.Summary}"
+                                       TextWrapping="Wrap"
+                                       Style="{StaticResource BodyTextStyle}" />
+                            <TextBlock Margin="{StaticResource SpaceTop4}"
+                                       Text="{Binding CurrentPacketPreview.AnalystContent.Notes, TargetNullValue=(none), StringFormat=Notes: {0}}"
+                                       TextWrapping="Wrap"
+                                       Style="{StaticResource SecondaryBodyTextStyle}" />
+                            <ItemsControl Margin="{StaticResource SpaceTop8}"
+                                          ItemsSource="{Binding CurrentPacketPreview.AnalystContent.Criteria}">
+                                <ItemsControl.ItemTemplate>
+                                    <DataTemplate>
+                                        <Border Padding="0,6">
+                                            <StackPanel>
+                                                <TextBlock Text="{Binding CriterionType}" Style="{StaticResource BodyTextStyle}" />
+                                                <TextBlock Margin="{StaticResource SpaceTop4}"
+                                                           Text="{Binding StatusDisplay, StringFormat=Status: {0}}"
+                                                           Style="{StaticResource SecondaryBodyTextStyle}" />
+                                                <TextBlock Margin="{StaticResource SpaceTop4}"
+                                                           Text="{Binding BasisSummary}"
+                                                           TextWrapping="Wrap"
+                                                           Style="{StaticResource BodyTextStyle}" />
+                                                <TextBlock Margin="{StaticResource SpaceTop4}"
+                                                           Text="{Binding SourceNote, TargetNullValue=(none), StringFormat=Analyst Reference: {0}}"
+                                                           TextWrapping="Wrap"
+                                                           Style="{StaticResource SecondaryBodyTextStyle}" />
+                                            </StackPanel>
+                                        </Border>
+                                    </DataTemplate>
+                                </ItemsControl.ItemTemplate>
+                            </ItemsControl>
+
+                            <TextBlock Margin="{StaticResource SpaceTop12}"
+                                       Text="{Binding CurrentPacketPreview.Workflow.SectionLabel}"
+                                       Style="{StaticResource SecondaryBodyTextStyle}" />
+                            <TextBlock Margin="{StaticResource SpaceTop4}"
+                                       Text="{Binding CurrentPacketPreview.Workflow.SectionDescription}"
+                                       TextWrapping="Wrap"
+                                       Style="{StaticResource SecondaryBodyTextStyle}" />
+                            <TextBlock Margin="{StaticResource SpaceTop4}"
+                                       Text="{Binding CurrentPacketPreview.Workflow.ReviewerName, TargetNullValue=(none), StringFormat=Reviewer: {0}}"
+                                       TextWrapping="Wrap"
+                                       Style="{StaticResource BodyTextStyle}" />
+                            <TextBlock Margin="{StaticResource SpaceTop4}"
+                                       Text="{Binding CurrentPacketPreview.Workflow.ApprovedAtUtc, TargetNullValue=(none), StringFormat=Approved (UTC): {0:yyyy-MM-dd HH:mm}}"
+                                       TextWrapping="Wrap"
+                                       Style="{StaticResource SecondaryBodyTextStyle}" />
+                            <TextBlock Margin="{StaticResource SpaceTop4}"
+                                       Text="{Binding CurrentPacketPreview.Workflow.DecisionNote, TargetNullValue=(none), StringFormat=Decision Note: {0}}"
+                                       TextWrapping="Wrap"
+                                       Style="{StaticResource SecondaryBodyTextStyle}" />
+
+                            <TextBlock Margin="{StaticResource SpaceTop12}"
+                                       Text="{Binding CurrentPacketPreview.Evidence.SectionLabel}"
+                                       Style="{StaticResource SecondaryBodyTextStyle}" />
+                            <TextBlock Margin="{StaticResource SpaceTop4}"
+                                       Text="{Binding CurrentPacketPreview.Evidence.SectionDescription}"
+                                       TextWrapping="Wrap"
+                                       Style="{StaticResource SecondaryBodyTextStyle}" />
+                            <ItemsControl Margin="{StaticResource SpaceTop8}"
+                                          ItemsSource="{Binding CurrentPacketPreview.Evidence.SupportingItems}">
+                                <ItemsControl.ItemTemplate>
+                                    <DataTemplate>
+                                        <Border Padding="0,6">
+                                            <StackPanel>
+                                                <TextBlock Text="{Binding TimestampUtc, TargetNullValue=(none), StringFormat=Time (UTC): {0:yyyy-MM-dd HH:mm}}"
+                                                           Style="{StaticResource SecondaryBodyTextStyle}" />
+                                                <TextBlock Margin="{StaticResource SpaceTop4}"
+                                                           Text="{Binding Direction, StringFormat=Direction: {0}}"
+                                                           Style="{StaticResource SecondaryBodyTextStyle}" />
+                                                <TextBlock Margin="{StaticResource SpaceTop4}"
+                                                           Text="{Binding Participants}"
+                                                           TextWrapping="Wrap"
+                                                           Style="{StaticResource BodyTextStyle}" />
+                                                <TextBlock Margin="{StaticResource SpaceTop4}"
+                                                           Text="{Binding Preview}"
+                                                           TextWrapping="Wrap"
+                                                           Style="{StaticResource BodyTextStyle}" />
+                                                <TextBlock Margin="{StaticResource SpaceTop4}"
+                                                           Text="{Binding Citation.CitationText}"
+                                                           TextWrapping="Wrap"
+                                                           Style="{StaticResource SecondaryBodyTextStyle}" />
+                                            </StackPanel>
+                                        </Border>
+                                    </DataTemplate>
+                                </ItemsControl.ItemTemplate>
+                            </ItemsControl>
+
+                            <TextBlock Margin="{StaticResource SpaceTop12}"
+                                       Text="{Binding CurrentPacketPreview.Context.SectionLabel}"
+                                       Style="{StaticResource SecondaryBodyTextStyle}" />
+                            <TextBlock Margin="{StaticResource SpaceTop4}"
+                                       Text="{Binding CurrentPacketPreview.Context.SectionDescription}"
+                                       TextWrapping="Wrap"
+                                       Style="{StaticResource SecondaryBodyTextStyle}" />
+                            <ItemsControl Margin="{StaticResource SpaceTop8}"
+                                          ItemsSource="{Binding CurrentPacketPreview.Context.LinkedCases}">
+                                <ItemsControl.ItemTemplate>
+                                    <DataTemplate>
+                                        <Border Padding="0,4">
+                                            <StackPanel>
+                                                <TextBlock Text="{Binding CaseName}" Style="{StaticResource BodyTextStyle}" />
+                                                <TextBlock Margin="{StaticResource SpaceTop4}"
+                                                           Text="{Binding SubjectDisplayName, StringFormat=Subject: {0}}"
+                                                           Style="{StaticResource SecondaryBodyTextStyle}" />
+                                            </StackPanel>
+                                        </Border>
+                                    </DataTemplate>
+                                </ItemsControl.ItemTemplate>
+                            </ItemsControl>
+                            <TextBlock Margin="{StaticResource SpaceTop4}"
+                                       Text="No linked cases available for this packet preview.">
+                                <TextBlock.Style>
+                                    <Style TargetType="TextBlock" BasedOn="{StaticResource SecondaryBodyTextStyle}">
+                                        <Setter Property="Visibility" Value="Collapsed" />
+                                        <Style.Triggers>
+                                            <DataTrigger Binding="{Binding CurrentPacketPreview.Context.LinkedCases.Count}" Value="0">
+                                                <Setter Property="Visibility" Value="Visible" />
+                                            </DataTrigger>
+                                        </Style.Triggers>
+                                    </Style>
+                                </TextBlock.Style>
+                            </TextBlock>
+
+                            <TextBlock Margin="{StaticResource SpaceTop12}"
+                                       Text="Citations"
+                                       Style="{StaticResource SecondaryBodyTextStyle}" />
+                            <ItemsControl Margin="{StaticResource SpaceTop8}"
+                                          ItemsSource="{Binding CurrentPacketPreview.AllCitations}">
+                                <ItemsControl.ItemTemplate>
+                                    <DataTemplate>
+                                        <Border Padding="0,4">
+                                            <StackPanel>
+                                                <TextBlock Text="{Binding SourceKindLabel}" Style="{StaticResource SecondaryBodyTextStyle}" />
+                                                <TextBlock Margin="{StaticResource SpaceTop4}"
+                                                           Text="{Binding CitationText}"
+                                                           TextWrapping="Wrap"
+                                                           Style="{StaticResource BodyTextStyle}" />
+                                            </StackPanel>
+                                        </Border>
+                                    </DataTemplate>
+                                </ItemsControl.ItemTemplate>
+                            </ItemsControl>
+                        </StackPanel>
+                    </Border>
+
                     <DockPanel Margin="{StaticResource SpaceTop12}">
                         <TextBlock Text="Criteria Checklist" Style="{StaticResource SectionTitleTextStyle}" />
                         <Button DockPanel.Dock="Right"

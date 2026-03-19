@@ -1,3 +1,4 @@
+using CaseGraph.App.Services;
 using CaseGraph.Infrastructure.GangDocumentation;
 using CaseGraph.Infrastructure.Organizations;
 using CommunityToolkit.Mvvm.ComponentModel;
@@ -18,16 +19,22 @@ public sealed partial class GangDocumentationViewModel : ObservableObject
 
     private readonly IGangDocumentationService _gangDocumentationService;
     private readonly IOrganizationService _organizationService;
+    private readonly IGangDocumentationPacketExportService _gangDocumentationPacketExportService;
+    private readonly IUserInteractionService _userInteractionService;
 
     private IReadOnlyList<OrganizationSummaryDto> _allOrganizations = [];
 
     public GangDocumentationViewModel(
         IGangDocumentationService gangDocumentationService,
-        IOrganizationService organizationService
+        IOrganizationService organizationService,
+        IGangDocumentationPacketExportService? gangDocumentationPacketExportService = null,
+        IUserInteractionService? userInteractionService = null
     )
     {
         _gangDocumentationService = gangDocumentationService;
         _organizationService = organizationService;
+        _gangDocumentationPacketExportService = gangDocumentationPacketExportService ?? new NullGangDocumentationPacketExportService();
+        _userInteractionService = userInteractionService ?? NullUserInteractionService.Instance;
 
         foreach (var role in GangDocumentationCatalog.AffiliationRoles)
         {
@@ -52,6 +59,9 @@ public sealed partial class GangDocumentationViewModel : ObservableObject
         PurgeCommand = new AsyncRelayCommand(PurgeAsync);
         RestoreToApprovedCommand = new AsyncRelayCommand(RestoreToApprovedAsync);
         RestoreToInactiveCommand = new AsyncRelayCommand(RestoreToInactiveAsync);
+        PreviewPacketCommand = new AsyncRelayCommand(PreviewPacketAsync);
+        ExportPacketCommand = new AsyncRelayCommand(ExportPacketAsync);
+        ClosePacketPreviewCommand = new RelayCommand(ClosePacketPreview);
         EditCriterionCommand = new RelayCommand<GangDocumentationCriterionItem?>(BeginCriterionEdit);
         NewCriterionCommand = new RelayCommand(BeginNewCriterion);
         SaveCriterionCommand = new AsyncRelayCommand(SaveCriterionAsync);
@@ -93,6 +103,12 @@ public sealed partial class GangDocumentationViewModel : ObservableObject
     public IAsyncRelayCommand RestoreToApprovedCommand { get; }
 
     public IAsyncRelayCommand RestoreToInactiveCommand { get; }
+
+    public IAsyncRelayCommand PreviewPacketCommand { get; }
+
+    public IAsyncRelayCommand ExportPacketCommand { get; }
+
+    public IRelayCommand ClosePacketPreviewCommand { get; }
 
     public IRelayCommand<GangDocumentationCriterionItem?> EditCriterionCommand { get; }
 
@@ -160,6 +176,12 @@ public sealed partial class GangDocumentationViewModel : ObservableObject
 
     public bool CanRestoreToInactive => CanManageWorkflow && SelectedRecord?.CanRestoreToInactive == true;
 
+    public bool CanPreviewPacket => HasSelectedDocumentation
+        && !IsBusy
+        && SelectedRecord?.IsApproved == true;
+
+    public bool CanExportPacket => HasPacketPreview && !IsBusy;
+
     public bool ShowSubmitForReviewAction => SelectedRecord?.CanSubmitForReview == true;
 
     public bool ShowApproveAction => SelectedRecord?.CanApprove == true;
@@ -176,7 +198,11 @@ public sealed partial class GangDocumentationViewModel : ObservableObject
 
     public bool ShowRestoreToInactiveAction => SelectedRecord?.CanRestoreToInactive == true;
 
+    public bool ShowPacketExportActions => HasSelectedDocumentation;
+
     public bool ShowWorkflowDecisionInputs => SelectedRecord?.RequiresWorkflowDecisionInputs == true;
+
+    public bool HasPacketPreview => CurrentPacketPreview is not null;
 
     public string CreateWorkflowHint => !HasOrganizationOptions
         ? "Create or load at least one organization before creating gang documentation."
@@ -222,6 +248,16 @@ public sealed partial class GangDocumentationViewModel : ObservableObject
     public string CurrentReviewSummary => SelectedRecord?.ReviewSummary ?? "Reviewer: (none) | review timestamp: (none)";
 
     public string CurrentDecisionNoteDisplay => SelectedRecord?.DecisionNoteDisplay ?? "Latest decision note: (none)";
+
+    public string PacketExportHint => SelectedRecord is null
+        ? "Select a documentation record to preview a packet export."
+        : !SelectedRecord.IsApproved
+            ? "Packet export is available only for Approved gang documentation records."
+            : HasPacketPreview
+                ? "Preview is ready. Write HTML to export the packet and audit the action."
+                : "Build a preview before writing the approved gang documentation packet.";
+
+    public string PacketPreviewEmptyState => "No export preview generated yet.";
 
     public bool ShowOrganizationRequiredIndicator =>
         RecordSubmitAttempted && !SelectedOrganizationId.HasValue;
@@ -298,6 +334,9 @@ public sealed partial class GangDocumentationViewModel : ObservableObject
     private string workflowDecisionNote = string.Empty;
 
     [ObservableProperty]
+    private GangDocumentationPacketModel? currentPacketPreview;
+
+    [ObservableProperty]
     private Guid? currentCriterionId;
 
     [ObservableProperty]
@@ -359,6 +398,11 @@ public sealed partial class GangDocumentationViewModel : ObservableObject
         PopulateEditorFromSelectedRecord(value);
     }
 
+    partial void OnIsBusyChanged(bool value)
+    {
+        RaiseSectionStateChanged();
+    }
+
     partial void OnSelectedOrganizationIdChanged(Guid? value)
     {
         RefreshSubgroupOptions(value);
@@ -389,6 +433,13 @@ public sealed partial class GangDocumentationViewModel : ObservableObject
     partial void OnCriterionBasisSummaryChanged(string value)
     {
         RaiseValidationStateChanged();
+    }
+
+    partial void OnCurrentPacketPreviewChanged(GangDocumentationPacketModel? value)
+    {
+        OnPropertyChanged(nameof(HasPacketPreview));
+        OnPropertyChanged(nameof(CanExportPacket));
+        OnPropertyChanged(nameof(PacketExportHint));
     }
 
     private async Task EnsureOrganizationsLoadedAsync(CancellationToken ct)
@@ -458,6 +509,7 @@ public sealed partial class GangDocumentationViewModel : ObservableObject
 
     private void ApplyRecords(IReadOnlyList<GangDocumentationRecord> records)
     {
+        ClearPacketPreview();
         Records.Clear();
         foreach (var record in records)
         {
@@ -499,6 +551,7 @@ public sealed partial class GangDocumentationViewModel : ObservableObject
 
     private void PopulateEditorFromSelectedRecord(GangDocumentationRecordItem? value)
     {
+        ClearPacketPreview();
         Criteria.Clear();
         History.Clear();
 
@@ -706,6 +759,99 @@ public sealed partial class GangDocumentationViewModel : ObservableObject
         );
     }
 
+    private async Task PreviewPacketAsync()
+    {
+        if (!CurrentCaseId.HasValue || !CurrentDocumentationId.HasValue)
+        {
+            StatusMessage = "Select an approved documentation record before previewing a packet export.";
+            return;
+        }
+
+        if (SelectedRecord?.IsApproved != true)
+        {
+            StatusMessage = "Only Approved gang documentation records can be previewed for export.";
+            return;
+        }
+
+        StatusMessage = string.Empty;
+        IsBusy = true;
+
+        try
+        {
+            CurrentPacketPreview = await _gangDocumentationPacketExportService.BuildPreviewAsync(
+                new GangDocumentationPacketBuildRequest(
+                    CurrentCaseId.Value,
+                    CurrentDocumentationId.Value,
+                    Environment.UserName
+                ),
+                CancellationToken.None
+            );
+            StatusMessage = "Gang documentation packet preview generated.";
+        }
+        catch (Exception ex)
+        {
+            CurrentPacketPreview = null;
+            StatusMessage = ex.Message;
+        }
+        finally
+        {
+            IsBusy = false;
+            RaiseSectionStateChanged();
+        }
+    }
+
+    private async Task ExportPacketAsync()
+    {
+        if (CurrentPacketPreview is null)
+        {
+            StatusMessage = "Generate a packet preview before exporting.";
+            return;
+        }
+
+        var outputPath = _userInteractionService.PickReportOutputPath(
+            $"{CurrentPacketPreview.SuggestedFileName}.html"
+        );
+        if (string.IsNullOrWhiteSpace(outputPath))
+        {
+            StatusMessage = "Gang documentation packet export canceled.";
+            return;
+        }
+
+        StatusMessage = string.Empty;
+        IsBusy = true;
+
+        try
+        {
+            var result = await _gangDocumentationPacketExportService.ExportHtmlAsync(
+                CurrentPacketPreview,
+                outputPath,
+                CancellationToken.None
+            );
+            StatusMessage = $"Gang documentation packet exported to {result.OutputPath}.";
+        }
+        catch (Exception ex)
+        {
+            StatusMessage = ex.Message;
+        }
+        finally
+        {
+            IsBusy = false;
+            RaiseSectionStateChanged();
+        }
+    }
+
+    private void ClosePacketPreview()
+    {
+        if (!HasPacketPreview)
+        {
+            return;
+        }
+
+        ClearPacketPreview();
+        StatusMessage = "Gang documentation packet preview closed.";
+        RaiseSectionStateChanged();
+    }
+
     private async Task ExecuteWorkflowAsync(
         string workflowAction,
         bool requiresReviewer,
@@ -901,8 +1047,17 @@ public sealed partial class GangDocumentationViewModel : ObservableObject
         SelectedRecord = Records.FirstOrDefault(item => item.DocumentationId == documentationId);
     }
 
+    private void ClearPacketPreview()
+    {
+        if (CurrentPacketPreview is not null)
+        {
+            CurrentPacketPreview = null;
+        }
+    }
+
     private void ClearAllState()
     {
+        ClearPacketPreview();
         Records.Clear();
         Criteria.Clear();
         History.Clear();
@@ -940,6 +1095,8 @@ public sealed partial class GangDocumentationViewModel : ObservableObject
         OnPropertyChanged(nameof(CanPurge));
         OnPropertyChanged(nameof(CanRestoreToApproved));
         OnPropertyChanged(nameof(CanRestoreToInactive));
+        OnPropertyChanged(nameof(CanPreviewPacket));
+        OnPropertyChanged(nameof(CanExportPacket));
         OnPropertyChanged(nameof(ShowSubmitForReviewAction));
         OnPropertyChanged(nameof(ShowApproveAction));
         OnPropertyChanged(nameof(ShowReturnForChangesAction));
@@ -948,7 +1105,9 @@ public sealed partial class GangDocumentationViewModel : ObservableObject
         OnPropertyChanged(nameof(ShowPurgeAction));
         OnPropertyChanged(nameof(ShowRestoreToApprovedAction));
         OnPropertyChanged(nameof(ShowRestoreToInactiveAction));
+        OnPropertyChanged(nameof(ShowPacketExportActions));
         OnPropertyChanged(nameof(ShowWorkflowDecisionInputs));
+        OnPropertyChanged(nameof(HasPacketPreview));
         OnPropertyChanged(nameof(CreateWorkflowHint));
         OnPropertyChanged(nameof(CriteriaWorkflowHint));
         OnPropertyChanged(nameof(WorkflowHint));
@@ -958,6 +1117,8 @@ public sealed partial class GangDocumentationViewModel : ObservableObject
         OnPropertyChanged(nameof(NextAllowedActionsDisplay));
         OnPropertyChanged(nameof(CurrentReviewSummary));
         OnPropertyChanged(nameof(CurrentDecisionNoteDisplay));
+        OnPropertyChanged(nameof(PacketExportHint));
+        OnPropertyChanged(nameof(PacketPreviewEmptyState));
         OnPropertyChanged(nameof(CurrentOrganizationDisplay));
         OnPropertyChanged(nameof(CurrentSubgroupDisplay));
         OnPropertyChanged(nameof(SaveRecordButtonText));
@@ -1207,6 +1368,12 @@ public sealed partial class GangDocumentationViewModel : ObservableObject
 
         public bool CanRestoreToInactive => AllowedWorkflowActions.Contains(GangDocumentationCatalog.WorkflowActionRestoreToInactive, StringComparer.Ordinal);
 
+        public bool IsApproved => string.Equals(
+            WorkflowStatus,
+            GangDocumentationCatalog.WorkflowStatusApproved,
+            StringComparison.Ordinal
+        );
+
         public bool RequiresWorkflowDecisionInputs => CanApprove
             || CanReturnForChanges
             || CanMarkInactive
@@ -1294,5 +1461,36 @@ public sealed partial class GangDocumentationViewModel : ObservableObject
     )
     {
         public string DisplayName => $"{Name} ({Type})";
+    }
+
+    private sealed class NullGangDocumentationPacketExportService : IGangDocumentationPacketExportService
+    {
+        public Task<GangDocumentationPacketModel> BuildPreviewAsync(
+            GangDocumentationPacketBuildRequest request,
+            CancellationToken ct
+        ) => throw new NotSupportedException("Gang documentation packet export service is not configured.");
+
+        public Task<GangDocumentationPacketExportResult> ExportHtmlAsync(
+            GangDocumentationPacketModel model,
+            string outputPath,
+            CancellationToken ct
+        ) => throw new NotSupportedException("Gang documentation packet export service is not configured.");
+    }
+
+    private sealed class NullUserInteractionService : IUserInteractionService
+    {
+        public static NullUserInteractionService Instance { get; } = new();
+
+        public string? PromptForCaseName() => null;
+
+        public IReadOnlyList<string> PickEvidenceFiles() => [];
+
+        public string? PickDebugBundleOutputPath(string defaultFileName) => null;
+
+        public string? PickReportOutputPath(string defaultFileName) => null;
+
+        public void CopyToClipboard(string value)
+        {
+        }
     }
 }

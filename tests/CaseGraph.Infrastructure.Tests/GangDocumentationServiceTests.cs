@@ -286,6 +286,7 @@ internal sealed class GangDocumentationTestWorkspaceFixture : IAsyncDisposable
         services.AddSingleton<ITargetRegistryService, TargetRegistryService>();
         services.AddSingleton<IOrganizationService, OrganizationService>();
         services.AddSingleton<IGangDocumentationService, GangDocumentationService>();
+        services.AddSingleton<IGangDocumentationPacketExportService, GangDocumentationPacketExportService>();
 
         var provider = services.BuildServiceProvider();
         var initializer = provider.GetRequiredService<IWorkspaceDatabaseInitializer>();

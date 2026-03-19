@@ -82,6 +82,7 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<ITargetRegistryService, TargetRegistryService>();
         services.AddSingleton<IOrganizationService, OrganizationService>();
         services.AddSingleton<IGangDocumentationService, GangDocumentationService>();
+        services.AddSingleton<IGangDocumentationPacketExportService, GangDocumentationPacketExportService>();
         services.AddSingleton<IAssociationGraphQueryService, AssociationGraphQueryService>();
         services.AddSingleton<IAssociationGraphExportPathBuilder, AssociationGraphExportPathBuilder>();
         services.AddSingleton<DossierBuilder>();
