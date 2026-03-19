@@ -53,11 +53,8 @@ public sealed class GangDocumentationService : IGangDocumentationService
                 GangDocumentationCatalog.WorkflowStatusInactive,
                 new HashSet<string>(StringComparer.Ordinal)
                 {
-                    GangDocumentationCatalog.WorkflowStatusDraft,
                     GangDocumentationCatalog.WorkflowStatusPendingSupervisorReview,
-                    GangDocumentationCatalog.WorkflowStatusApproved,
-                    GangDocumentationCatalog.WorkflowStatusReturnedForChanges,
-                    GangDocumentationCatalog.WorkflowStatusPurgeReview
+                    GangDocumentationCatalog.WorkflowStatusApproved
                 },
                 RequiresReviewer: true,
                 RequiresDecisionNote: true
@@ -68,8 +65,7 @@ public sealed class GangDocumentationService : IGangDocumentationService
                 {
                     GangDocumentationCatalog.WorkflowStatusPendingSupervisorReview,
                     GangDocumentationCatalog.WorkflowStatusApproved,
-                    GangDocumentationCatalog.WorkflowStatusInactive,
-                    GangDocumentationCatalog.WorkflowStatusReturnedForChanges
+                    GangDocumentationCatalog.WorkflowStatusInactive
                 },
                 RequiresReviewer: true,
                 RequiresDecisionNote: true
@@ -79,6 +75,27 @@ public sealed class GangDocumentationService : IGangDocumentationService
                 new HashSet<string>(StringComparer.Ordinal)
                 {
                     GangDocumentationCatalog.WorkflowStatusPurgeReview
+                },
+                RequiresReviewer: true,
+                RequiresDecisionNote: true
+            ),
+            [GangDocumentationCatalog.WorkflowActionRestoreToApproved] = new WorkflowTransitionDefinition(
+                GangDocumentationCatalog.WorkflowStatusApproved,
+                new HashSet<string>(StringComparer.Ordinal)
+                {
+                    GangDocumentationCatalog.WorkflowStatusInactive,
+                    GangDocumentationCatalog.WorkflowStatusPurgeReview,
+                    GangDocumentationCatalog.WorkflowStatusPurged
+                },
+                RequiresReviewer: true,
+                RequiresDecisionNote: true
+            ),
+            [GangDocumentationCatalog.WorkflowActionRestoreToInactive] = new WorkflowTransitionDefinition(
+                GangDocumentationCatalog.WorkflowStatusInactive,
+                new HashSet<string>(StringComparer.Ordinal)
+                {
+                    GangDocumentationCatalog.WorkflowStatusPurgeReview,
+                    GangDocumentationCatalog.WorkflowStatusPurged
                 },
                 RequiresReviewer: true,
                 RequiresDecisionNote: true
@@ -358,7 +375,8 @@ public sealed class GangDocumentationService : IGangDocumentationService
         }
 
         var review = EnsureReviewRecord(db, documentation);
-        EnsureWorkflowEditableForContent(review.WorkflowStatus);
+        var previousWorkflowStatus = NormalizeWorkflowStatus(review.WorkflowStatus);
+        EnsureWorkflowEditableForContent(previousWorkflowStatus);
 
         var target = await GetTargetAsync(db, documentation.CaseId, documentation.TargetId, ct);
         var organization = await GetOrganizationAsync(db, request.OrganizationId, ct);
@@ -380,6 +398,13 @@ public sealed class GangDocumentationService : IGangDocumentationService
         documentation.Summary = NormalizeRequired(request.Summary, "Summary is required.");
         documentation.Notes = NormalizeOptional(request.Notes);
         documentation.UpdatedAtUtc = _clock.UtcNow.ToUniversalTime();
+        var savedAsDraft = TransitionEditableChangesToDraftIfNeeded(
+            db,
+            documentation,
+            review,
+            previousWorkflowStatus,
+            documentation.UpdatedAtUtc
+        );
         SyncLegacyWorkflowFields(documentation, review);
 
         await SaveChangesWithWritePolicyAsync(
@@ -400,7 +425,9 @@ public sealed class GangDocumentationService : IGangDocumentationService
             {
                 ["organizationId"] = documentation.OrganizationId.ToString("D"),
                 ["subgroupOrganizationId"] = documentation.SubgroupOrganizationId?.ToString("D"),
-                ["workflowStatus"] = review.WorkflowStatus
+                ["previousWorkflowStatus"] = previousWorkflowStatus,
+                ["workflowStatus"] = review.WorkflowStatus,
+                ["savedAsDraft"] = savedAsDraft
             }
         );
 
@@ -421,7 +448,9 @@ public sealed class GangDocumentationService : IGangDocumentationService
                 documentation.AffiliationRole,
                 documentation.Summary,
                 documentation.Notes,
-                WorkflowStatus = review.WorkflowStatus
+                PreviousWorkflowStatus = previousWorkflowStatus,
+                WorkflowStatus = review.WorkflowStatus,
+                SavedAsDraft = savedAsDraft
             },
             ct
         );
@@ -575,7 +604,8 @@ public sealed class GangDocumentationService : IGangDocumentationService
         }
 
         var review = EnsureReviewRecord(db, documentation);
-        EnsureWorkflowEditableForContent(review.WorkflowStatus);
+        var previousWorkflowStatus = NormalizeWorkflowStatus(review.WorkflowStatus);
+        EnsureWorkflowEditableForContent(previousWorkflowStatus);
 
         var targetDisplayName = await GetTargetDisplayNameAsync(db, documentation.TargetId, ct);
 
@@ -631,6 +661,13 @@ public sealed class GangDocumentationService : IGangDocumentationService
         }
 
         documentation.UpdatedAtUtc = now;
+        var savedAsDraft = TransitionEditableChangesToDraftIfNeeded(
+            db,
+            documentation,
+            review,
+            previousWorkflowStatus,
+            now
+        );
         SyncLegacyWorkflowFields(documentation, review);
         await SaveChangesWithWritePolicyAsync(
             db,
@@ -651,7 +688,9 @@ public sealed class GangDocumentationService : IGangDocumentationService
                 ["criterionId"] = criterion.CriterionId.ToString("D"),
                 ["criterionType"] = criterion.CriterionType,
                 ["isMet"] = criterion.IsMet,
-                ["workflowStatus"] = review.WorkflowStatus
+                ["previousWorkflowStatus"] = previousWorkflowStatus,
+                ["workflowStatus"] = review.WorkflowStatus,
+                ["savedAsDraft"] = savedAsDraft
             }
         );
 
@@ -671,7 +710,9 @@ public sealed class GangDocumentationService : IGangDocumentationService
                 criterion.ObservedDateUtc,
                 criterion.SourceNote,
                 criterion.SortOrder,
-                WorkflowStatus = review.WorkflowStatus
+                PreviousWorkflowStatus = previousWorkflowStatus,
+                WorkflowStatus = review.WorkflowStatus,
+                SavedAsDraft = savedAsDraft
             },
             ct
         );
@@ -706,7 +747,8 @@ public sealed class GangDocumentationService : IGangDocumentationService
         }
 
         var review = EnsureReviewRecord(db, documentation);
-        EnsureWorkflowEditableForContent(review.WorkflowStatus);
+        var previousWorkflowStatus = NormalizeWorkflowStatus(review.WorkflowStatus);
+        EnsureWorkflowEditableForContent(previousWorkflowStatus);
 
         var criterion = await db.GangDocumentationCriteria.FirstOrDefaultAsync(
             record => record.DocumentationId == documentationId && record.CriterionId == criterionId,
@@ -721,6 +763,13 @@ public sealed class GangDocumentationService : IGangDocumentationService
 
         documentation.UpdatedAtUtc = _clock.UtcNow.ToUniversalTime();
         db.GangDocumentationCriteria.Remove(criterion);
+        var savedAsDraft = TransitionEditableChangesToDraftIfNeeded(
+            db,
+            documentation,
+            review,
+            previousWorkflowStatus,
+            documentation.UpdatedAtUtc
+        );
         SyncLegacyWorkflowFields(documentation, review);
         await SaveChangesWithWritePolicyAsync(
             db,
@@ -740,7 +789,9 @@ public sealed class GangDocumentationService : IGangDocumentationService
             {
                 ["criterionId"] = criterionId.ToString("D"),
                 ["criterionType"] = criterion.CriterionType,
-                ["workflowStatus"] = review.WorkflowStatus
+                ["previousWorkflowStatus"] = previousWorkflowStatus,
+                ["workflowStatus"] = review.WorkflowStatus,
+                ["savedAsDraft"] = savedAsDraft
             }
         );
 
@@ -755,7 +806,9 @@ public sealed class GangDocumentationService : IGangDocumentationService
                 targetDisplayName,
                 criterion.CriterionId,
                 criterion.CriterionType,
-                WorkflowStatus = review.WorkflowStatus
+                PreviousWorkflowStatus = previousWorkflowStatus,
+                WorkflowStatus = review.WorkflowStatus,
+                SavedAsDraft = savedAsDraft
             },
             ct
         );
@@ -1006,6 +1059,37 @@ public sealed class GangDocumentationService : IGangDocumentationService
         };
     }
 
+    private static bool TransitionEditableChangesToDraftIfNeeded(
+        WorkspaceDbContext db,
+        GangDocumentationRecordEntity documentation,
+        GangDocumentationReviewRecord review,
+        string previousWorkflowStatus,
+        DateTimeOffset timestampUtc
+    )
+    {
+        if (!string.Equals(previousWorkflowStatus, GangDocumentationCatalog.WorkflowStatusReturnedForChanges, StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        review.WorkflowStatus = GangDocumentationCatalog.WorkflowStatusDraft;
+        review.SubmittedForReviewAtUtc = null;
+        SyncLegacyWorkflowFields(documentation, review);
+        AddHistoryEntry(
+            db,
+            documentation.DocumentationId,
+            actionType: "save as draft",
+            summary: "Returned-for-changes documentation was saved as Draft so it can be revised before re-submission.",
+            previousWorkflowStatus: previousWorkflowStatus,
+            newWorkflowStatus: review.WorkflowStatus,
+            decisionNote: null,
+            changedBy: Environment.UserName,
+            changedByIdentity: Environment.UserName,
+            timestampUtc: timestampUtc
+        );
+        return true;
+    }
+
     private static void ApplyWorkflowTransition(
         GangDocumentationReviewRecord review,
         GangDocumentationRecordEntity documentation,
@@ -1029,6 +1113,7 @@ public sealed class GangDocumentationService : IGangDocumentationService
                 break;
 
             case GangDocumentationCatalog.WorkflowActionApprove:
+            case GangDocumentationCatalog.WorkflowActionRestoreToApproved:
                 review.ReviewerName = reviewerName;
                 review.ReviewerIdentity = Environment.UserName;
                 review.ReviewedAtUtc = timestampUtc;
@@ -1047,6 +1132,7 @@ public sealed class GangDocumentationService : IGangDocumentationService
             case GangDocumentationCatalog.WorkflowActionMarkInactive:
             case GangDocumentationCatalog.WorkflowActionMarkPurgeReview:
             case GangDocumentationCatalog.WorkflowActionPurge:
+            case GangDocumentationCatalog.WorkflowActionRestoreToInactive:
                 review.ReviewerName = reviewerName;
                 review.ReviewerIdentity = Environment.UserName;
                 review.ReviewedAtUtc = timestampUtc;
@@ -1235,6 +1321,8 @@ public sealed class GangDocumentationService : IGangDocumentationService
             GangDocumentationCatalog.WorkflowActionMarkInactive => "GangDocumentationMarkedInactive",
             GangDocumentationCatalog.WorkflowActionMarkPurgeReview => "GangDocumentationMarkedPurgeReview",
             GangDocumentationCatalog.WorkflowActionPurge => "GangDocumentationPurged",
+            GangDocumentationCatalog.WorkflowActionRestoreToApproved => "GangDocumentationRestoredToApproved",
+            GangDocumentationCatalog.WorkflowActionRestoreToInactive => "GangDocumentationRestoredToInactive",
             _ => "GangDocumentationWorkflowChanged"
         };
     }
@@ -1249,6 +1337,8 @@ public sealed class GangDocumentationService : IGangDocumentationService
             GangDocumentationCatalog.WorkflowActionMarkInactive => "GangDocumentationMarkedInactive",
             GangDocumentationCatalog.WorkflowActionMarkPurgeReview => "GangDocumentationMarkedPurgeReview",
             GangDocumentationCatalog.WorkflowActionPurge => "GangDocumentationPurged",
+            GangDocumentationCatalog.WorkflowActionRestoreToApproved => "GangDocumentationRestoredToApproved",
+            GangDocumentationCatalog.WorkflowActionRestoreToInactive => "GangDocumentationRestoredToInactive",
             _ => "GangDocumentationWorkflowChanged"
         };
     }
@@ -1316,3 +1406,10 @@ public sealed class GangDocumentationService : IGangDocumentationService
         bool RequiresDecisionNote
     );
 }
+
+
+
+
+
+
+

@@ -123,17 +123,31 @@
                         </TextBlock.Style>
                     </TextBlock>
 
-                    <TextBlock Margin="{StaticResource SpaceTop8}"
-                               Text="{Binding CurrentWorkflowStatusDisplay}"
-                               Style="{StaticResource BodyTextStyle}" />
-                    <TextBlock Margin="{StaticResource SpaceTop4}"
-                               Text="{Binding CurrentReviewSummary}"
-                               TextWrapping="Wrap"
-                               Style="{StaticResource SecondaryBodyTextStyle}" />
-                    <TextBlock Margin="{StaticResource SpaceTop4}"
-                               Text="{Binding CurrentDecisionNoteDisplay}"
-                               TextWrapping="Wrap"
-                               Style="{StaticResource SecondaryBodyTextStyle}" />
+                    <Border Margin="{StaticResource SpaceTop8}"
+                            Padding="12"
+                            BorderBrush="#33000000"
+                            BorderThickness="1"
+                            CornerRadius="6">
+                        <StackPanel>
+                            <TextBlock Text="Workflow Snapshot" Style="{StaticResource SecondaryBodyTextStyle}" />
+                            <TextBlock Margin="{StaticResource SpaceTop4}"
+                                       Text="{Binding CurrentStatusSummary}"
+                                       TextWrapping="Wrap"
+                                       Style="{StaticResource BodyTextStyle}" />
+                            <TextBlock Margin="{StaticResource SpaceTop4}"
+                                       Text="{Binding NextAllowedActionsDisplay}"
+                                       TextWrapping="Wrap"
+                                       Style="{StaticResource SecondaryBodyTextStyle}" />
+                            <TextBlock Margin="{StaticResource SpaceTop4}"
+                                       Text="{Binding CurrentReviewSummary}"
+                                       TextWrapping="Wrap"
+                                       Style="{StaticResource SecondaryBodyTextStyle}" />
+                            <TextBlock Margin="{StaticResource SpaceTop4}"
+                                       Text="{Binding CurrentDecisionNoteDisplay}"
+                                       TextWrapping="Wrap"
+                                       Style="{StaticResource SecondaryBodyTextStyle}" />
+                        </StackPanel>
+                    </Border>
 
                     <TextBlock Margin="{StaticResource SpaceTop8}"
                                Text="{Binding CurrentOrganizationDisplay}"
@@ -242,55 +256,161 @@
                                Text="{Binding WorkflowHint}"
                                TextWrapping="Wrap"
                                Style="{StaticResource SecondaryBodyTextStyle}" />
-
                     <TextBlock Margin="{StaticResource SpaceTop8}"
-                               Text="Reviewer / Supervisor Name"
+                               Text="{Binding WorkflowDecisionInputHint}"
+                               TextWrapping="Wrap"
                                Style="{StaticResource SecondaryBodyTextStyle}" />
-                    <TextBox x:Name="WorkflowReviewerTextBox"
-                             Text="{Binding WorkflowReviewerName, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
-                             IsEnabled="{Binding CanManageWorkflow}" />
 
-                    <TextBlock Margin="{StaticResource SpaceTop8}"
-                               Text="Decision Note"
-                               Style="{StaticResource SecondaryBodyTextStyle}" />
-                    <TextBox x:Name="WorkflowDecisionNoteTextBox"
-                             Text="{Binding WorkflowDecisionNote, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
-                             TextWrapping="Wrap"
-                             AcceptsReturn="True"
-                             MinHeight="72"
-                             IsEnabled="{Binding CanManageWorkflow}" />
+                    <StackPanel Margin="{StaticResource SpaceTop8}">
+                        <StackPanel.Style>
+                            <Style TargetType="StackPanel">
+                                <Setter Property="Visibility" Value="Collapsed" />
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding ShowWorkflowDecisionInputs}" Value="True">
+                                        <Setter Property="Visibility" Value="Visible" />
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </StackPanel.Style>
+                        <TextBlock Text="Reviewer / Supervisor Name"
+                                   Style="{StaticResource SecondaryBodyTextStyle}" />
+                        <TextBox x:Name="WorkflowReviewerTextBox"
+                                 Text="{Binding WorkflowReviewerName, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                 IsEnabled="{Binding CanManageWorkflow}" />
+
+                        <TextBlock Margin="{StaticResource SpaceTop8}"
+                                   Text="Decision Note"
+                                   Style="{StaticResource SecondaryBodyTextStyle}" />
+                        <TextBox x:Name="WorkflowDecisionNoteTextBox"
+                                 Text="{Binding WorkflowDecisionNote, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                 TextWrapping="Wrap"
+                                 AcceptsReturn="True"
+                                 MinHeight="72"
+                                 IsEnabled="{Binding CanManageWorkflow}" />
+                    </StackPanel>
 
                     <WrapPanel Margin="{StaticResource SpaceTop12}">
                         <Button Margin="0,0,8,8"
-                                Content="Submit for Review"
+                                Content="{Binding SubmitForReviewButtonText}"
                                 Command="{Binding SubmitForReviewCommand}"
-                                Style="{StaticResource TopBarButtonStyle}"
-                                IsEnabled="{Binding CanSubmitForReview}" />
+                                IsEnabled="{Binding CanSubmitForReview}">
+                            <Button.Style>
+                                <Style TargetType="Button" BasedOn="{StaticResource TopBarButtonStyle}">
+                                    <Setter Property="Visibility" Value="Collapsed" />
+                                    <Style.Triggers>
+                                        <DataTrigger Binding="{Binding ShowSubmitForReviewAction}" Value="True">
+                                            <Setter Property="Visibility" Value="Visible" />
+                                        </DataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </Button.Style>
+                        </Button>
                         <Button Margin="0,0,8,8"
                                 Content="Approve"
                                 Command="{Binding ApproveCommand}"
-                                Style="{StaticResource TopBarButtonStyle}"
-                                IsEnabled="{Binding CanApprove}" />
+                                IsEnabled="{Binding CanApprove}">
+                            <Button.Style>
+                                <Style TargetType="Button" BasedOn="{StaticResource TopBarButtonStyle}">
+                                    <Setter Property="Visibility" Value="Collapsed" />
+                                    <Style.Triggers>
+                                        <DataTrigger Binding="{Binding ShowApproveAction}" Value="True">
+                                            <Setter Property="Visibility" Value="Visible" />
+                                        </DataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </Button.Style>
+                        </Button>
                         <Button Margin="0,0,8,8"
                                 Content="Return for Changes"
                                 Command="{Binding ReturnForChangesCommand}"
-                                Style="{StaticResource TopBarButtonStyle}"
-                                IsEnabled="{Binding CanReturnForChanges}" />
+                                IsEnabled="{Binding CanReturnForChanges}">
+                            <Button.Style>
+                                <Style TargetType="Button" BasedOn="{StaticResource TopBarButtonStyle}">
+                                    <Setter Property="Visibility" Value="Collapsed" />
+                                    <Style.Triggers>
+                                        <DataTrigger Binding="{Binding ShowReturnForChangesAction}" Value="True">
+                                            <Setter Property="Visibility" Value="Visible" />
+                                        </DataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </Button.Style>
+                        </Button>
                         <Button Margin="0,0,8,8"
                                 Content="Mark Inactive"
                                 Command="{Binding MarkInactiveCommand}"
-                                Style="{StaticResource TopBarButtonStyle}"
-                                IsEnabled="{Binding CanMarkInactive}" />
+                                IsEnabled="{Binding CanMarkInactive}">
+                            <Button.Style>
+                                <Style TargetType="Button" BasedOn="{StaticResource TopBarButtonStyle}">
+                                    <Setter Property="Visibility" Value="Collapsed" />
+                                    <Style.Triggers>
+                                        <DataTrigger Binding="{Binding ShowMarkInactiveAction}" Value="True">
+                                            <Setter Property="Visibility" Value="Visible" />
+                                        </DataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </Button.Style>
+                        </Button>
                         <Button Margin="0,0,8,8"
-                                Content="Mark Purge Review"
+                                Content="Move to Purge Review"
                                 Command="{Binding MarkPurgeReviewCommand}"
-                                Style="{StaticResource TopBarButtonStyle}"
-                                IsEnabled="{Binding CanMarkPurgeReview}" />
+                                IsEnabled="{Binding CanMarkPurgeReview}">
+                            <Button.Style>
+                                <Style TargetType="Button" BasedOn="{StaticResource TopBarButtonStyle}">
+                                    <Setter Property="Visibility" Value="Collapsed" />
+                                    <Style.Triggers>
+                                        <DataTrigger Binding="{Binding ShowMarkPurgeReviewAction}" Value="True">
+                                            <Setter Property="Visibility" Value="Visible" />
+                                        </DataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </Button.Style>
+                        </Button>
+
+                        <Button Margin="0,0,8,8"
+                                Content="Restore to Approved"
+                                Command="{Binding RestoreToApprovedCommand}"
+                                IsEnabled="{Binding CanRestoreToApproved}">
+                            <Button.Style>
+                                <Style TargetType="Button" BasedOn="{StaticResource TopBarButtonStyle}">
+                                    <Setter Property="Visibility" Value="Collapsed" />
+                                    <Style.Triggers>
+                                        <DataTrigger Binding="{Binding ShowRestoreToApprovedAction}" Value="True">
+                                            <Setter Property="Visibility" Value="Visible" />
+                                        </DataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </Button.Style>
+                        </Button>
+                        <Button Margin="0,0,8,8"
+                                Content="Restore to Inactive"
+                                Command="{Binding RestoreToInactiveCommand}"
+                                IsEnabled="{Binding CanRestoreToInactive}">
+                            <Button.Style>
+                                <Style TargetType="Button" BasedOn="{StaticResource TopBarButtonStyle}">
+                                    <Setter Property="Visibility" Value="Collapsed" />
+                                    <Style.Triggers>
+                                        <DataTrigger Binding="{Binding ShowRestoreToInactiveAction}" Value="True">
+                                            <Setter Property="Visibility" Value="Visible" />
+                                        </DataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </Button.Style>
+                        </Button>
                         <Button Margin="0,0,8,8"
                                 Content="Purge"
                                 Command="{Binding PurgeCommand}"
-                                Style="{StaticResource TopBarButtonStyle}"
-                                IsEnabled="{Binding CanPurge}" />
+                                IsEnabled="{Binding CanPurge}">
+                            <Button.Style>
+                                <Style TargetType="Button" BasedOn="{StaticResource TopBarButtonStyle}">
+                                    <Setter Property="Visibility" Value="Collapsed" />
+                                    <Style.Triggers>
+                                        <DataTrigger Binding="{Binding ShowPurgeAction}" Value="True">
+                                            <Setter Property="Visibility" Value="Visible" />
+                                        </DataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </Button.Style>
+                        </Button>
                     </WrapPanel>
 
                     <DockPanel Margin="{StaticResource SpaceTop12}">
@@ -503,3 +623,4 @@
         </StackPanel>
     </Border>
 </UserControl>
+

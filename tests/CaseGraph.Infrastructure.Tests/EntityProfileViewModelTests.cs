@@ -273,6 +273,136 @@ public sealed class EntityProfileViewModelTests
     }
 
     [Fact]
+    public async Task GangDocumentationViewModel_ReturnedForChanges_ShowsDraftRevisionClarity()
+    {
+        var documentationId = Guid.NewGuid();
+        var targetId = Guid.NewGuid();
+        var organizationId = Guid.NewGuid();
+        var viewModel = new GangDocumentationViewModel(
+            new FakeGangDocumentationService(
+                [
+                    new GangDocumentationRecord(
+                        documentationId,
+                        Guid.NewGuid(),
+                        targetId,
+                        null,
+                        organizationId,
+                        "Rollin 60s",
+                        null,
+                        null,
+                        "member",
+                        "Needs revision.",
+                        "Analyst notes",
+                        DateTimeOffset.UtcNow.AddDays(-2),
+                        DateTimeOffset.UtcNow.AddDays(-1),
+                        new GangDocumentationReview(
+                            documentationId,
+                            documentationId,
+                            GangDocumentationCatalog.WorkflowStatusReturnedForChanges,
+                            "Captain Vega",
+                            "captain.vega",
+                            DateTimeOffset.UtcNow.AddDays(-2),
+                            DateTimeOffset.UtcNow.AddDays(-1),
+                            null,
+                            null,
+                            "Add clearer citation detail."
+                        ),
+                        [],
+                        []
+                    )
+                ]
+            ),
+            new FakeOrganizationService(
+                new OrganizationDetailsDto(
+                    new OrganizationSummaryDto(
+                        organizationId,
+                        "Rollin 60s",
+                        "gang",
+                        "active",
+                        null,
+                        null,
+                        null,
+                        0,
+                        0,
+                        0,
+                        DateTimeOffset.UtcNow,
+                        DateTimeOffset.UtcNow
+                    ),
+                    [],
+                    [],
+                    []
+                )
+            )
+        );
+
+        await viewModel.LoadAsync(Guid.NewGuid(), targetId, CancellationToken.None);
+
+        Assert.Equal("Save as Draft", viewModel.SaveRecordButtonText);
+        Assert.Equal("Re-submit for Review", viewModel.SubmitForReviewButtonText);
+        Assert.True(viewModel.CanEditDocumentation);
+        Assert.True(viewModel.ShowSubmitForReviewAction);
+        Assert.False(viewModel.ShowApproveAction);
+        Assert.False(viewModel.ShowMarkInactiveAction);
+        Assert.False(viewModel.ShowWorkflowDecisionInputs);
+        Assert.Contains("Re-submit for Review", viewModel.NextAllowedActionsDisplay);
+    }
+
+    [Fact]
+    public async Task GangDocumentationViewModel_Purged_ShowsRestoreActionsOnly()
+    {
+        var documentationId = Guid.NewGuid();
+        var targetId = Guid.NewGuid();
+        var organizationId = Guid.NewGuid();
+        var viewModel = new GangDocumentationViewModel(
+            new FakeGangDocumentationService(
+                [
+                    new GangDocumentationRecord(
+                        documentationId,
+                        Guid.NewGuid(),
+                        targetId,
+                        null,
+                        organizationId,
+                        "Neighborhood Crips",
+                        null,
+                        null,
+                        "associate",
+                        "Soft-purged record.",
+                        null,
+                        DateTimeOffset.UtcNow.AddDays(-4),
+                        DateTimeOffset.UtcNow.AddDays(-1),
+                        new GangDocumentationReview(
+                            documentationId,
+                            documentationId,
+                            GangDocumentationCatalog.WorkflowStatusPurged,
+                            "Sergeant Hale",
+                            "sergeant.hale",
+                            DateTimeOffset.UtcNow.AddDays(-4),
+                            DateTimeOffset.UtcNow.AddDays(-1),
+                            DateTimeOffset.UtcNow.AddDays(-3),
+                            null,
+                            "Administrative purge."
+                        ),
+                        [],
+                        []
+                    )
+                ]
+            ),
+            new FakeOrganizationService(null)
+        );
+
+        await viewModel.LoadAsync(Guid.NewGuid(), targetId, CancellationToken.None);
+
+        Assert.False(viewModel.ShowSubmitForReviewAction);
+        Assert.False(viewModel.ShowApproveAction);
+        Assert.False(viewModel.ShowPurgeAction);
+        Assert.True(viewModel.ShowRestoreToApprovedAction);
+        Assert.True(viewModel.ShowRestoreToInactiveAction);
+        Assert.True(viewModel.ShowWorkflowDecisionInputs);
+        Assert.Contains("Restore to Approved", viewModel.NextAllowedActionsDisplay);
+        Assert.Contains("Restore to Inactive", viewModel.NextAllowedActionsDisplay);
+    }
+
+    [Fact]
     public async Task GangDocumentationViewModel_BlankRequiredFields_ShowValidationStateAfterSubmit()
     {
         var viewModel = new GangDocumentationViewModel(
@@ -630,6 +760,9 @@ public sealed class EntityProfileViewModelTests
             CancellationToken ct
         )
         {
+            var workflowStatus = _record?.Review.WorkflowStatus == GangDocumentationCatalog.WorkflowStatusReturnedForChanges
+                ? GangDocumentationCatalog.WorkflowStatusDraft
+                : _record?.Review.WorkflowStatus ?? GangDocumentationCatalog.WorkflowStatusDraft;
             _record = BuildRecord(
                 documentationId: request.DocumentationId,
                 organizationId: request.OrganizationId,
@@ -637,10 +770,10 @@ public sealed class EntityProfileViewModelTests
                 affiliationRole: request.AffiliationRole,
                 summary: request.Summary,
                 notes: request.Notes,
-                workflowStatus: _record?.Review.WorkflowStatus ?? GangDocumentationCatalog.WorkflowStatusDraft,
+                workflowStatus: workflowStatus,
                 reviewerName: _record?.Review.ReviewerName,
                 reviewerIdentity: _record?.Review.ReviewerIdentity,
-                submittedForReviewAtUtc: _record?.Review.SubmittedForReviewAtUtc,
+                submittedForReviewAtUtc: workflowStatus == GangDocumentationCatalog.WorkflowStatusDraft ? null : _record?.Review.SubmittedForReviewAtUtc,
                 reviewedAtUtc: _record?.Review.ReviewedAtUtc,
                 approvedAtUtc: _record?.Review.ApprovedAtUtc,
                 decisionNote: _record?.Review.DecisionNote,
@@ -666,6 +799,8 @@ public sealed class EntityProfileViewModelTests
                 var action when action == GangDocumentationCatalog.WorkflowActionMarkInactive => GangDocumentationCatalog.WorkflowStatusInactive,
                 var action when action == GangDocumentationCatalog.WorkflowActionMarkPurgeReview => GangDocumentationCatalog.WorkflowStatusPurgeReview,
                 var action when action == GangDocumentationCatalog.WorkflowActionPurge => GangDocumentationCatalog.WorkflowStatusPurged,
+                var action when action == GangDocumentationCatalog.WorkflowActionRestoreToApproved => GangDocumentationCatalog.WorkflowStatusApproved,
+                var action when action == GangDocumentationCatalog.WorkflowActionRestoreToInactive => GangDocumentationCatalog.WorkflowStatusInactive,
                 _ => _record?.Review.WorkflowStatus ?? GangDocumentationCatalog.WorkflowStatusDraft
             };
 
@@ -807,3 +942,4 @@ public sealed class EntityProfileViewModelTests
         }
     }
 }
+

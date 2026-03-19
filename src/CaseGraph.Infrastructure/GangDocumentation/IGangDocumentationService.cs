@@ -52,6 +52,8 @@ public static class GangDocumentationCatalog
     public const string WorkflowActionMarkInactive = "mark inactive";
     public const string WorkflowActionMarkPurgeReview = "mark purge review";
     public const string WorkflowActionPurge = "purge";
+    public const string WorkflowActionRestoreToApproved = "restore to approved";
+    public const string WorkflowActionRestoreToInactive = "restore to inactive";
 
     public static IReadOnlyList<string> WorkflowStatuses { get; } =
     [
@@ -71,7 +73,9 @@ public static class GangDocumentationCatalog
         WorkflowActionReturnForChanges,
         WorkflowActionMarkInactive,
         WorkflowActionMarkPurgeReview,
-        WorkflowActionPurge
+        WorkflowActionPurge,
+        WorkflowActionRestoreToApproved,
+        WorkflowActionRestoreToInactive
     ];
 
     public static IReadOnlySet<string> EditableWorkflowStatuses { get; } =
@@ -114,7 +118,7 @@ public static class GangDocumentationCatalog
         return workflowStatus switch
         {
             WorkflowStatusDraft => "Draft",
-            WorkflowStatusPendingSupervisorReview => "Pending Supervisor Review",
+            WorkflowStatusPendingSupervisorReview => "Pending Review",
             WorkflowStatusApproved => "Approved",
             WorkflowStatusReturnedForChanges => "Returned for Changes",
             WorkflowStatusInactive => "Inactive",
@@ -132,8 +136,10 @@ public static class GangDocumentationCatalog
             WorkflowActionApprove => "Approve",
             WorkflowActionReturnForChanges => "Return for Changes",
             WorkflowActionMarkInactive => "Mark Inactive",
-            WorkflowActionMarkPurgeReview => "Mark Purge Review",
+            WorkflowActionMarkPurgeReview => "Move to Purge Review",
             WorkflowActionPurge => "Purge",
+            WorkflowActionRestoreToApproved => "Restore to Approved",
+            WorkflowActionRestoreToInactive => "Restore to Inactive",
             _ => workflowAction
         };
     }
@@ -145,9 +151,52 @@ public static class GangDocumentationCatalog
             WorkflowStatusApproved => "approved",
             WorkflowStatusPendingSupervisorReview => "pending approval",
             WorkflowStatusPurgeReview => "pending approval",
-            WorkflowStatusReturnedForChanges => "returned for changes",
             WorkflowStatusPurged => "purged",
             _ => "not submitted"
+        };
+    }
+
+    public static IReadOnlyList<string> GetAllowedWorkflowActions(string workflowStatus)
+    {
+        return workflowStatus switch
+        {
+            WorkflowStatusDraft =>
+            [
+                WorkflowActionSubmitForReview
+            ],
+            WorkflowStatusPendingSupervisorReview =>
+            [
+                WorkflowActionApprove,
+                WorkflowActionReturnForChanges,
+                WorkflowActionMarkInactive,
+                WorkflowActionMarkPurgeReview
+            ],
+            WorkflowStatusReturnedForChanges =>
+            [
+                WorkflowActionSubmitForReview
+            ],
+            WorkflowStatusApproved =>
+            [
+                WorkflowActionMarkInactive,
+                WorkflowActionMarkPurgeReview
+            ],
+            WorkflowStatusInactive =>
+            [
+                WorkflowActionRestoreToApproved,
+                WorkflowActionMarkPurgeReview
+            ],
+            WorkflowStatusPurgeReview =>
+            [
+                WorkflowActionRestoreToApproved,
+                WorkflowActionRestoreToInactive,
+                WorkflowActionPurge
+            ],
+            WorkflowStatusPurged =>
+            [
+                WorkflowActionRestoreToApproved,
+                WorkflowActionRestoreToInactive
+            ],
+            _ => []
         };
     }
 }
